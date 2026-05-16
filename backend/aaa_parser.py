@@ -244,7 +244,7 @@ class AaaParser:
                 entries.append(AaaLogEntry(
                     timestamp=ts, source="journal",
                     source_file=src_file,
-                    slot=ps.slot_id, cpu_id=ps.cpu_id,
+                    slot=ps.slot_id, cpu_id=ps.cpu_id or "",
                     process_name=pname, pid=pid,
                     context=context, sequence=seq,
                     is_active_signal=is_active, raw=line.strip()[:500],
