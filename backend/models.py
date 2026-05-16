@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class BoardType(str, Enum):
+    MAIN_CONTROL = "main_control"
+    INTERFACE = "interface"
+
+
+class BoardRole(str, Enum):
+    ACTIVE = "active"
+    STANDBY = "standby"
+    UNKNOWN = "unknown"
+
+
+class LogType(str, Enum):
+    DIAGNOSTIC = "diagnostic"
+    PRIVATE = "private"
+
+
+class ActivePeriod(BaseModel):
+    """一个连续的主控时段段。"""
+    start: datetime
+    end: datetime
+
+    @property
+    def duration(self) -> timedelta:
+        return self.end - self.start
+
+
+class LogEntry(BaseModel):
+    """单个日志文件的描述。"""
+    path: str
+    name: str
+    size_bytes: int = 0
+    compressed: bool = False
+    original_format: str = ""
+    extracted_path: str = ""
+    dump_time: Optional[datetime] = None
+    content_timestamps: list[datetime] = Field(default_factory=list)
+
+
+class SlotInfo(BaseModel):
+    """槽位（板卡）信息。"""
+    slot_id: str
+    name: str
+    type: BoardType = BoardType.MAIN_CONTROL
+    role: BoardRole = BoardRole.UNKNOWN
+    path: str
+    diagnostic_logs: list[LogEntry] = Field(default_factory=list)
+    private_logs: list[LogEntry] = Field(default_factory=list)
+    active_periods: list[ActivePeriod] = Field(default_factory=list)
+
+    def add_diagnostic_log(self, entry: LogEntry) -> None:
+        self.diagnostic_logs.append(entry)
+
+    def add_active_period(self, period: ActivePeriod) -> None:
+        self.active_periods.append(period)
+        self.active_periods.sort(key=lambda p: p.start)
+
+    @property
+    def all_content_timestamps(self) -> list[datetime]:
+        stamps: list[datetime] = []
+        for log in self.diagnostic_logs:
+            stamps.extend(log.content_timestamps)
+        return sorted(stamps)
+
+
+class JournalLogEntry(BaseModel):
+    """单个 journal 日志文件。"""
+    path: str
+    name: str
+    size_bytes: int = 0
+    compressed: bool = False
+    sequence: int = 0  # 0=当前日志(cpdt_journal.log), N=历史(cpdt_journal.log.N.gz)
+
+
+class PrivateSlotInfo(BaseModel):
+    """varlog/ 下的私有日志槽位。"""
+    dir_name: str         # "slot_1" 或 "slot_1_cpu_0"
+    slot_id: str          # 所属板卡 slot_id, e.g. "1"
+    cpu_id: str | None = None  # CPU 子卡编号, e.g. "0"; None 表示为板卡本身
+    path: str
+    journal_logs: list[JournalLogEntry] = Field(default_factory=list)
+
+
+class SwitchoverEvent(BaseModel):
+    """主备倒换事件"""
+    time: datetime
+    from_slot: str
+    to_slot: str
+    evidence: str
+
+
+class AaaLogEntry(BaseModel):
+    """单条 AAA 日志。"""
+    timestamp: datetime | None = None
+    source: str = ""                # "diagnostic" | "journal"
+    source_file: str = ""           # 来源文件路径，如 "slot_1/diag.zip"
+    slot: str = ""
+    cpu_id: str = ""
+    process_name: str = ""
+    pid: str = ""
+    context: str = ""
+    sequence: int = 0
+    is_active_signal: bool = False
+    raw: str = ""
+
+
+class AaaProcessLifecycle(BaseModel):
+    """同一进程同一 PID 的一次连续生命周期。"""
+    process_name: str
+    pid: str
+    logs: list[AaaLogEntry] = Field(default_factory=list)
+    total_count: int = 0
+    missing_sequences: list[int] = Field(default_factory=list)
+
+
+class AaaBoardCycle(BaseModel):
+    """一次整板重启周期。"""
+    dir_name: str = ""              # "{启动时间}-{恢复时间}"
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    processes: list[AaaProcessLifecycle] = Field(default_factory=list)
+
+
+class AaaSlotOutput(BaseModel):
+    """单个槽位的 AAA 日志输出。"""
+    slot_id: str
+    board_cycles: list[AaaBoardCycle] = Field(default_factory=list)
+
+
+class AaaResult(BaseModel):
+    """AAA 模块解析结果。"""
+    module_name: str = ""
+    slots: list[AaaSlotOutput] = Field(default_factory=list)
+    active_master_slots: list[str] = Field(default_factory=list)
+
+
+class ParseResult(BaseModel):
+    """完整解析结果"""
+    task_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    package_name: str = ""
+    diagnostic_slots: list[SlotInfo] = Field(default_factory=list)
+    private_slots: list[PrivateSlotInfo] = Field(default_factory=list)
+    switchover_timeline: list[SwitchoverEvent] = Field(default_factory=list)
+    aaa_results: list[AaaResult] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    extracted_root: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    EXTRACTING = "extracting"
+    SCANNING = "scanning"
+    IDENTIFYING = "identifying"
+    DONE = "done"
+    ERROR = "error"
+
+
+class TaskInfo(BaseModel):
+    task_id: str
+    status: TaskStatus = TaskStatus.PENDING
+    progress: float = 0.0
+    message: str = ""
+    result: Optional[ParseResult] = None

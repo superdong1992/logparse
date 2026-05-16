@@ -1,0 +1,82 @@
+# 日志解析维护工具 - 配置
+
+output:
+  base_dir: "./output"        # 解压输出根目录
+  keep_original: true         # 保留原始目录结构
+  generate_metadata: true     # 生成结构化元数据
+
+# 包结构定义
+package:
+  outer_name_prefix: "diagnostic_information"
+  diagnostic_dir: "diag"
+  private_dir: "varlog"
+
+# 板卡定义
+boards:
+  main_control:
+    dir_pattern: "slot_*"
+    role_detection: "by_log_content"
+
+# 诊断日志文件匹配
+diagnostic_files:
+  patterns:
+    - "diag.zip"
+    - "diaglog_*.log.zip"
+    - "diaglog_*.zip"
+  # 文件名中提取转储时间戳的正则（仅供参考，不用于判定主控时段）
+  filename_timestamp_regex: ".*_(\\d{14})\\..*"
+
+# 日志内容解析
+log_content:
+  # 从日志内容行提取真实时间戳的正则
+  # 格式示例: 2026-4-30T10:37:07.980482
+  timestamp_regex: "(\\d{4}-\\d{1,2}-\\d{1,2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)([+-]\\d{2}:\\d{2})?"
+  # 两个时间戳相差超过此阈值（秒）则视为不连续，切分新的 ActivePeriod
+  active_period_gap_threshold: 300
+
+# 私有日志（varlog）配置
+private_logs:
+  # varlog/ 下的目录匹配（支持 slot_{id} 和 slot_{id}_cpu_{cpu_id}）
+  dir_patterns:
+    - "slot_*"
+    - "slot_*_cpu_*"
+  # 私有日志压缩包名
+  archive_name: "varlog.zip"
+  # journal 日志文件匹配
+  journal_files:
+    patterns:
+      - "cpdt_journal.log"
+      - "cpdt_journal.log.*.gz"
+    # 序号提取正则（数字越大越旧，0 表示当前文件）
+    sequence_regex: "cpdt_journal\\.log(?:\\.(\\d+))?(?:\\.gz)?"
+
+
+# 机制模块日志预处理
+mechanism_modules:
+  module1:                              # 配置标识（可任意命名）
+    # 日志中实际出现的模块名（全大写），用于 Stage 1 字符串预过滤
+    module_name: "DOCUE"
+    enabled: true
+    # 诊断日志匹配正则（命名组：Service/Slot/CPU-Id/ProcessName/Context）
+    diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
+    # Context 中出现此关键字 → 该行 Slot 为当前主控
+    active_master_keyword: ""
+    # 板级重启标识进程名：不支持独立重启，PID+序号重置 = 整板重启
+    board_restart_indicator: ""
+    # 同名进程类：诊断名 → journal 名的映射
+    process_name_mapping: {}
+    # journal 日志识别规则
+    journal:
+      # 行格式: {时间戳} {标签} {进程名}: [slotId = {slot}, cpuId = {cpu}, processName = {进程名}-{PID}]: No[{序号}]{Context}
+      line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
+      identifying_keyword: "docue"        # Context 中包含此关键字才确认是模块日志
+    # 序号提取正则
+    sequence_pattern: 'No\[(\d+)\]'
+
+# 压缩包扩展名
+compressed_extensions:
+  - ".gz"
+  - ".zip"
+  - ".tar.gz"
+  - ".tgz"
+  - ".tar"
