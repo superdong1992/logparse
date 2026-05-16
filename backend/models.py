@@ -141,6 +141,8 @@ class AaaResult(BaseModel):
     module_name: str = ""
     slots: list[AaaSlotOutput] = Field(default_factory=list)
     active_master_slots: list[str] = Field(default_factory=list)
+    diag_entry_count: int = 0
+    journal_entry_count: int = 0
 
 
 class ParseResult(BaseModel):

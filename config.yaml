@@ -65,10 +65,14 @@ mechanism_modules:
     board_restart_indicator: ""
     # 同名进程类：诊断名 → journal 名的映射
     process_name_mapping: {}
-    # journal 日志识别规则
+    # journal 日志识别规则（journal 行可能有三种格式）
     journal:
-      # 行格式: {时间戳} {标签} {进程名}: [slotId = {slot}, cpuId = {cpu}, processName = {进程名}-{PID}]: No[{序号}]{Context}
+      # 格式1 完整元数据: {时间戳} {标签} {进程名}: [slotId={slot}, cpuId={cpu}, processName={进程名}-{PID}]: No[{序号}]{Context}
+      # 格式2 无元数据:     {时间戳} {标签} {进程名}: No[{序号}]{Context}
+      # 格式3 同名进程:     {时间戳} {标签} {进程名}-{PID}: No[{序号}]{Context}（配置了同名进程映射时）
       line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
+      # 格式2/3：无元数据块，进程名与PID从标签提取，PID可选
+      line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
       identifying_keyword: "docue"        # Context 中包含此关键字才确认是模块日志
     # 序号提取正则
     sequence_pattern: 'No\[(\d+)\]'

@@ -34,8 +34,8 @@ from backend.models import ParseResult
 from backend.scanner import Scanner
 
 
-def _extract_inner_contents(slots, output_dir, decompressor):
-    """解压每个槽位下的诊断日志压缩包内容。"""
+def _extract_inner_contents(slots, decompressor):
+    """解压每个槽位下的诊断日志压缩包内容到 extracted/ 内的 _extracted 子目录。"""
     for slot in slots:
         for entry in slot.diagnostic_logs:
             if not entry.compressed:
@@ -43,14 +43,13 @@ def _extract_inner_contents(slots, output_dir, decompressor):
             src = Path(entry.path)
             if not src.exists():
                 continue
-            dest = output_dir / "contents" / slot.name / entry.name.removesuffix(
-                "".join(suffix for suffix in [".zip", ".gz", ".tar.gz", ".tgz"] if entry.name.endswith(suffix))
-            )
+            dest = src.parent / f"{entry.name}_extracted"
             try:
                 decompressor.extract_all(src, dest)
                 entry.extracted_path = str(dest)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("解压诊断日志内容失败 %s: %s", src, e)
 
 
 @click.group()
@@ -115,7 +114,7 @@ def parse(ctx, package_path, output, verbose):
         return r
 
     _step(f"[1/6] 解压 {source.name}",
-          lambda: decompressor.extract_all(source, extract_dir, recursive=False))
+          lambda: decompressor.extract_all(source, extract_dir, recursive=True))
 
     diag_slots = _step("[2/6] 扫描 diag/", lambda: scanner.scan_diag(extract_dir)) or []
     private_slots = _step("[3/6] 扫描 varlog/", lambda: scanner.scan_private(extract_dir)) or []
@@ -130,7 +129,7 @@ def parse(ctx, package_path, output, verbose):
     )
 
     _step("[4/6] 解压诊断日志内容",
-          lambda: _extract_inner_contents(result.diagnostic_slots, output_dir / task_id, decompressor))
+          lambda: _extract_inner_contents(result.diagnostic_slots, decompressor))
 
     # 机制模块日志解析（优先）
     aaa_results = _step("[5/6] AAA 解析",
@@ -141,7 +140,10 @@ def parse(ctx, package_path, output, verbose):
             aaa_dir = aaa_parser.write_output(aaa_result, output_dir / task_id)
             if verbose:
                 total = sum(cp.total_count for s in aaa_result.slots for c in s.board_cycles for cp in c.processes)
-                click.echo(f"    [{aaa_result.module_name}] {total} 条 → {aaa_dir}")
+                diag = aaa_result.diag_entry_count
+                jnl = aaa_result.journal_entry_count
+                match_mark = "" if diag + jnl == total else " ⚠ 条数不一致"
+                click.echo(f"    [{aaa_result.module_name}] 诊断:{diag} + journal:{jnl} = {diag+jnl} → 输出:{total}{match_mark} → {aaa_dir}")
         result.aaa_results = list(aaa_results.values())
 
     # 兜底
@@ -405,6 +407,11 @@ def check_config(config):
                 re.compile(mod_cfg.journal.line_pattern)
             except re.error as e:
                 errors.append(f"[{mod_key}] journal.line_pattern 无效: {e}")
+        if mod_cfg.journal.line_pattern2:
+            try:
+                re.compile(mod_cfg.journal.line_pattern2)
+            except re.error as e:
+                errors.append(f"[{mod_key}] journal.line_pattern2 无效: {e}")
         if not mod_cfg.journal.identifying_keyword:
             warnings.append(f"[{mod_key}] journal.identifying_keyword 为空")
         if mod_cfg.sequence_pattern:
@@ -464,15 +471,20 @@ def test_pattern(config, module, log_type, line):
             click.echo(f"  时间戳: {ts[0].isoformat()}")
 
     else:  # journal
-        if not mod_cfg.journal.line_pattern:
-            click.echo("✗ journal.line_pattern 未配置", err=True)
+        if not mod_cfg.journal.line_pattern and not mod_cfg.journal.line_pattern2:
+            click.echo("✗ journal.line_pattern 和 line_pattern2 均未配置", err=True)
             sys.exit(1)
-        pat = re.compile(mod_cfg.journal.line_pattern)
-        m = pat.match(line)
+        pat_name = "journal.line_pattern"
+        pat = re.compile(mod_cfg.journal.line_pattern) if mod_cfg.journal.line_pattern else None
+        m = pat.match(line) if pat else None
+        if not m and mod_cfg.journal.line_pattern2:
+            pat_name = "journal.line_pattern2"
+            pat = re.compile(mod_cfg.journal.line_pattern2)
+            m = pat.match(line)
         if not m:
-            click.echo("✗ 不匹配 journal.line_pattern")
+            click.echo("✗ 不匹配 journal.line_pattern 及 line_pattern2")
             sys.exit(1)
-        click.echo("✓ 匹配 journal.line_pattern")
+        click.echo(f"✓ 匹配 {pat_name}")
         click.echo(f"  进程名: {m.group(1)}")
         if m.group(2):
             click.echo(f"  pid: {m.group(2)}")

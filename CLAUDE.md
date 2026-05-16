@@ -39,7 +39,8 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **`check-config`**：检查所有正则可编译、glob 有效、模块配置完整，错误和警告分开
 - **`test-pattern`**：用配置正则测试实际日志行，显示提取字段、Stage1 预过滤结果、时间戳、主控关键字命中
 - **错误隔离**：每一步失败不终止全流程，继续执行并在最后汇总所有错误
-- **`--verbose`**：输出每步耗时、处理项数、AAA 总条数
+- **`--verbose`**：输出每步耗时、处理项数、AAA 诊断/journal 条数对比、同名进程多实例检测
+- **`test-pattern`**：支持 `line_pattern` 和 `line_pattern2` 双正则 fallback 测试
 - **Windows 编码**：CLI 入口自动将 stdout/stderr 切换为 UTF-8，避免 GBK 编码下 Unicode 符号报错
 
 ## 架构
@@ -47,25 +48,26 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 ### 数据流
 
 ```
-外层压缩包 → Decompressor(仅解压外层, recursive=False) → Scanner(发现diag/varlog slot+文件)
-→ Decompressor(解压内部.zip内容) → AaaParser(Stage1 大小写敏感预过滤→Stage2 正则提取)
+外层压缩包 → Decompressor(递归解压全部, recursive=True) → Scanner(发现diag/varlog slot+文件)
+→ Decompressor(解压内部.zip内容到_extracted子目录) → AaaParser(Stage1 大小写敏感预过滤→Stage2 正则提取)
 → LogParser(提取全部时间戳+构建ActivePeriod) → Identifier(AAA优先 + 目录+gap兜底判定)
 → MetadataGenerator(JSON输出)
 ```
 
 关键设计决策：
-- **解压与扫描分离**：外层包先解压一层，保留内部压缩包原样供 Scanner 收集元数据，之后再解压内容做解析
-- **AAA 优先主控判定**：indicator 进程 PID 变化检测整板重启→切分周期，周期目录名用 indicator 进程条目的时间戳
-- **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。`_parse_one` 从 diag 条目中检测时区并应用到 journal 条目，确保混排排序正确
+- **解压与扫描分离**：外层包递归解压全部内容到 `extracted/`，内部压缩包保留原样供 Scanner 收集元数据，之后再解压内容到 `_extracted` 子目录做解析。`extracted/` 是唯一可搜索的全部日志目录树
+- **AAA 优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界，周期目录名用 indicator 进程条目的时间戳
+- **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。`_parse_one` 从**全部条目**（诊断+journal）中检测时区并归一化所有 naive timestamp
+- **journal 三种格式**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式（含同名进程 PID 后缀），双正则 fallback 保证兼容性
 
 ### 模块分工
 
 | 模块 | 职责 |
 |------|------|
 | `backend/config.py` | YAML 配置加载，glob→regex 编译，时间戳提取（含时区），机制模块配置加载 |
-| `backend/decompressor.py` | .zip/.tar.gz/.gz 多层递归解压，`extract_all(recursive=False)` 控制递归深度 |
-| `backend/scanner.py` | `scan_diag()` 扫描 `diag/slot_*/` 诊断日志; `scan_private()` 解压 varlog.zip 到真实目录后扫描 journal |
-| `backend/aaa_parser.py` | 遍历启用的机制模块，Stage1 模块名大小写敏感预过滤→Stage2 正则提取字段，整板重启检测（PID变化），丢号检测，三层落盘 |
+| `backend/decompressor.py` | .zip/.tar.gz/.gz 多层递归解压，`extract_all(recursive=)` 控制递归深度。含路径穿越、文件大小、压缩比等安全防护 |
+| `backend/scanner.py` | `scan_diag()` 扫描 `diag/slot_*/` 诊断日志; `scan_private()` 优先检测已解压 `varlog/` 目录，兜底解压 varlog.zip |
+| `backend/aaa_parser.py` | 遍历启用的机制模块，Stage1 大小写敏感预过滤→Stage2 双正则 fallback，板卡重启层级（PID变化+序号回绕），丢号检测，条数校验，同名进程检测，三层落盘 |
 | `backend/log_parser.py` | 提取日志内容全部时间戳，按 gap 阈值构建 ActivePeriod |
 | `backend/identifier.py` | 兜底判定：有 ActivePeriod→ACTIVE，有日志无时段→STANDBY，无日志→UNKNOWN；倒换检测跳过重叠时段 |
 | `backend/metadata.py` | 生成 `metadata.json`（含诊断、私有、全部模块 AAA 结果） |
@@ -111,9 +113,9 @@ diagnostic_information_xxx.zip     ← 外层包
 ```
 output/{task_id}/aaa/{module_name}/
 ├── slot_1/
-│   ├── 20260430T103707-20260430T113708/    ← indicator 进程起止时间
-│   │   ├── SERVICE-12345.log               ← cpu_0 直接放周期下
-│   │   └── cpu_1/                          ← cpu≠0 时多一层
+│   ├── 20260430T103707-20260430T113708/    ← 周期起止时间
+│   │   ├── SERVICE-12345.log               ← 板卡级进程（cpu_id=None）直接放周期下
+│   │   └── cpu_1/                          ← CPU 子卡进程（cpu_id=1/2/...）放 cpu_N/ 子目录
 │   │       └── SERVICE-67890.log
 │   └── 20260430T120000-20260430T130000/    ← 下次重启
 │       └── ...
@@ -124,6 +126,17 @@ output/{task_id}/aaa/{module_name}/
 [0002] [journal|slot_2/varlog.zip] SERVICE: No[2] xxx2 ...
        ↑ 序号      ↑ 来源+文件路径              ↑ 原始日志行
 ```
+
+### 重启周期切分规则
+
+1. **indicator PID 变化**（`board_restart_indicator` 配置）：同一 (slot, cpu) 组内 indicator 进程的 PID 变化时触发切分
+2. **序号回绕反向扫描**：PID 变化后向前扫描，找最早出现的序-号回绕点（同一进程的 No[N] 从大值突然变小），前移切分边界。回绕判定阈值 `SEQ_ROLLBACK_THRESHOLD=3`
+3. **层级传播**：板卡级（cpu_key=""）PID 变化 → 所有子 cpu 组同步切分；cpu 级 PID 变化 → 仅该 cpu 组切分
+
+### 可靠性校验（--verbose）
+
+- **条数对比**：`诊断:N + journal:M = X → 输出:K`，不一致时标 `⚠ 条数不一致`
+- **同名进程多实例**：同一周期内同一进程名出现多个 PID 时打印 `[DEBUG] _make_cycles multi_instance`
 
 ### 配置驱动
 
@@ -136,3 +149,34 @@ output/{task_id}/aaa/{module_name}/
 - `private_logs.dir_patterns` — varlog 目录匹配
 - `private_logs.journal_files` — journal 日志文件名匹配 + 序号提取
 - `mechanism_modules` — 机制模块配置（module_name 用于 Stage1 大小写敏感预过滤、正则、主控关键字等）
+  - `journal.line_pattern` — 格式1（完整元数据块）
+  - `journal.line_pattern2` — 格式2/3（无元数据块，PID 可选）
+  - `board_restart_indicator` — 板卡重启标识进程名
+  - `sequence_pattern` — 序号提取正则 `No\[(\d+)\]`，用于丢号检测和重启序号回绕判定
+
+### 解压安全规范
+
+- **必须通过 `Decompressor` 类**：所有压缩包解压必须走 `Decompressor.extract_all()`，不要在业务代码中直接调用 `zipfile`/`tarfile`/`gzip`
+- **解压前校验**：路径穿越（`..`、绝对路径）、单文件大小上限（500MB）、压缩比（100x，防 zip 炸弹）
+- **递归深度限制**：`extract_all` 最多 10 轮递归扫描，防止无限循环
+- **异常必须记日志**：解压失败用 `logging.warning()` 记录并继续，不允许静默 `except: pass`
+- **空文件跳过**：`stat().st_size == 0` 时跳过不解压
+
+### 板卡重启层级
+
+目录结构体现板卡层级关系，cpu 编号从 1 开始，没有 cpu_0。
+
+```
+slot_1/          ← 板卡本身（cpu_id = None），不是 "cpu_0"
+slot_1_cpu_1/    ← slot_1 的 1 号 CPU 子卡
+slot_1_cpu_2/    ← slot_1 的 2 号 CPU 子卡
+```
+
+**重启传播规则：**
+- **板卡重启** → 该 slot 下所有 cpu 子卡一起重启 → `_build_cycles` 中板卡级 indicator PID 变化会传播到所有子 cpu 组同步切分
+- **CPU 子卡重启** → 仅该 cpu 重启，板卡和其他 cpu 不受影响 → cpu 级 indicator PID 变化仅切分该 cpu 组
+
+**分组规则：**
+- `_build_cycles` 按 `(slot, cpu_key)` 分组，`cpu_key = cpu_id or ""`
+- `cpu_key = ""` 为板卡本身，`cpu_key = "1"/"2"` 为 CPU 子卡
+- journal 条目的 `cpu_id` 直接从 `PrivateSlotInfo.cpu_id` 取值（None/None/"1"/"2"），不设默认 "0"

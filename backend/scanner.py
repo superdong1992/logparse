@@ -86,17 +86,24 @@ class Scanner:
                 path=str(entry),
             )
 
-            # 解压 varlog.zip 到真实目录
-            archive_path = entry / archive_name
-            if archive_path.exists():
-                try:
-                    extract_dir = entry / f"{archive_name}_extracted"
-                    if not extract_dir.exists():
-                        extract_dir.mkdir(parents=True, exist_ok=True)
-                        with zipfile.ZipFile(archive_path, "r") as zf:
-                            zf.extractall(extract_dir)
-                except Exception:
-                    pass
+            # 优先检测是否已被外层递归解压（varlog/ 子目录已存在）
+            pre_extracted = (entry / "varlog").is_dir()
+
+            if not pre_extracted:
+                # 解压 varlog.zip 到 _extracted 子目录（兼容非递归场景）
+                archive_path = entry / archive_name
+                if archive_path.exists():
+                    try:
+                        extract_dir = entry / f"{archive_name}_extracted"
+                        if not extract_dir.exists():
+                            extract_dir.mkdir(parents=True, exist_ok=True)
+                            with zipfile.ZipFile(archive_path, "r") as zf:
+                                zf.extractall(extract_dir)
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "解压 varlog.zip 失败: %s", archive_path
+                        )
 
             # 扫描解压目录中的 journal 文件
             for subdir in entry.iterdir():

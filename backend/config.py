@@ -43,6 +43,7 @@ class PrivateLogsConfig(BaseModel):
 
 class MechModuleJournalConfig(BaseModel):
     line_pattern: str = r'^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
+    line_pattern2: str = ""
     identifying_keyword: str = ""
 
 

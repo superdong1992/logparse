@@ -59,6 +59,7 @@ class AaaParser:
             if not required.issubset(diag_re.groupindex):
                 return None
         journal_re = re.compile(cfg.journal.line_pattern) if cfg.journal.line_pattern else None
+        journal_re2 = re.compile(cfg.journal.line_pattern2) if cfg.journal.line_pattern2 else None
         journal_kw = cfg.journal.identifying_keyword.lower() if cfg.journal.identifying_keyword else None
         seq_re = re.compile(cfg.sequence_pattern)
         master_kw = re.compile(cfg.active_master_keyword) if cfg.active_master_keyword else None
@@ -83,10 +84,10 @@ class AaaParser:
                 diag_tzinfo = e.timestamp.tzinfo
                 break
 
-        if journal_re and journal_kw:
+        if (journal_re or journal_re2) and journal_kw:
             for ps in result.private_slots:
                 all_entries.extend(
-                    self._scan_journal(ps, journal_re, journal_kw, seq_re,
+                    self._scan_journal(ps, journal_re, journal_re2, journal_kw, seq_re,
                                        master_kw, name_map, indicator, mod_upper,
                                        diag_tzinfo)
                 )
@@ -120,6 +121,9 @@ class AaaParser:
             if e.is_active_signal:
                 active_slots.add(e.slot)
         aaa_result.active_master_slots = sorted(active_slots)
+
+        aaa_result.diag_entry_count = sum(1 for e in all_entries if e.source == "diagnostic")
+        aaa_result.journal_entry_count = sum(1 for e in all_entries if e.source == "journal")
 
         return aaa_result
 
@@ -177,7 +181,7 @@ class AaaParser:
 
     def _scan_journal(
         self, ps: PrivateSlotInfo,
-        journal_re: re.Pattern, journal_kw: str,
+        journal_re: re.Pattern, journal_re2: re.Pattern | None, journal_kw: str,
         seq_re: re.Pattern, master_kw: re.Pattern | None,
         name_map: dict[str, str], indicator: str | None,
         mod_upper: str,
@@ -197,8 +201,10 @@ class AaaParser:
                     continue
                 if journal_kw not in line.lower():
                     continue
-                # Stage 2: 正则
+                # Stage 2: 正则（格式1优先，格式2兜底）
                 m = journal_re.match(line)
+                if not m and journal_re2:
+                    m = journal_re2.match(line)
                 if not m:
                     continue
 
@@ -238,7 +244,7 @@ class AaaParser:
                 entries.append(AaaLogEntry(
                     timestamp=ts, source="journal",
                     source_file=src_file,
-                    slot=ps.slot_id, cpu_id=ps.cpu_id or "0",
+                    slot=ps.slot_id, cpu_id=ps.cpu_id,
                     process_name=pname, pid=pid,
                     context=context, sequence=seq,
                     is_active_signal=is_active, raw=line.strip()[:500],
@@ -247,41 +253,109 @@ class AaaParser:
 
         return entries
 
+    # 序号回绕判定阈值：当前 seq 比历史最大 seq 小超过此值才视为重启回绕
+    SEQ_ROLLBACK_THRESHOLD = 3
+
+    def _find_rollback_boundary(
+        self, group: list[AaaLogEntry], search_end: int, search_start: int,
+        max_seq: dict[tuple[str, str], int],
+    ) -> int:
+        """从 search_end 向 search_start 扫描，找最早的序号回绕位置作为重启边界。"""
+        boundary = search_end + 1  # 默认在 indicator 位置切分
+        for j in range(search_end, search_start - 1, -1):
+            e = group[j]
+            if e.sequence > 0:
+                key = (e.process_name.lower(), e.pid or "")
+                prev_max = max_seq.get(key, 0)
+                if prev_max - e.sequence > self.SEQ_ROLLBACK_THRESHOLD:
+                    boundary = j
+                    self._dbg(f"[DEBUG] _find_rollback_boundary rollback at j={j} key={key} seq={e.sequence} prev_max={prev_max}")
+        return boundary
+
     def _build_cycles(
         self, entries: list[AaaLogEntry], indicator: str | None,
     ) -> list[AaaBoardCycle]:
-        entries = sorted(entries, key=lambda e: (e.process_name, e.pid, e.sequence))
+        if not entries:
+            return []
 
-        by_slot: dict[str, list[AaaLogEntry]] = defaultdict(list)
+        # 按 (slot, cpu_key) 分组，cpu_key="" 为板卡本身
+        by_cpu: dict[str, list[AaaLogEntry]] = defaultdict(list)
         for e in entries:
-            by_slot[e.slot].append(e)
+            cpu_key = e.cpu_id or ""
+            by_cpu[cpu_key].append(e)
 
-        cycles: list[AaaBoardCycle] = []
-
-        for slot_id, slot_entries in sorted(by_slot.items()):
-            slot_entries.sort(key=lambda e: (
+        for cpu_key in by_cpu:
+            by_cpu[cpu_key].sort(key=lambda e: (
                 0 if e.timestamp else 1,
                 e.timestamp.timestamp() if e.timestamp else 0,
                 e.sequence,
             ))
-            prev_pid: str | None = None
+
+        # 板卡级 split 时间戳和索引（传播到子 cpu 组时需要时间戳对齐）
+        board_splits: list[datetime] = []
+        if "" in by_cpu and indicator:
+            group = by_cpu[""]
+            max_seq: dict[tuple[str, str], int] = {}
             seg_start = 0
-            self._dbg(f"[DEBUG] _build_cycles slot={slot_id} total_entries={len(slot_entries)} indicator={indicator}")
-            for i, e in enumerate(slot_entries):
-                if indicator and indicator in e.process_name.lower():
-                    self._dbg(f"[DEBUG] _build_cycles indicator_match slot={slot_id} name={e.process_name} pid={e.pid} i={i} prev_pid={prev_pid}")
-                    if prev_pid is not None and prev_pid and e.pid and prev_pid != e.pid:
-                        seg = slot_entries[seg_start:i]
-                        self._dbg(f"[DEBUG] _build_cycles pid_changed slot={slot_id} prev={prev_pid} curr={e.pid} seg=[{seg_start}:{i}] len={len(seg)}")
-                        cycles.extend(self._make_cycles(seg, indicator))
-                        seg_start = i
+            prev_pid = None
+            for i, e in enumerate(group):
+                if e.sequence > 0:
+                    key = (e.process_name.lower(), e.pid or "")
+                    max_seq[key] = max(max_seq.get(key, 0), e.sequence)
+                if indicator in e.process_name.lower():
+                    self._dbg(f"[DEBUG] _build_cycles board_indicator cpu= slot={e.slot} name={e.process_name} pid={e.pid} i={i} prev_pid={prev_pid}")
+                    if prev_pid and e.pid and prev_pid != e.pid:
+                        boundary = self._find_rollback_boundary(group, i - 1, seg_start, max_seq)
+                        board_splits.append(group[boundary].timestamp if group[boundary].timestamp else e.timestamp)
+                        seg_start = boundary
+                        self._dbg(f"[DEBUG] _build_cycles board_pid_changed prev={prev_pid} curr={e.pid} boundary={boundary}")
                     if e.pid:
                         prev_pid = e.pid
 
-            if seg_start < len(slot_entries):
-                seg = slot_entries[seg_start:]
-                self._dbg(f"[DEBUG] _build_cycles final_seg slot={slot_id} seg=[{seg_start}:{len(slot_entries)}] len={len(seg)}")
-                cycles.extend(self._make_cycles(seg, indicator))
+        cycles: list[AaaBoardCycle] = []
+        for cpu_key in sorted(by_cpu.keys()):
+            group = by_cpu[cpu_key]
+            max_seq: dict[tuple[str, str], int] = {}
+
+            # cpu 级 split 索引
+            local_splits: set[int] = set()
+            seg_start = 0
+            if indicator:
+                prev_pid = None
+                for i, e in enumerate(group):
+                    if e.sequence > 0:
+                        key = (e.process_name.lower(), e.pid or "")
+                        max_seq[key] = max(max_seq.get(key, 0), e.sequence)
+                    if indicator in e.process_name.lower():
+                        self._dbg(f"[DEBUG] _build_cycles local_indicator cpu={cpu_key!r} name={e.process_name} pid={e.pid} i={i} prev_pid={prev_pid}")
+                        if prev_pid and e.pid and prev_pid != e.pid:
+                            boundary = self._find_rollback_boundary(group, i - 1, seg_start, max_seq)
+                            local_splits.add(boundary)
+                            seg_start = boundary
+                            self._dbg(f"[DEBUG] _build_cycles local_pid_changed cpu={cpu_key!r} prev={prev_pid} curr={e.pid} boundary={boundary}")
+                        if e.pid:
+                            prev_pid = e.pid
+
+            # 板卡重启 → 子 cpu 组同步切分（按时间戳对齐，再做反向扫描修正）
+            if cpu_key != "" and board_splits:
+                for split_ts in board_splits:
+                    if split_ts is None:
+                        continue
+                    for i, e in enumerate(group):
+                        if e.timestamp and e.timestamp >= split_ts:
+                            boundary = self._find_rollback_boundary(group, i, seg_start, max_seq)
+                            local_splits.add(boundary)
+                            seg_start = boundary
+                            break
+
+            all_splits = sorted(local_splits)
+            seg_start = 0
+            for split_i in all_splits:
+                if split_i > seg_start:
+                    cycles.extend(self._make_cycles(group[seg_start:split_i], indicator))
+                seg_start = split_i
+            if seg_start < len(group):
+                cycles.extend(self._make_cycles(group[seg_start:], indicator))
 
         return cycles
 
@@ -300,6 +374,14 @@ class AaaParser:
         # 详细列出所有进程及其日志条数
         for p in procs:
             self._dbg(f"[DEBUG] _make_cycles proc name={p.process_name} pid={p.pid} total={p.total_count} missing={p.missing_sequences}")
+        # 同名进程多实例检测
+        name_groups: dict[str, list] = defaultdict(list)
+        for p in procs:
+            name_groups[p.process_name].append(p)
+        for name, group in name_groups.items():
+            if len(group) > 1:
+                details = [(p.pid, p.total_count) for p in group]
+                self._dbg(f"[DEBUG] _make_cycles multi_instance name={name} PIDs={details}")
         return [AaaBoardCycle(dir_name=dir_name, start_time=start, end_time=end, processes=procs)]
 
     def _build_processes(self, entries: list[AaaLogEntry]) -> list[AaaProcessLifecycle]:
@@ -391,13 +473,14 @@ class AaaParser:
                 # 按 cpu_id 分组
                 cpu_procs: dict[str, list] = {}
                 for proc in cycle.processes:
-                    cpu_id = proc.logs[0].cpu_id or "0" if proc.logs else "0"
-                    cpu_procs.setdefault(cpu_id, []).append(proc)
+                    cpu_id = proc.logs[0].cpu_id if proc.logs else None
+                    key = cpu_id or ""
+                    cpu_procs.setdefault(key, []).append(proc)
 
-                for cpu_id, procs in cpu_procs.items():
+                for cpu_key, procs in cpu_procs.items():
                     out_dir = cycle_dir
-                    if cpu_id != "0":
-                        out_dir = cycle_dir / f"cpu_{cpu_id}"
+                    if cpu_key:  # 仅 cpu_1, cpu_2, ... 建子目录
+                        out_dir = cycle_dir / f"cpu_{cpu_key}"
                     out_dir.mkdir(parents=True, exist_ok=True)
                     for proc in procs:
                         fname = f"{proc.process_name}-{proc.pid}.log"
