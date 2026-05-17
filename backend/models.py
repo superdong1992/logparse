@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
@@ -50,11 +50,10 @@ class SlotInfo(BaseModel):
     """槽位（板卡）信息。"""
     slot_id: str
     name: str
-    type: BoardType = BoardType.MAIN_CONTROL
+    board_type: BoardType = BoardType.MAIN_CONTROL
     role: BoardRole = BoardRole.UNKNOWN
     path: str
     diagnostic_logs: list[LogEntry] = Field(default_factory=list)
-    private_logs: list[LogEntry] = Field(default_factory=list)
     active_periods: list[ActivePeriod] = Field(default_factory=list)
 
     def add_diagnostic_log(self, entry: LogEntry) -> None:
@@ -72,13 +71,13 @@ class SlotInfo(BaseModel):
         return sorted(stamps)
 
 
-class JournalLogEntry(BaseModel):
+class JournalLogFile(BaseModel):
     """单个 journal 日志文件。"""
     path: str
     name: str
     size_bytes: int = 0
     compressed: bool = False
-    sequence: int = 0  # 0=当前日志(cpdt_journal.log), N=历史(cpdt_journal.log.N.gz)
+    sequence: int = 0  # 0=当前日志, N=历史轮转
 
 
 class PrivateSlotInfo(BaseModel):
@@ -87,19 +86,11 @@ class PrivateSlotInfo(BaseModel):
     slot_id: str          # 所属板卡 slot_id, e.g. "1"
     cpu_id: str | None = None  # CPU 子卡编号, e.g. "0"; None 表示为板卡本身
     path: str
-    journal_logs: list[JournalLogEntry] = Field(default_factory=list)
+    journal_logs: list[JournalLogFile] = Field(default_factory=list)
 
 
-class SwitchoverEvent(BaseModel):
-    """主备倒换事件"""
-    time: datetime
-    from_slot: str
-    to_slot: str
-    evidence: str
-
-
-class AaaLogEntry(BaseModel):
-    """单条 AAA 日志。"""
+class MechLogEntry(BaseModel):
+    """单条机制模块日志。"""
     timestamp: datetime | None = None
     source: str = ""                # "diagnostic" | "journal"
     source_file: str = ""           # 来源文件路径，如 "slot_1/diag.zip"
@@ -113,33 +104,33 @@ class AaaLogEntry(BaseModel):
     raw: str = ""
 
 
-class AaaProcessLifecycle(BaseModel):
+class MechProcessLifecycle(BaseModel):
     """同一进程同一 PID 的一次连续生命周期。"""
     process_name: str
     pid: str
-    logs: list[AaaLogEntry] = Field(default_factory=list)
+    logs: list[MechLogEntry] = Field(default_factory=list)
     total_count: int = 0
     missing_sequences: list[int] = Field(default_factory=list)
 
 
-class AaaBoardCycle(BaseModel):
+class MechBoardCycle(BaseModel):
     """一次整板重启周期。"""
     dir_name: str = ""              # "{启动时间}-{恢复时间}"
     start_time: datetime | None = None
     end_time: datetime | None = None
-    processes: list[AaaProcessLifecycle] = Field(default_factory=list)
+    processes: list[MechProcessLifecycle] = Field(default_factory=list)
 
 
-class AaaSlotOutput(BaseModel):
-    """单个槽位的 AAA 日志输出。"""
+class MechSlotOutput(BaseModel):
+    """单个槽位的机制模块日志输出。"""
     slot_id: str
-    board_cycles: list[AaaBoardCycle] = Field(default_factory=list)
+    board_cycles: list[MechBoardCycle] = Field(default_factory=list)
 
 
-class AaaResult(BaseModel):
-    """AAA 模块解析结果。"""
+class MechResult(BaseModel):
+    """机制模块解析结果。"""
     module_name: str = ""
-    slots: list[AaaSlotOutput] = Field(default_factory=list)
+    slots: list[MechSlotOutput] = Field(default_factory=list)
     active_master_slots: list[str] = Field(default_factory=list)
     diag_entry_count: int = 0
     journal_entry_count: int = 0
@@ -151,11 +142,10 @@ class ParseResult(BaseModel):
     package_name: str = ""
     diagnostic_slots: list[SlotInfo] = Field(default_factory=list)
     private_slots: list[PrivateSlotInfo] = Field(default_factory=list)
-    switchover_timeline: list[SwitchoverEvent] = Field(default_factory=list)
-    aaa_results: list[AaaResult] = Field(default_factory=list)
+    mech_results: list[MechResult] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     extracted_root: str = ""
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class TaskStatus(str, Enum):

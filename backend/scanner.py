@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from backend.config import ConfigLoader
-from backend.models import JournalLogEntry, LogEntry, PrivateSlotInfo, SlotInfo
+from backend.models import JournalLogFile, LogEntry, PrivateSlotInfo, SlotInfo
+
+if TYPE_CHECKING:
+    from backend.decompressor import Decompressor
+
+logger = logging.getLogger(__name__)
 
 
 class Scanner:
@@ -26,8 +33,9 @@ class Scanner:
                     └── varlog.zip
     """
 
-    def __init__(self, config_loader: ConfigLoader):
+    def __init__(self, config_loader: ConfigLoader, decompressor: Decompressor | None = None):
         self.config = config_loader
+        self.decompressor = decompressor
 
     def scan_diag(self, extracted_root: Path) -> list[SlotInfo]:
         """扫描 diag/ 目录，识别各槽位的诊断日志。"""
@@ -58,8 +66,6 @@ class Scanner:
 
     def scan_private(self, extracted_root: Path) -> list[PrivateSlotInfo]:
         """扫描 varlog/ 目录，识别各槽位的私有日志。"""
-        import zipfile
-
         private_slots: list[PrivateSlotInfo] = []
 
         if not extracted_root.exists():
@@ -97,13 +103,14 @@ class Scanner:
                         extract_dir = entry / f"{archive_name}_extracted"
                         if not extract_dir.exists():
                             extract_dir.mkdir(parents=True, exist_ok=True)
-                            with zipfile.ZipFile(archive_path, "r") as zf:
-                                zf.extractall(extract_dir)
+                            if self.decompressor:
+                                self.decompressor.extract_all(archive_path, extract_dir, recursive=False)
+                            else:
+                                import zipfile
+                                with zipfile.ZipFile(archive_path, "r") as zf:
+                                    zf.extractall(extract_dir)
                     except Exception:
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            "解压 varlog.zip 失败: %s", archive_path
-                        )
+                        logger.warning("解压 varlog.zip 失败: %s", archive_path)
 
             # 扫描解压目录中的 journal 文件
             for subdir in entry.iterdir():
@@ -129,7 +136,7 @@ class Scanner:
             # 避免重复
             if any(j.name == f.name for j in private_slot.journal_logs):
                 continue
-            private_slot.journal_logs.append(JournalLogEntry(
+            private_slot.journal_logs.append(JournalLogFile(
                 path=str(f),
                 name=f.name,
                 size_bytes=f.stat().st_size,

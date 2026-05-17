@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from backend.models import ParseResult, PrivateSlotInfo, SlotInfo
+from backend.models import MechResult, ParseResult, PrivateSlotInfo, SlotInfo
 
 
 class MetadataGenerator:
@@ -20,16 +20,7 @@ class MetadataGenerator:
             "created_at": result.created_at.isoformat(),
             "diagnostic_slots": [self._slot_to_dict(s) for s in result.diagnostic_slots],
             "private_slots": [self._private_slot_to_dict(s) for s in result.private_slots],
-            "switchover_timeline": [
-                {
-                    "time": e.time.isoformat() if e.time else None,
-                    "from_slot": e.from_slot,
-                    "to_slot": e.to_slot,
-                    "evidence": e.evidence,
-                }
-                for e in result.switchover_timeline
-            ],
-            "aaa_results": [self._aaa_to_dict(a) for a in result.aaa_results] if result.aaa_results else [],
+            "aaa_results": [self._mech_to_dict(a) for a in result.mech_results] if result.mech_results else [],
             "errors": result.errors,
         }
 
@@ -44,7 +35,7 @@ class MetadataGenerator:
         return {
             "slot_id": slot.slot_id,
             "name": slot.name,
-            "type": slot.type.value,
+            "type": slot.board_type.value,
             "role": slot.role.value,
             "path": slot.path,
             "content_timestamp_count": len(slot.all_content_timestamps),
@@ -69,19 +60,6 @@ class MetadataGenerator:
                 }
                 for e in slot.diagnostic_logs
             ],
-            "private_logs": [
-                {
-                    "path": e.path,
-                    "name": e.name,
-                    "size_bytes": e.size_bytes,
-                    "compressed": e.compressed,
-                    "original_format": e.original_format,
-                    "extracted_path": e.extracted_path,
-                    "dump_time": e.dump_time.isoformat() if e.dump_time else None,
-                    "content_timestamp_count": len(e.content_timestamps),
-                }
-                for e in slot.private_logs
-            ],
         }
 
     @staticmethod
@@ -104,10 +82,10 @@ class MetadataGenerator:
         }
 
     @staticmethod
-    def _aaa_to_dict(aaa: 'AaaResult') -> dict:
+    def _mech_to_dict(mech: MechResult) -> dict:
         return {
-            "module_name": aaa.module_name,
-            "active_master_slots": aaa.active_master_slots,
+            "module_name": mech.module_name,
+            "active_master_slots": mech.active_master_slots,
             "slots": [
                 {
                     "slot_id": s.slot_id,
@@ -139,6 +117,6 @@ class MetadataGenerator:
                         for c in s.board_cycles
                     ],
                 }
-                for s in aaa.slots
+                for s in mech.slots
             ],
         }

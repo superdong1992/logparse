@@ -9,14 +9,15 @@
   python cli.py info <task_id>
   python cli.py list-slots <task_id>
   python cli.py query-diag <task_id> --slot <slot_id>
-  python cli.py aaa-slots <task_id>
-  python cli.py aaa-lifecycles <task_id> -s <slot_id>
-  python cli.py aaa-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc>
+  python cli.py mech-slots <task_id>
+  python cli.py mech-lifecycles <task_id> -s <slot_id>
+  python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc>
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 import time
@@ -24,8 +25,8 @@ from pathlib import Path
 
 import click
 
-from backend.aaa_parser import AaaParser
-from backend.config import BoardConfig, ConfigLoader
+from backend.mech_parser import MechParser
+from backend.config import BoardConfig, ConfigLoader, glob_to_regex
 from backend.decompressor import Decompressor
 from backend.identifier import Identifier
 from backend.log_parser import LogParser
@@ -48,7 +49,6 @@ def _extract_inner_contents(slots, decompressor):
                 decompressor.extract_all(src, dest)
                 entry.extracted_path = str(dest)
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).warning("解压诊断日志内容失败 %s: %s", src, e)
 
 
@@ -76,12 +76,11 @@ def parse(ctx, package_path, output, verbose):
     config_loader.load()
 
     decompressor = Decompressor(config_loader)
-    scanner = Scanner(config_loader)
+    scanner = Scanner(config_loader, decompressor)
     log_parser = LogParser(config_loader)
     identifier = Identifier()
-    aaa_parser = AaaParser(config_loader)
-    aaa_parser.verbose = verbose
-    aaa_parser.debug_filter = "dhcp"  # 只追踪指定进程的调试日志
+    mech_parser = MechParser(config_loader)
+    mech_parser.verbose = verbose
     metadata_gen = MetadataGenerator()
 
     source = Path(package_path)
@@ -93,7 +92,7 @@ def parse(ctx, package_path, output, verbose):
 
     errors: list[str] = []
 
-    def _step(label, fn):
+    def _safe_step(label, fn):
         t0 = time.time()
         try:
             r = fn()
@@ -113,11 +112,11 @@ def parse(ctx, package_path, output, verbose):
         click.echo(f"  {label} ✓{extra}")
         return r
 
-    _step(f"[1/6] 解压 {source.name}",
+    _safe_step(f"[1/6] 解压 {source.name}",
           lambda: decompressor.extract_all(source, extract_dir, recursive=True))
 
-    diag_slots = _step("[2/6] 扫描 diag/", lambda: scanner.scan_diag(extract_dir)) or []
-    private_slots = _step("[3/6] 扫描 varlog/", lambda: scanner.scan_private(extract_dir)) or []
+    diag_slots = _safe_step("[2/6] 扫描 diag/", lambda: scanner.scan_diag(extract_dir)) or []
+    private_slots = _safe_step("[3/6] 扫描 varlog/", lambda: scanner.scan_private(extract_dir)) or []
 
     result = ParseResult(
         task_id=task_id,
@@ -128,26 +127,26 @@ def parse(ctx, package_path, output, verbose):
         errors=errors,
     )
 
-    _step("[4/6] 解压诊断日志内容",
+    _safe_step("[4/6] 解压诊断日志内容",
           lambda: _extract_inner_contents(result.diagnostic_slots, decompressor))
 
     # 机制模块日志解析（优先）
-    aaa_results = _step("[5/6] AAA 解析",
-                         lambda: aaa_parser.parse_all(result))
-    if aaa_results:
-        for aaa_result in aaa_results.values():
-            aaa_parser.apply_to_identifier(aaa_result, result)
-            aaa_dir = aaa_parser.write_output(aaa_result, output_dir / task_id)
+    mech_results = _safe_step("[5/6] 机制模块解析",
+                         lambda: mech_parser.parse_all(result))
+    if mech_results:
+        for mech_result in mech_results.values():
+            mech_parser.apply_to_identifier(mech_result, result)
+            mech_dir = mech_parser.write_output(mech_result, output_dir / task_id)
             if verbose:
-                total = sum(cp.total_count for s in aaa_result.slots for c in s.board_cycles for cp in c.processes)
-                diag = aaa_result.diag_entry_count
-                jnl = aaa_result.journal_entry_count
-                match_mark = "" if diag + jnl == total else " ⚠ 条数不一致"
-                click.echo(f"    [{aaa_result.module_name}] 诊断:{diag} + journal:{jnl} = {diag+jnl} → 输出:{total}{match_mark} → {aaa_dir}")
-        result.aaa_results = list(aaa_results.values())
+                total = sum(cp.total_count for s in mech_result.slots for c in s.board_cycles for cp in c.processes)
+                diag = mech_result.diag_entry_count
+                journal_count = mech_result.journal_entry_count
+                match_mark = "" if diag + journal_count == total else " ⚠ 条数不一致"
+                click.echo(f"    [{mech_result.module_name}] 诊断:{diag} + journal:{journal_count} = {diag+journal_count} → 输出:{total}{match_mark} → {mech_dir}")
+        result.mech_results = list(mech_results.values())
 
     # 兜底
-    _step("[6/6] 时间戳提取+兜底识别",
+    _safe_step("[6/6] 时间戳提取+兜底识别",
           lambda: (log_parser.build_all_periods(result.diagnostic_slots), identifier.analyze(result)))
 
     cfg = config_loader.get_config()
@@ -194,11 +193,11 @@ def parse(ctx, package_path, output, verbose):
                     seq_info = "当前" if jl.sequence == 0 else f"历史 #{jl.sequence}"
                     click.echo(f"      └── {jl.name} ({jl.size_bytes} bytes) [{seq_info}]")
 
-    if result.aaa_results:
-        for aaa_result in result.aaa_results:
-            click.echo(f"\n--- 机制模块 [{aaa_result.module_name}] 日志 ---")
-            click.echo(f"  主控信号槽位: {aaa_result.active_master_slots}")
-            for s in aaa_result.slots:
+    if result.mech_results:
+        for mech_result in result.mech_results:
+            click.echo(f"\n--- 机制模块 [{mech_result.module_name}] 日志 ---")
+            click.echo(f"  主控信号槽位: {mech_result.active_master_slots}")
+            for s in mech_result.slots:
                 total_logs = sum(cp.total_count for c in s.board_cycles for cp in c.processes)
                 total_procs = sum(len(c.processes) for c in s.board_cycles)
                 click.echo(f"  slot_{s.slot_id}: {len(s.board_cycles)} 个周期, {total_procs} 进程, {total_logs} 条日志")
@@ -207,12 +206,6 @@ def parse(ctx, package_path, output, verbose):
                     for p in c.processes:
                         missing = f" 丢号:{p.missing_sequences}" if p.missing_sequences else ""
                         click.echo(f"      {p.process_name}-{p.pid}: {p.total_count} 条{missing}")
-
-    if result.switchover_timeline:
-        click.echo(f"\n主备倒换事件 ({len(result.switchover_timeline)} 次):")
-        for event in result.switchover_timeline:
-            click.echo(f"  slot_{event.from_slot} → slot_{event.to_slot} @ {event.time}")
-            click.echo(f"    依据: {event.evidence}")
 
     json_output = output_dir / task_id / "result.json"
     json_output.parent.mkdir(parents=True, exist_ok=True)
@@ -277,8 +270,8 @@ def query_diag(task_id, slot, output):
 @cli.command()
 @click.argument("task_id")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def aaa_slots(task_id, output):
-    """列出 AAA 模块各 slot 概况。"""
+def mech_slots(task_id, output):
+    """列出机制模块各 slot 概况。"""
     metadata_path = Path(output) / task_id / "metadata.json"
     if not metadata_path.exists():
         click.echo(f"任务 {task_id} 的元数据不存在", err=True)
@@ -289,12 +282,12 @@ def aaa_slots(task_id, output):
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
     data = json.loads(result_path.read_text(encoding="utf-8"))
-    aaa = data.get("aaa_results")
-    if not aaa:
-        click.echo("无 AAA 解析结果")
+    mech = data.get("mech_results")
+    if not mech:
+        click.echo("无机制模块解析结果")
         return
-    aaa = aaa[0]  # 取第一个模块
-    for s in aaa.get("slots", []):
+    mech = mech[0]  # 取第一个模块
+    for s in mech.get("slots", []):
         total_logs = sum(cp["total_count"] for c in s["board_cycles"] for cp in c["processes"])
         total_procs = sum(len(c["processes"]) for c in s["board_cycles"])
         click.echo(f"slot_{s['slot_id']}: {len(s['board_cycles'])} 周期, {total_procs} 进程, {total_logs} 条日志")
@@ -304,19 +297,19 @@ def aaa_slots(task_id, output):
 @click.argument("task_id")
 @click.option("--slot", "-s", required=True, help="槽位 ID")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def aaa_lifecycles(task_id, slot, output):
-    """列出某 slot 的 AAA 周期和进程。"""
+def mech_lifecycles(task_id, slot, output):
+    """列出某 slot 的机制模块周期和进程。"""
     result_path = Path(output) / task_id / "result.json"
     if not result_path.exists():
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
     data = json.loads(result_path.read_text(encoding="utf-8"))
-    aaa = data.get("aaa_results")
-    if not aaa:
-        click.echo("无 AAA 解析结果")
+    mech = data.get("mech_results")
+    if not mech:
+        click.echo("无机制模块解析结果")
         return
-    aaa = aaa[0]
-    for s in aaa.get("slots", []):
+    mech = mech[0]
+    for s in mech.get("slots", []):
         if s["slot_id"] == slot:
             for c in s["board_cycles"]:
                 click.echo(f"{c['dir_name']}")
@@ -333,9 +326,9 @@ def aaa_lifecycles(task_id, slot, output):
 @click.option("--cycle", "-c", required=True, help="周期目录名")
 @click.option("--proc", "-p", required=True, help="进程名-pid")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def aaa_logs(task_id, slot, cycle, proc, output):
-    """查看指定进程批次的 AAA 日志。"""
-    log_file = Path(output) / task_id / "aaa" / f"slot_{slot}" / cycle / f"{proc}.log"
+def mech_logs(task_id, slot, cycle, proc, output):
+    """查看指定进程批次的机制模块日志。"""
+    log_file = Path(output) / task_id / "mech_modules" / f"slot_{slot}" / cycle / f"{proc}.log"
     if not log_file.exists():
         click.echo(f"文件不存在: {log_file}", err=True)
         sys.exit(1)
@@ -385,7 +378,7 @@ def check_config(config):
     ]
     for label, pattern in globs:
         try:
-            _compile_glob(pattern)
+            glob_to_regex(pattern)
         except Exception:
             errors.append(f"{label}: glob 无效 - {pattern}")
 
@@ -490,17 +483,10 @@ def test_pattern(config, module, log_type, line):
             click.echo(f"  pid: {m.group(2)}")
         click.echo(f"  序号: {m.group(3)}")
         click.echo(f"  Context: {m.group(4)}")
-        kw = mod_cfg.journal.identifying_keyword
-        if kw:
-            click.echo(f"  识别关键字 '{kw}': {'✓' if kw in line.lower() else '✗ (Stage1 会被过滤)'}")
+        keyword = mod_cfg.journal.identifying_keyword
+        if keyword:
+            click.echo(f"  识别关键字 '{keyword}': {'✓' if keyword in line.lower() else '✗ (Stage1 会被过滤)'}")
         click.echo(f"  模块名预过滤: {mod_cfg.module_name} {'✓' if mod_cfg.module_name in line else '✗ (Stage1 会被过滤)'}")
-
-
-def _compile_glob(pattern: str) -> re.Pattern:
-    regex = re.escape(pattern)
-    regex = regex.replace(r"\*", ".*")
-    regex = regex.replace(r"\?", ".")
-    return re.compile(f"^{regex}$", re.IGNORECASE)
 
 
 if __name__ == "__main__":

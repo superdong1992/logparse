@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 
 class PackageConfig(BaseModel):
-    outer_name_prefix: str = "diagnostic_information"
+    outer_name_prefix: str = ""
     diagnostic_dir: str = "diag"
     private_dir: str = "varlog"
 
@@ -31,8 +31,8 @@ class LogContentConfig(BaseModel):
 
 
 class JournalFilesConfig(BaseModel):
-    patterns: list[str] = Field(default_factory=lambda: ["cpdt_journal.log", "cpdt_journal.log.*.gz"])
-    sequence_regex: str = r"cpdt_journal\.log(?:\.(\d+))?(?:\.gz)?"
+    patterns: list[str] = Field(default_factory=lambda: ["journal.log", "journal.log.*.gz"])
+    sequence_regex: str = r"journal\.log(?:\.(\d+))?(?:\.gz)?"
 
 
 class PrivateLogsConfig(BaseModel):
@@ -77,7 +77,7 @@ class AppConfig(BaseModel):
     )
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern:
+def glob_to_regex(pattern: str) -> re.Pattern:
     regex = re.escape(pattern)
     regex = regex.replace(r"\*", ".*")
     regex = regex.replace(r"\?", ".")
@@ -118,10 +118,10 @@ class ConfigLoader:
 
         main_ctrl = config.boards.get("main_control")
         if main_ctrl:
-            self._slot_pattern = _glob_to_regex(main_ctrl.dir_pattern)
+            self._slot_pattern = glob_to_regex(main_ctrl.dir_pattern)
 
         self._diag_file_patterns = [
-            _glob_to_regex(p) for p in config.diagnostic_files.patterns
+            glob_to_regex(p) for p in config.diagnostic_files.patterns
         ]
 
         self._filename_ts_regex = re.compile(config.diagnostic_files.filename_timestamp_regex)
@@ -129,11 +129,11 @@ class ConfigLoader:
         self._content_ts_regex = re.compile(config.log_content.timestamp_regex)
 
         self._private_dir_patterns = [
-            _glob_to_regex(p) for p in config.private_logs.dir_patterns
+            glob_to_regex(p) for p in config.private_logs.dir_patterns
         ]
 
         self._journal_file_patterns = [
-            _glob_to_regex(p) for p in config.private_logs.journal_files.patterns
+            glob_to_regex(p) for p in config.private_logs.journal_files.patterns
         ]
 
         self._journal_seq_regex = re.compile(
@@ -143,7 +143,8 @@ class ConfigLoader:
     def get_config(self) -> AppConfig:
         if self._config is None:
             self.load()
-        return self._config  # type: ignore[return-value]
+        assert self._config is not None, "ConfigLoader.load() failed"
+        return self._config
 
     @property
     def slot_pattern(self) -> re.Pattern | None:
@@ -233,7 +234,7 @@ class ConfigLoader:
         return False
 
     def extract_journal_sequence(self, filename: str) -> int:
-        """从 journal 文件名提取序号。0=当前日志(cpdt_journal.log)，N=历史(cpdt_journal.log.N.gz)。"""
+        """从 journal 文件名提取序号。0=当前日志，N=历史轮转。"""
         match = self.journal_seq_regex.match(filename)
         if not match:
             return 0
@@ -267,11 +268,7 @@ class ConfigLoader:
             try:
                 stamps.append(datetime.fromisoformat(ts_str))
             except ValueError:
-                # 兼容 Python < 3.11: 空格分隔需转 T 分隔
-                try:
-                    stamps.append(datetime.fromisoformat(ts_str.replace(" ", "T")))
-                except ValueError:
-                    continue
+                continue
         return stamps
 
     def is_compressed(self, name: str) -> bool:

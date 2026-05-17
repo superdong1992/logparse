@@ -3,12 +3,11 @@ from __future__ import annotations
 import gzip
 import logging
 import os
-import shutil
 import tarfile
 import zipfile
 from pathlib import Path
 
-from backend.config import ConfigLoader
+from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +16,35 @@ MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024       # 单文件最大解压后 500MB
 MAX_COMPRESSION_RATIO = 100                      # 压缩比上限（解压后/压缩前）
 MAX_RECURSIVE_PASSES = 10                        # 最大递归轮次
 
+DEFAULT_COMPRESSED_EXTENSIONS = [".gz", ".zip", ".tar.gz", ".tgz", ".tar"]
+
 
 class Decompressor:
-    """多层递归解压引擎。"""
+    """多层递归解压引擎。
 
-    def __init__(self, config_loader: ConfigLoader):
+    可传入 config_loader（向后兼容）或 compressed_extensions 列表。
+    """
+
+    def __init__(
+        self,
+        config_loader=None,
+        compressed_extensions: Iterable[str] | None = None,
+    ):
+        if compressed_extensions is not None:
+            self._compressed_extensions = list(compressed_extensions)
+        elif config_loader is not None:
+            self._compressed_extensions = config_loader.get_config().compressed_extensions
+        else:
+            self._compressed_extensions = DEFAULT_COMPRESSED_EXTENSIONS
         self.config = config_loader
+
+    def is_compressed(self, name: str) -> bool:
+        """检查文件名是否属于已知压缩格式。"""
+        name_lower = name.lower()
+        for ext in self._compressed_extensions:
+            if name_lower.endswith(ext):
+                return True
+        return False
 
     @staticmethod
     def _is_safe_path(member_name: str) -> bool:
@@ -103,9 +125,7 @@ class Decompressor:
             elif name_lower.endswith(".gz"):
                 self._extract_gz(source, dest_dir, extracted_files)
             else:
-                # 非压缩文件，直接复制
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, dest_dir / source.name)
+                logger.warning("未识别的文件类型，跳过: %s", source)
         except Exception as e:
             raise RuntimeError(f"解压失败 {source}: {e}") from e
 
@@ -121,14 +141,13 @@ class Decompressor:
                     continue
                 if not self._check_zip_bomb(compressed_size, info.file_size, info.filename):
                     continue
-            zf.extractall(dest_dir)
-            extracted_files.extend(
-                str(dest_dir / name) for name in zf.namelist()
-            )
+                zf.extract(info, dest_dir)
+                extracted_files.append(str(dest_dir / info.filename))
 
     def _extract_tar(self, source: Path, dest_dir: Path, extracted_files: list[str]) -> None:
         dest_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(source, "r:*") as tf:
+            safe_members = []
             for info in tf.getmembers():
                 if not self._is_safe_path(info.name):
                     logger.warning("路径穿越风险，跳过: %s", info.name)
@@ -138,9 +157,10 @@ class Decompressor:
                 if info.size > MAX_UNCOMPRESSED_SIZE:
                     logger.warning("文件过大，跳过: %s (%d bytes)", info.name, info.size)
                     continue
-            tf.extractall(dest_dir, members=[m for m in tf.getmembers() if self._is_safe_path(m.name)])
+                safe_members.append(info)
+            tf.extractall(dest_dir, members=safe_members)
             extracted_files.extend(
-                str(dest_dir / name) for name in tf.getnames()
+                str(dest_dir / m.name) for m in safe_members
             )
 
     def _extract_gz(self, source: Path, dest_dir: Path, extracted_files: list[str]) -> None:
@@ -154,6 +174,7 @@ class Decompressor:
         output_name = source.stem  # removes .gz
         output_path = dest_dir / output_name
         # 解压时限制输出大小
+        exceeded = False
         with gzip.open(source, "rb") as f_in:
             with open(output_path, "wb") as f_out:
                 written = 0
@@ -163,7 +184,11 @@ class Decompressor:
                         break
                     written += len(chunk)
                     if written > MAX_UNCOMPRESSED_SIZE:
-                        logger.warning("gzip 解压后超过大小上限，截断: %s", source)
+                        logger.warning("gzip 解压后超过大小上限，跳过: %s", source)
+                        exceeded = True
                         break
                     f_out.write(chunk)
-        extracted_files.append(str(output_path))
+        if exceeded:
+            output_path.unlink()
+        else:
+            extracted_files.append(str(output_path))

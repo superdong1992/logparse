@@ -12,17 +12,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动 Web 服务
-uvicorn backend.main:app --reload --port 8080
-
 # CLI 解析
-python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose]
+python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product <name>]
 python cli.py info <task_id>
 python cli.py list-slots <task_id>
 python cli.py query-diag <task_id> -s <slot_id>
-python cli.py aaa-slots <task_id>
-python cli.py aaa-lifecycles <task_id> -s <slot_id>
-python cli.py aaa-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc_name>-<pid>
+python cli.py mech-slots <task_id>
+python cli.py mech-lifecycles <task_id> -s <slot_id>
+python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc_name>-<pid>
 
 # 调试工具（无法联网时自助排查）
 python cli.py check-config [-c config.yaml]            # 检查配置有效性
@@ -39,7 +36,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **`check-config`**：检查所有正则可编译、glob 有效、模块配置完整，错误和警告分开
 - **`test-pattern`**：用配置正则测试实际日志行，显示提取字段、Stage1 预过滤结果、时间戳、主控关键字命中
 - **错误隔离**：每一步失败不终止全流程，继续执行并在最后汇总所有错误
-- **`--verbose`**：输出每步耗时、处理项数、AAA 诊断/journal 条数对比、同名进程多实例检测
+- **`--verbose`**：输出每步耗时、处理项数、机制模块 诊断/journal 条数对比、同名进程多实例检测
 - **`test-pattern`**：支持 `line_pattern` 和 `line_pattern2` 双正则 fallback 测试
 - **Windows 编码**：CLI 入口自动将 stdout/stderr 切换为 UTF-8，避免 GBK 编码下 Unicode 符号报错
 
@@ -49,14 +46,14 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 
 ```
 外层压缩包 → Decompressor(递归解压全部, recursive=True) → Scanner(发现diag/varlog slot+文件)
-→ Decompressor(解压内部.zip内容到_extracted子目录) → AaaParser(Stage1 大小写敏感预过滤→Stage2 正则提取)
-→ LogParser(提取全部时间戳+构建ActivePeriod) → Identifier(AAA优先 + 目录+gap兜底判定)
+→ Decompressor(解压内部.zip内容到_extracted子目录) → MechParser(Stage1 大小写敏感预过滤→Stage2 正则提取)
+→ LogParser(提取全部时间戳+构建ActivePeriod) → Identifier(机制模块优先 + 目录+gap兜底判定)
 → MetadataGenerator(JSON输出)
 ```
 
 关键设计决策：
 - **解压与扫描分离**：外层包递归解压全部内容到 `extracted/`，内部压缩包保留原样供 Scanner 收集元数据，之后再解压内容到 `_extracted` 子目录做解析。`extracted/` 是唯一可搜索的全部日志目录树
-- **AAA 优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界，周期目录名用 indicator 进程条目的时间戳
+- **机制模块 优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界，周期目录名用 indicator 进程条目的时间戳
 - **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。`_parse_one` 从**全部条目**（诊断+journal）中检测时区并归一化所有 naive timestamp
 - **journal 三种格式**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式（含同名进程 PID 后缀），双正则 fallback 保证兼容性
 
@@ -67,22 +64,29 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 | `backend/config.py` | YAML 配置加载，glob→regex 编译，时间戳提取（含时区），机制模块配置加载 |
 | `backend/decompressor.py` | .zip/.tar.gz/.gz 多层递归解压，`extract_all(recursive=)` 控制递归深度。含路径穿越、文件大小、压缩比等安全防护 |
 | `backend/scanner.py` | `scan_diag()` 扫描 `diag/slot_*/` 诊断日志; `scan_private()` 优先检测已解压 `varlog/` 目录，兜底解压 varlog.zip |
-| `backend/aaa_parser.py` | 遍历启用的机制模块，Stage1 大小写敏感预过滤→Stage2 双正则 fallback，板卡重启层级（PID变化+序号回绕），丢号检测，条数校验，同名进程检测，三层落盘 |
+| `backend/mech_parser.py` | 遍历启用的机制模块，Stage1 大小写敏感预过滤→Stage2 双正则 fallback，板卡重启层级（PID变化+序号回绕），丢号检测，条数校验，同名进程检测，三层落盘 |
 | `backend/log_parser.py` | 提取日志内容全部时间戳，按 gap 阈值构建 ActivePeriod |
-| `backend/identifier.py` | 兜底判定：有 ActivePeriod→ACTIVE，有日志无时段→STANDBY，无日志→UNKNOWN；倒换检测跳过重叠时段 |
-| `backend/metadata.py` | 生成 `metadata.json`（含诊断、私有、全部模块 AAA 结果） |
-| `backend/main.py` | FastAPI 应用，上传/状态/元数据/AAA API，静态文件挂载前端 |
-| `cli.py` | Click CLI：parse/info/list-slots/query-diag/aaa-slots/aaa-lifecycles/aaa-logs |
+| `backend/identifier.py` | 兜底判定：有 ActivePeriod→ACTIVE，有日志无时段→STANDBY，无日志→UNKNOWN |
+| `backend/metadata.py` | 生成 `metadata.json`（含诊断、私有、全部模块 机制模块 结果） |
+| `backend/utils.py` | 纯函数工具：glob_to_regex、时间戳提取、文件读取等，插件和核心框架共用 |
+| `backend/pipeline.py` | Pipeline 类：产品无关的通用管道编排器，按产品名加载插件对 |
+| `backend/plugins/base.py` | 两个 ABC：DirectoryDiscoveryPlugin、LogParserPlugin |
+| `backend/plugins/loader.py` | 动态加载插件：instantiate_plugin(class_path, base, config) |
+| `backend/plugins/default/` | 默认产品插件（待实现：ScannerPlugin、ParserPlugin），将迁移当前 Scanner/MechParser/LogParser/Identifier 逻辑 |
+| `cli.py` | Click CLI：parse/info/list-slots/query-diag/mech-slots/mech-lifecycles/mech-logs |
+
+### ⚠ 前端和 Web API 已移除
+
+前端目录（`frontend/`）和 Web API（`backend/main.py`）已删除，后续统一实现。当前仅保留 CLI 入口。
 
 ### 核心模型 (`backend/models.py`)
 
-- `SlotInfo` — 诊断日志槽位，含 `diagnostic_logs`、`private_logs`、`active_periods`、`role`
+- `SlotInfo` — 诊断日志槽位，含 `diagnostic_logs`、`active_periods`、`role`、`board_type`
 - `LogEntry` — 单个日志文件，含 `dump_time`(文件名转储时间)、`content_timestamps`(内容时间戳)
 - `ActivePeriod` — 连续主控时段段 (start/end)
-- `SwitchoverEvent` — 倒换事件 (from_slot/to_slot/time/evidence)
-- `PrivateSlotInfo` + `JournalLogEntry` — 私有日志槽位和 journal 文件元数据
-- `AaaResult` / `AaaSlotOutput` / `AaaBoardCycle` / `AaaProcessLifecycle` / `AaaLogEntry` — AAA 模块输出结构，进程按 `(process_name, pid, cpu_id)` 分组
-- `ParseResult` — 顶层解析结果，含 `diagnostic_slots`、`private_slots`、`switchover_timeline`、`aaa_results`（全部模块列表）
+- `PrivateSlotInfo` + `JournalLogFile` — 私有日志槽位和 journal 文件元数据
+- `MechResult` / `MechSlotOutput` / `MechBoardCycle` / `MechProcessLifecycle` / `MechLogEntry` — 机制模块 模块输出结构，进程按 `(process_name, pid, cpu_id)` 分组
+- `ParseResult` — 顶层解析结果，含 `diagnostic_slots`、`private_slots`、`mech_results`（全部模块列表）
 
 ### 日志包结构
 
@@ -97,8 +101,8 @@ diagnostic_information_xxx.zip     ← 外层包
     ├── slot_1/
     │   └── varlog.zip             ← 内部含 varlog/ 子目录
     │       └── varlog/
-    │           ├── cpdt_journal.log
-    │           └── cpdt_journal.log.1.gz
+    │           ├── journal.log
+    │           └── journal.log.1.gz
     └── slot_1_cpu_0/              ← CPU 子卡
         └── varlog.zip
 ```
@@ -108,10 +112,10 @@ diagnostic_information_xxx.zip     ← 外层包
 1. **优先**：`mechanism_modules.module1` 配置的 `active_master_keyword`（正则）命中 Context → Slot 为主控
 2. **兜底**：Identifier 通过诊断日志所在目录 + 日志内容时间戳 gap 推断
 
-### AAA 日志输出结构
+### 机制模块 日志输出结构
 
 ```
-output/{task_id}/aaa/{module_name}/
+output/{task_id}/mech_modules/{module_name}/
 ├── slot_1/
 │   ├── 20260430T103707-20260430T113708/    ← 周期起止时间
 │   │   ├── SERVICE-12345.log               ← 板卡级进程（cpu_id=None）直接放周期下
@@ -180,3 +184,34 @@ slot_1_cpu_2/    ← slot_1 的 2 号 CPU 子卡
 - `_build_cycles` 按 `(slot, cpu_key)` 分组，`cpu_key = cpu_id or ""`
 - `cpu_key = ""` 为板卡本身，`cpu_key = "1"/"2"` 为 CPU 子卡
 - journal 条目的 `cpu_id` 直接从 `PrivateSlotInfo.cpu_id` 取值（None/None/"1"/"2"），不设默认 "0"
+
+### 插件化架构（建设中，Phase 1 已完成）
+
+目标：支持多产品/多布局的日志包，目录发现和日志解析可自由组合。
+
+```
+Source Archive
+  → [Decompressor]          通用
+  → [DirectoryDiscovery]     产品插件：找到 slot、文件
+  → [Inner Extraction]       通用：解压内层压缩包
+  → [LogParser]              产品插件：解析内容、构建周期、判定角色
+  → [MetadataGenerator]      通用：输出 metadata.json
+```
+
+插件注册方式：YAML 中声明 `plugin: "module.path.ClassName"`，runtime 动态加载。
+
+### 遗留代码
+
+以下模块保留向后兼容，待插件系统完成后废弃：
+- `backend/scanner.py` / `mech_parser.py` / `log_parser.py` / `identifier.py` — 旧管道，cli.py 默认仍走此路径
+- `backend/config.py` (ConfigLoader) — 旧配置加载，旧管道依赖
+
+### 最近变更摘要
+
+| 日期 | 变更 |
+|------|------|
+| 2026-05-17 | 修复 5 Critical + 8 Important + 7 Minor 安全/质量问题 |
+| 2026-05-17 | 全仓命名清理：AAA→Mech、docue→EXAMPLE、cpdt→journal 等 |
+| 2026-05-17 | 移除倒换检测（SwitchoverEvent），职责迁移到产品 skill |
+| 2026-05-17 | 移除前端（frontend/）和 Web API（backend/main.py） |
+| 2026-05-17 | 创建插件框架：utils.py、pipeline.py、plugins/、decompressor 可配置初始化 |

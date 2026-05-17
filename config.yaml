@@ -7,7 +7,7 @@ output:
 
 # 包结构定义
 package:
-  outer_name_prefix: "diagnostic_information"
+  outer_name_prefix: ""
   diagnostic_dir: "diag"
   private_dir: "varlog"
 
@@ -45,17 +45,17 @@ private_logs:
   # journal 日志文件匹配
   journal_files:
     patterns:
-      - "cpdt_journal.log"
-      - "cpdt_journal.log.*.gz"
+      - "journal.log"
+      - "journal.log.*.gz"
     # 序号提取正则（数字越大越旧，0 表示当前文件）
-    sequence_regex: "cpdt_journal\\.log(?:\\.(\\d+))?(?:\\.gz)?"
+    sequence_regex: "journal\\.log(?:\\.(\\d+))?(?:\\.gz)?"
 
 
 # 机制模块日志预处理
 mechanism_modules:
   module1:                              # 配置标识（可任意命名）
     # 日志中实际出现的模块名（全大写），用于 Stage 1 字符串预过滤
-    module_name: "DOCUE"
+    module_name: "EXAMPLE"
     enabled: true
     # 诊断日志匹配正则（命名组：Service/Slot/CPU-Id/ProcessName/Context）
     diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
@@ -73,7 +73,7 @@ mechanism_modules:
       line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
       # 格式2/3：无元数据块，进程名与PID从标签提取，PID可选
       line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
-      identifying_keyword: "docue"        # Context 中包含此关键字才确认是模块日志
+      identifying_keyword: ""        # Context 中包含此关键字才确认是模块日志
     # 序号提取正则
     sequence_pattern: 'No\[(\d+)\]'
 
