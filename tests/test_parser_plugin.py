@@ -29,21 +29,21 @@ def plugin(sample_config):
 
 class TestExtractContentTimestamps:
     def test_with_tz(self, plugin):
-        stamps = plugin._extract_content_timestamps(
+        stamps = plugin._ts_extractor.extract_from_text(
             "2026-01-03T00:01:00.100000+08:00 EXAMPLE msg"
         )
         assert len(stamps) == 1
         assert stamps[0].tzinfo is not None
 
     def test_without_tz(self, plugin):
-        stamps = plugin._extract_content_timestamps(
+        stamps = plugin._ts_extractor.extract_from_text(
             "2026-01-03T00:01:00 EXAMPLE msg"
         )
         assert len(stamps) == 1
         assert stamps[0].tzinfo is None
 
     def test_empty(self, plugin):
-        assert plugin._extract_content_timestamps("no timestamp here") == []
+        assert plugin._ts_extractor.extract_from_text("no timestamp here") == []
 
 
 class TestBuildActivePeriods:

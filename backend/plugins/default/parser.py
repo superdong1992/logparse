@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gzip
 import logging
 import re
 from collections import defaultdict
@@ -23,6 +22,7 @@ from backend.models import (
     PrivateSlotInfo,
     SlotInfo,
 )
+from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.plugins.base import LogParserPlugin
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ class ParserPlugin(LogParserPlugin):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
         self._compile_patterns()
+        self._ts_extractor = TimestampExtractor(self._ts_regex)
 
     def _compile_patterns(self) -> None:
         self._ts_regex = re.compile(
@@ -81,40 +82,7 @@ class ParserPlugin(LogParserPlugin):
     def _extract_all_timestamps(self, slots: list[SlotInfo]) -> None:
         for slot in slots:
             for entry in slot.diagnostic_logs:
-                entry.content_timestamps = self._extract_ts_from_entry(entry)
-
-    def _extract_ts_from_entry(self, entry: LogEntry) -> list[datetime]:
-        stamps: list[datetime] = []
-        if entry.extracted_path:
-            ext_dir = Path(entry.extracted_path)
-            if ext_dir.is_dir():
-                for f in sorted(ext_dir.rglob("*")):
-                    if f.is_file():
-                        stamps.extend(self._extract_ts_from_file(f))
-                return sorted(stamps)
-        file_path = Path(entry.path)
-        if file_path.is_file():
-            return sorted(self._extract_ts_from_file(file_path))
-        return stamps
-
-    def _extract_ts_from_file(self, file_path: Path) -> list[datetime]:
-        text = self._read_file(file_path)
-        if not text:
-            return []
-        return self._extract_content_timestamps(text)
-
-    def _extract_content_timestamps(self, text: str) -> list[datetime]:
-        stamps: list[datetime] = []
-        for m in self._ts_regex.finditer(text):
-            ts_str = m.group(1)
-            tz_str = m.group(2)
-            if tz_str:
-                ts_str = ts_str + tz_str
-            try:
-                stamps.append(datetime.fromisoformat(ts_str))
-            except ValueError:
-                continue
-        return stamps
+                entry.content_timestamps = self._ts_extractor.extract_from_entry(entry)
 
     # ── ActivePeriod 构建 ─────────────────────────────────
 
@@ -242,7 +210,7 @@ class ParserPlugin(LogParserPlugin):
         mod_upper: str,
     ) -> list[MechLogEntry]:
         entries: list[MechLogEntry] = []
-        text = self._read_entry(log_entry)
+        text = self._read_log_entry(log_entry)
         if not text:
             return entries
 
@@ -296,7 +264,7 @@ class ParserPlugin(LogParserPlugin):
         entries: list[MechLogEntry] = []
 
         for jl in ps.journal_logs:
-            text = self._read_file(Path(jl.path))
+            text = self._ts_extractor._read_file(Path(jl.path))
             if not text:
                 continue
 
@@ -523,47 +491,27 @@ class ParserPlugin(LogParserPlugin):
     # ── 时间戳工具 ────────────────────────────────────────
 
     def _extract_first_ts(self, line: str) -> datetime | None:
-        stamps = self._extract_content_timestamps(line)
+        stamps = self._ts_extractor.extract_from_text(line)
         return stamps[0] if stamps else None
 
     # ── 文件读取 ──────────────────────────────────────────
 
-    def _read_entry(self, log_entry: LogEntry) -> str:
+    def _read_log_entry(self, log_entry: LogEntry) -> str:
         if log_entry.extracted_path:
             ext_dir = Path(log_entry.extracted_path)
             if ext_dir.is_dir():
                 parts: list[str] = []
                 for f in sorted(ext_dir.rglob("*")):
                     if f.is_file():
-                        text = self._read_file(f)
+                        text = self._ts_extractor._read_file(f)
                         if text:
                             parts.append(text)
                 return "\n".join(parts)
         # 未压缩文件：直接读取
         file_path = Path(log_entry.path)
         if file_path.is_file():
-            return self._read_file(file_path)
+            return self._ts_extractor._read_file(file_path)
         return ""
-
-    @staticmethod
-    def _read_file(file_path: Path) -> str:
-        if not file_path.exists():
-            return ""
-        try:
-            if file_path.suffix == ".gz":
-                try:
-                    with gzip.open(file_path, "rt", encoding="utf-8", errors="replace") as fh:
-                        return fh.read()
-                except Exception:
-                    logger.warning("gzip 解压失败，跳过: %s", file_path)
-                    return ""
-            return file_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            try:
-                return file_path.read_text(encoding="gbk", errors="replace")
-            except Exception:
-                logger.warning("无法读取文件 (UTF-8/GBK 均失败): %s", file_path)
-                return ""
 
     # ── 角色判定 ──────────────────────────────────────────
 
