@@ -140,13 +140,6 @@ class Pipeline:
 
         return result
 
-        # Step 6: 元数据
-        if self.pipeline_config.get("generate_metadata", True):
-            _safe("元数据生成",
-                  lambda: self.metadata_gen.generate(result, output_dir / task_id))
-
-        return result
-
     def _load_plugins(
         self, product: str,
     ) -> tuple[DirectoryDiscoveryPlugin, LogParserPlugin]:

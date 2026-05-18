@@ -20,7 +20,7 @@ class MetadataGenerator:
             "created_at": result.created_at.isoformat(),
             "diagnostic_slots": [self._slot_to_dict(s) for s in result.diagnostic_slots],
             "private_slots": [self._private_slot_to_dict(s) for s in result.private_slots],
-            "aaa_results": [self._mech_to_dict(a) for a in result.mech_results] if result.mech_results else [],
+            "mech_results": [self._mech_to_dict(a) for a in result.mech_results] if result.mech_results else [],
             "errors": result.errors,
         }
 
