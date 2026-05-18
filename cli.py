@@ -32,46 +32,12 @@ from backend.identifier import Identifier
 from backend.log_parser import LogParser
 from backend.metadata import MetadataGenerator
 from backend.models import ParseResult
+from backend.pipeline import Pipeline
 from backend.scanner import Scanner
 
 
-def _extract_inner_contents(slots, decompressor):
-    """解压每个槽位下的诊断日志压缩包内容到 extracted/ 内的 _extracted 子目录。"""
-    for slot in slots:
-        for entry in slot.diagnostic_logs:
-            if not entry.compressed:
-                continue
-            src = Path(entry.path)
-            if not src.exists():
-                continue
-            dest = src.parent / f"{entry.name}_extracted"
-            try:
-                decompressor.extract_all(src, dest)
-                entry.extracted_path = str(dest)
-            except Exception as e:
-                logging.getLogger(__name__).warning("解压诊断日志内容失败 %s: %s", src, e)
-
-
-@click.group()
-@click.option("--config", "-c", default="config.yaml", help="配置文件路径")
-@click.pass_context
-def cli(ctx, config):
-    ctx.ensure_object(dict)
-    ctx.obj["config_path"] = config
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-@cli.command()
-@click.argument("package_path", type=click.Path(exists=True))
-@click.option("--output", "-o", default="./output", help="输出目录")
-@click.option("--verbose", "-v", is_flag=True, help="详细输出")
-@click.pass_context
-def parse(ctx, package_path, output, verbose):
-    """解析日志压缩包。"""
-    config_path = ctx.obj["config_path"]
+def _parse_legacy(source: Path, output_dir: Path, config_path: str, verbose: bool) -> ParseResult:
+    """旧管道：无 --product 时的向后兼容路径。"""
     config_loader = ConfigLoader(config_path)
     config_loader.load()
 
@@ -83,10 +49,7 @@ def parse(ctx, package_path, output, verbose):
     mech_parser.verbose = verbose
     metadata_gen = MetadataGenerator()
 
-    source = Path(package_path)
-    output_dir = Path(output)
     task_id = source.stem
-
     extract_dir = output_dir / task_id / "extracted"
     extract_dir.mkdir(parents=True, exist_ok=True)
 
@@ -130,7 +93,6 @@ def parse(ctx, package_path, output, verbose):
     _safe_step("[4/6] 解压诊断日志内容",
           lambda: _extract_inner_contents(result.diagnostic_slots, decompressor))
 
-    # 机制模块日志解析（优先）
     mech_results = _safe_step("[5/6] 机制模块解析",
                          lambda: mech_parser.parse_all(result))
     if mech_results:
@@ -145,7 +107,6 @@ def parse(ctx, package_path, output, verbose):
                 click.echo(f"    [{mech_result.module_name}] 诊断:{diag} + journal:{journal_count} = {diag+journal_count} → 输出:{total}{match_mark} → {mech_dir}")
         result.mech_results = list(mech_results.values())
 
-    # 兜底
     _safe_step("[6/6] 时间戳提取+兜底识别",
           lambda: (log_parser.build_all_periods(result.diagnostic_slots), identifier.analyze(result)))
 
@@ -160,7 +121,11 @@ def parse(ctx, package_path, output, verbose):
         for e in errors:
             click.echo(f"  - {e}")
 
-    # 输出摘要
+    return result
+
+
+def _print_summary(result: ParseResult, output_dir: Path) -> None:
+    """打印解析结果摘要 + 落盘 result.json。"""
     click.echo(f"\n=== 解析结果 ===")
     click.echo(f"压缩包: {result.package_name}")
     click.echo(f"诊断日志槽位数: {len(result.diagnostic_slots)}")
@@ -207,13 +172,73 @@ def parse(ctx, package_path, output, verbose):
                         missing = f" 丢号:{p.missing_sequences}" if p.missing_sequences else ""
                         click.echo(f"      {p.process_name}-{p.pid}: {p.total_count} 条{missing}")
 
-    json_output = output_dir / task_id / "result.json"
+    json_output = output_dir / result.task_id / "result.json"
     json_output.parent.mkdir(parents=True, exist_ok=True)
     json_output.write_text(
         json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2, default=str),
         encoding="utf-8",
     )
     click.echo(f"\n完整结果: {json_output}")
+
+
+def _extract_inner_contents(slots, decompressor):
+    """解压每个槽位下的诊断日志压缩包内容到 extracted/ 内的 _extracted 子目录。"""
+    for slot in slots:
+        for entry in slot.diagnostic_logs:
+            if not entry.compressed:
+                continue
+            src = Path(entry.path)
+            if not src.exists():
+                continue
+            dest = src.parent / f"{entry.name}_extracted"
+            try:
+                decompressor.extract_all(src, dest)
+                entry.extracted_path = str(dest)
+            except Exception as e:
+                logging.getLogger(__name__).warning("解压诊断日志内容失败 %s: %s", src, e)
+
+
+@click.group()
+@click.option("--config", "-c", default="config.yaml", help="配置文件路径")
+@click.pass_context
+def cli(ctx, config):
+    ctx.ensure_object(dict)
+    ctx.obj["config_path"] = config
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+@cli.command()
+@click.argument("package_path", type=click.Path(exists=True))
+@click.option("--output", "-o", default="./output", help="输出目录")
+@click.option("--verbose", "-v", is_flag=True, help="详细输出")
+@click.option("--product", "-p", default=None, help="产品名（使用新管道，如 default）")
+@click.pass_context
+def parse(ctx, package_path, output, verbose, product):
+    """解析日志压缩包。"""
+    config_path = ctx.obj["config_path"]
+    source = Path(package_path)
+    output_dir = Path(output)
+
+    # 新管道（--product 指定时）
+    if product:
+        raw_config = {}
+        if Path(config_path).exists():
+            import yaml
+            raw_config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        pipeline = Pipeline(raw_config)
+        result = pipeline.run(source, output_dir, product=product, verbose=verbose)
+        if result.errors:
+            click.echo(f"\n⚠ {len(result.errors)} 个错误:")
+            for e in result.errors:
+                click.echo(f"  - {e}")
+    else:
+        result = _parse_legacy(source, output_dir, config_path, verbose)
+
+    # 输出摘要（新老管道共用）
+    _print_summary(result, output_dir)
 
 
 @cli.command()

@@ -6,6 +6,8 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import warnings
+
 from backend.config import ConfigLoader
 from backend.models import (
     MechBoardCycle,
@@ -24,6 +26,10 @@ class MechParser:
     """机制模块日志解析器。遍历所有启用的模块配置，分别解析。"""
 
     def __init__(self, config_loader: ConfigLoader):
+        warnings.warn(
+            "MechParser is deprecated, use Pipeline with ParserPlugin instead",
+            DeprecationWarning, stacklevel=2,
+        )
         self.config = config_loader
         self.verbose = False
         self.debug_filter = ""  # 进程名子串过滤，空=全量

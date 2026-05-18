@@ -1,8 +1,9 @@
-""通用日志解析管道：编排产品无关的步骤，产品特定逻辑由插件处理。"""
+"""通用日志解析管道：编排产品无关的步骤，产品特定逻辑由插件处理。"""
 
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,7 @@ class Pipeline:
         output_dir: Path,
         product: str = "default",
         task_id: str | None = None,
+        verbose: bool = False,
     ) -> ParseResult:
         """运行完整解析管道。"""
         task_id = task_id or source.stem
@@ -54,23 +56,44 @@ class Pipeline:
         errors: list[str] = []
 
         def _safe(message: str, fn):
+            t0 = time.time()
             try:
-                return fn()
+                r = fn()
             except Exception as e:
                 errors.append(f"{message}: {e}")
                 logger.warning("%s: %s", message, e)
                 return None
+            elapsed = time.time() - t0
+            if verbose:
+                extra = ""
+                if isinstance(r, list):
+                    extra = f" ({len(r)} 项, {elapsed:.1f}s)"
+                elif isinstance(r, dict):
+                    extra = f" ({len(r)} 模块, {elapsed:.1f}s)"
+                elif isinstance(r, int):
+                    extra = f" ({r} 文件, {elapsed:.1f}s)"
+                else:
+                    extra = f" ({elapsed:.1f}s)"
+                print(f"  {message} [OK]{extra}")
+            return r
 
-        # Step 1: 解压
-        _safe("解压外层包",
+        # Step 1: 解压（仅外层，内层压缩包留给 Step 3）
+        extracted = _safe(f"[1/6] 解压 {source.name}",
               lambda: self.decompressor.extract_all(
-                  source, extract_dir, recursive=self.pipeline_config.get("recursive", True),
+                  source, extract_dir, recursive=self.pipeline_config.get("recursive", False),
               ))
+        if verbose and extracted is not None:
+            print(f"    解压文件数: {extracted}")
 
         # Step 2: 目录发现
         discovery, log_parser = self._load_plugins(product)
-        diag_slots, private_slots = _safe("目录发现",
+        diag_slots, private_slots = _safe("[2/6] 扫描 diag/",
                                            lambda: discovery.discover(extract_dir)) or ([], [])
+        if verbose:
+            diag_file_count = sum(len(s.diagnostic_logs) for s in diag_slots)
+            journal_file_count = sum(len(ps.journal_logs) for ps in private_slots)
+            print(f"    诊断日志槽位: {len(diag_slots)} ({diag_file_count} 文件)")
+            print(f"    私有日志槽位: {len(private_slots)} ({journal_file_count} 文件)")
 
         result = ParseResult(
             task_id=task_id,
@@ -83,16 +106,39 @@ class Pipeline:
 
         # Step 3: 内层解压
         if self.pipeline_config.get("inner_extraction", True):
-            _safe("内层解压",
+            _safe("[3/6] 解压诊断日志内容",
                   lambda: self._extract_inner_contents(result, output_dir / task_id))
 
         # Step 4: 日志解析
-        _safe("日志解析", lambda: log_parser.parse(result))
+        _safe("[4/6] 日志解析 (时间戳+周期+机制模块+角色)",
+              lambda: log_parser.parse(result))
+        if verbose:
+            ts_total = sum(len(e.content_timestamps) for s in result.diagnostic_slots for e in s.diagnostic_logs)
+            print(f"    提取时间戳: {ts_total} 条")
+            for slot in result.diagnostic_slots:
+                periods = len(slot.active_periods)
+                if periods:
+                    print(f"    {slot.name}: {periods} 个 ActivePeriod, 角色={slot.role.value}")
 
         # Step 5: 落盘
         for mech_result in result.mech_results:
-            _safe(f"落盘 {mech_result.module_name}",
+            _safe(f"[5/6] 落盘 {mech_result.module_name}",
                   lambda mr=mech_result: log_parser.write_output(mr, output_dir / task_id))
+            if verbose:
+                total = sum(cp.total_count for s in mech_result.slots for c in s.board_cycles for cp in c.processes)
+                diag = mech_result.diag_entry_count
+                journal_count = mech_result.journal_entry_count
+                match_mark = "" if diag + journal_count == total else " [!条数不一致]"
+                print(f"    [{mech_result.module_name}] 诊断:{diag} + journal:{journal_count} = {diag + journal_count} -> 输出:{total}{match_mark}")
+
+        # Step 6: 元数据
+        if self.pipeline_config.get("generate_metadata", True):
+            meta_path = _safe("[6/6] 元数据生成",
+                  lambda: self.metadata_gen.generate(result, output_dir / task_id))
+            if verbose and meta_path:
+                print(f"    元数据: {meta_path}")
+
+        return result
 
         # Step 6: 元数据
         if self.pipeline_config.get("generate_metadata", True):

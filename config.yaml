@@ -1,5 +1,56 @@
 # 日志解析维护工具 - 配置
 
+# ── 管道配置 ──────────────────────────────────────────
+pipeline:
+  recursive_extraction: true
+  inner_extraction: true
+  generate_metadata: true
+  output_base_dir: "./output"
+
+# ── 产品插件注册 ──────────────────────────────────────
+products:
+  default:
+    discovery:
+      plugin: "backend.plugins.default.scanner.ScannerPlugin"
+      config:
+        diagnostic_dir: "diag"
+        private_dir: "varlog"
+        slot_dir_pattern: "slot_*"
+        diag_file_patterns:
+          - "diag.zip"
+          - "diaglog_*.log.zip"
+          - "diaglog_*.zip"
+        filename_timestamp_regex: ".*_(\\d{14})\\..*"
+        private_dir_patterns:
+          - "slot_*"
+          - "slot_*_cpu_*"
+        archive_name: "varlog.zip"
+        journal_file_patterns:
+          - "journal.log"
+          - "journal.log.*.gz"
+        journal_sequence_regex: "journal\\.log(?:\\.(\\d+))?(?:\\.gz)?"
+        compressed_extensions: [".gz", ".zip", ".tar.gz", ".tgz", ".tar"]
+    log_parser:
+      plugin: "backend.plugins.default.parser.ParserPlugin"
+      config:
+        timestamp_regex: "(\\d{4}-\\d{1,2}-\\d{1,2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)([+-]\\d{2}:\\d{2})?"
+        active_period_gap_threshold: 300
+        mechanism_modules:
+          module1:
+            module_name: "EXAMPLE"
+            enabled: true
+            diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
+            active_master_keyword: ""
+            board_restart_indicator: ""
+            process_name_mapping: {}
+            journal:
+              line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
+              line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
+              identifying_keyword: "EXAMPLE"
+            sequence_pattern: 'No\[(\d+)\]'
+
+# ── 旧版扁平配置（保留向后兼容） ──────────────────────────
+
 output:
   base_dir: "./output"        # 解压输出根目录
   keep_original: true         # 保留原始目录结构
@@ -73,7 +124,7 @@ mechanism_modules:
       line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
       # 格式2/3：无元数据块，进程名与PID从标签提取，PID可选
       line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
-      identifying_keyword: ""        # Context 中包含此关键字才确认是模块日志
+      identifying_keyword: "EXAMPLE"  # Context 中包含此关键字才确认是模块日志
     # 序号提取正则
     sequence_pattern: 'No\[(\d+)\]'
 

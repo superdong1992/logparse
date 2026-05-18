@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,10 @@ class Scanner:
     """
 
     def __init__(self, config_loader: ConfigLoader, decompressor: Decompressor | None = None):
+        warnings.warn(
+            "Scanner is deprecated, use Pipeline with ScannerPlugin instead",
+            DeprecationWarning, stacklevel=2,
+        )
         self.config = config_loader
         self.decompressor = decompressor
 

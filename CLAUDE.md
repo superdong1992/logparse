@@ -185,7 +185,7 @@ slot_1_cpu_2/    ← slot_1 的 2 号 CPU 子卡
 - `cpu_key = ""` 为板卡本身，`cpu_key = "1"/"2"` 为 CPU 子卡
 - journal 条目的 `cpu_id` 直接从 `PrivateSlotInfo.cpu_id` 取值（None/None/"1"/"2"），不设默认 "0"
 
-### 插件化架构（建设中，Phase 1 已完成）
+### 插件化架构（Phase 2+3 已完成）
 
 目标：支持多产品/多布局的日志包，目录发现和日志解析可自由组合。
 
@@ -200,6 +200,18 @@ Source Archive
 
 插件注册方式：YAML 中声明 `plugin: "module.path.ClassName"`，runtime 动态加载。
 
+**当前状态**：默认插件（ScannerPlugin + ParserPlugin）已完成，`--product default` 可走新管道。旧管道（`--product` 不指定时）保留向后兼容。
+
+### 新管道 vs 旧管道
+
+| 方面 | 旧管道 (cli.py _parse_legacy) | 新管道 (Pipeline.run()) |
+|------|-------------------------------|------------------------|
+| Step 1 解压 | recursive=True（内层 zip 被误删） | recursive=False（正确） |
+| 配置 | ConfigLoader (Pydantic 模型) | 纯 dict（产品段） |
+| 扫描 | Scanner（硬编码） | DirectoryDiscoveryPlugin（可替换） |
+| 解析 | MechParser+LogParser+Identifier（分散） | LogParserPlugin（统一） |
+| 插件 | 不支持 | YAML+Python 动态加载 |
+
 ### 遗留代码
 
 以下模块保留向后兼容，待插件系统完成后废弃：
@@ -210,6 +222,10 @@ Source Archive
 
 | 日期 | 变更 |
 |------|------|
+| 2026-05-18 | **Phase 2+3 完成**：ScannerPlugin + ParserPlugin 创建，config.yaml products 段，cli.py --product 标志 |
+| 2026-05-18 | 修复 encoding 问题：base.py/loader.py/utils.py/pipeline.py 的 GBK→UTF-8 |
+| 2026-05-18 | 修复 decompressor.py:101 self.config.is_compressed → self.is_compressed（config=None 时 NPE） |
+| 2026-05-18 | 修复 Pipeline Step 1 recursive=False（防止内层 zip 提前解压删除） |
 | 2026-05-17 | 修复 5 Critical + 8 Important + 7 Minor 安全/质量问题 |
 | 2026-05-17 | 全仓命名清理：AAA→Mech、docue→EXAMPLE、cpdt→journal 等 |
 | 2026-05-17 | 移除倒换检测（SwitchoverEvent），职责迁移到产品 skill |

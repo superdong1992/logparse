@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +12,10 @@ class LogParser:
     """日志内容解析器：提取时间戳，构建 ActivePeriod。"""
 
     def __init__(self, config_loader: ConfigLoader):
+        warnings.warn(
+            "LogParser is deprecated, use Pipeline with ParserPlugin instead",
+            DeprecationWarning, stacklevel=2,
+        )
         self.config = config_loader
 
     def extract_timestamps(self, entry: LogEntry) -> list[datetime]:

@@ -49,15 +49,14 @@ class Decompressor:
     @staticmethod
     def _is_safe_path(member_name: str) -> bool:
         """检查压缩包内文件路径是否安全（无路径穿越）。"""
-        # 拒绝绝对路径
+        # 拒绝绝对路径（含跨平台）
         if os.path.isabs(member_name):
             return False
+        normed = member_name.replace("\\", "/")
+        if normed.startswith("/"):
+            return False
         # 拒绝 .. 路径穿越
-        parts = member_name.replace("\\", "/").split("/")
-        for p in parts:
-            if p == "..":
-                return False
-        return True
+        return ".." not in normed.split("/")
 
     @staticmethod
     def _check_zip_bomb(compressed_size: int, uncompressed_size: int, name: str) -> bool:
@@ -98,7 +97,7 @@ class Decompressor:
             changed = False
             for root, dirs, files in os.walk(dest_dir):
                 for f in files:
-                    if self.config.is_compressed(f):
+                    if self.is_compressed(f):
                         file_path = Path(root) / f
                         relative_parent = Path(root).relative_to(dest_dir)
                         target_dir = dest_dir / relative_parent / f"{f}_extracted"

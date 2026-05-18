@@ -1,4 +1,4 @@
-""插件动态加载器。"""
+"""插件动态加载器。"""
 
 from __future__ import annotations
 

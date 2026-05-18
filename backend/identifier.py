@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 from backend.models import (
     BoardRole,
     ParseResult,
@@ -10,6 +12,12 @@ class Identifier:
     """
     兜底主控判定：根据 ActivePeriod 和诊断日志存在性判定各 slot 的角色。
     """
+
+    def __init__(self):
+        warnings.warn(
+            "Identifier is deprecated, use ParserPlugin instead",
+            DeprecationWarning, stacklevel=2,
+        )
 
     def analyze(self, result: ParseResult) -> ParseResult:
         self._determine_roles(result)

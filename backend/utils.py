@@ -1,4 +1,4 @@
-""纯函数工具，供插件和核心框架复用，不依赖 ConfigLoader。"""
+"""纯函数工具，供插件和核心框架复用，不依赖 ConfigLoader。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def glob_to_regex(pattern: str) -> re.Pattern:
-    """将 glob 模式编译为正则。* → .*  ? → .  大小写不敏感。"""
+    """将 glob 模式编译为正则。* -> .*  ? -> .  大小写不敏感。"""
     regex = re.escape(pattern)
     regex = regex.replace(r"\*", ".*")
     regex = regex.replace(r"\?", ".")
@@ -16,15 +16,15 @@ def glob_to_regex(pattern: str) -> re.Pattern:
 
 
 def extract_slot_id(dir_name: str) -> str:
-    """从目录名提取 slot ID。'slot_1' → '1'。"""
+    """从目录名提取 slot ID。'slot_1' -> '1'。"""
     match = re.match(r"slot_(.+)", dir_name, re.IGNORECASE)
     return match.group(1) if match else dir_name
 
 
 def extract_private_slot_info(dir_name: str) -> tuple[str, str | None]:
     """从 varlog 目录名提取 (slot_id, cpu_id)。
-    'slot_1' → ('1', None)
-    'slot_1_cpu_2' → ('1', '2')
+    'slot_1' -> ('1', None)
+    'slot_1_cpu_2' -> ('1', '2')
     """
     match = re.match(r"slot_(.+?)_cpu_(.+)", dir_name, re.IGNORECASE)
     if match:
