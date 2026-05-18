@@ -17,111 +17,16 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 import sys
-import time
 from pathlib import Path
 
 import click
 
-from backend.mech_parser import MechParser
 from backend.config import BoardConfig, ConfigLoader, glob_to_regex
-from backend.decompressor import Decompressor
-from backend.identifier import Identifier
-from backend.log_parser import LogParser
-from backend.metadata import MetadataGenerator
 from backend.models import ParseResult
 from backend.pipeline import Pipeline
-from backend.scanner import Scanner
 
-
-def _parse_legacy(source: Path, output_dir: Path, config_path: str, verbose: bool) -> ParseResult:
-    """旧管道：无 --product 时的向后兼容路径。"""
-    config_loader = ConfigLoader(config_path)
-    config_loader.load()
-
-    decompressor = Decompressor(config_loader)
-    scanner = Scanner(config_loader, decompressor)
-    log_parser = LogParser(config_loader)
-    identifier = Identifier()
-    mech_parser = MechParser(config_loader)
-    mech_parser.verbose = verbose
-    metadata_gen = MetadataGenerator()
-
-    task_id = source.stem
-    extract_dir = output_dir / task_id / "extracted"
-    extract_dir.mkdir(parents=True, exist_ok=True)
-
-    errors: list[str] = []
-
-    def _safe_step(label, fn):
-        t0 = time.time()
-        try:
-            r = fn()
-        except Exception as e:
-            click.echo(f"  {label} ✗ {e}")
-            errors.append(f"{label}: {e}")
-            return None
-        elapsed = time.time() - t0
-        extra = ""
-        if verbose:
-            if isinstance(r, list):
-                extra = f" ({len(r)} 项, {elapsed:.1f}s)"
-            elif isinstance(r, dict):
-                extra = f" ({len(r)} 模块, {elapsed:.1f}s)"
-            else:
-                extra = f" ({elapsed:.1f}s)"
-        click.echo(f"  {label} ✓{extra}")
-        return r
-
-    _safe_step(f"[1/6] 解压 {source.name}",
-          lambda: decompressor.extract_all(source, extract_dir, recursive=True))
-
-    diag_slots = _safe_step("[2/6] 扫描 diag/", lambda: scanner.scan_diag(extract_dir)) or []
-    private_slots = _safe_step("[3/6] 扫描 varlog/", lambda: scanner.scan_private(extract_dir)) or []
-
-    result = ParseResult(
-        task_id=task_id,
-        package_name=source.name,
-        extracted_root=str(extract_dir),
-        diagnostic_slots=diag_slots,
-        private_slots=private_slots,
-        errors=errors,
-    )
-
-    _safe_step("[4/6] 解压诊断日志内容",
-          lambda: _extract_inner_contents(result.diagnostic_slots, decompressor))
-
-    mech_results = _safe_step("[5/6] 机制模块解析",
-                         lambda: mech_parser.parse_all(result))
-    if mech_results:
-        for mech_result in mech_results.values():
-            mech_parser.apply_to_identifier(mech_result, result)
-            mech_dir = mech_parser.write_output(mech_result, output_dir / task_id)
-            if verbose:
-                total = sum(cp.total_count for s in mech_result.slots for c in s.board_cycles for cp in c.processes)
-                diag = mech_result.diag_entry_count
-                journal_count = mech_result.journal_entry_count
-                match_mark = "" if diag + journal_count == total else " ⚠ 条数不一致"
-                click.echo(f"    [{mech_result.module_name}] 诊断:{diag} + journal:{journal_count} = {diag+journal_count} → 输出:{total}{match_mark} → {mech_dir}")
-        result.mech_results = list(mech_results.values())
-
-    _safe_step("[6/6] 时间戳提取+兜底识别",
-          lambda: (log_parser.build_all_periods(result.diagnostic_slots), identifier.analyze(result)))
-
-    cfg = config_loader.get_config()
-    if cfg.output.generate_metadata:
-        metadata_path = metadata_gen.generate(result, output_dir / task_id)
-        if verbose:
-            click.echo(f"  元数据: {metadata_path}")
-
-    if errors:
-        click.echo(f"\n⚠ {len(errors)} 个错误:")
-        for e in errors:
-            click.echo(f"  - {e}")
-
-    return result
 
 
 def _print_summary(result: ParseResult, output_dir: Path) -> None:
@@ -181,22 +86,6 @@ def _print_summary(result: ParseResult, output_dir: Path) -> None:
     click.echo(f"\n完整结果: {json_output}")
 
 
-def _extract_inner_contents(slots, decompressor):
-    """解压每个槽位下的诊断日志压缩包内容到 extracted/ 内的 _extracted 子目录。"""
-    for slot in slots:
-        for entry in slot.diagnostic_logs:
-            if not entry.compressed:
-                continue
-            src = Path(entry.path)
-            if not src.exists():
-                continue
-            dest = src.parent / f"{entry.name}_extracted"
-            try:
-                decompressor.extract_all(src, dest)
-                entry.extracted_path = str(dest)
-            except Exception as e:
-                logging.getLogger(__name__).warning("解压诊断日志内容失败 %s: %s", src, e)
-
 
 @click.group()
 @click.option("--config", "-c", default="config.yaml", help="配置文件路径")
@@ -214,7 +103,7 @@ def cli(ctx, config):
 @click.argument("package_path", type=click.Path(exists=True))
 @click.option("--output", "-o", default="./output", help="输出目录")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
-@click.option("--product", "-p", default=None, help="产品名（使用新管道，如 default）")
+@click.option("--product", "-p", default="default", help="产品名（default/compact）")
 @click.pass_context
 def parse(ctx, package_path, output, verbose, product):
     """解析日志压缩包。"""
@@ -222,22 +111,18 @@ def parse(ctx, package_path, output, verbose, product):
     source = Path(package_path)
     output_dir = Path(output)
 
-    # 新管道（--product 指定时）
-    if product:
-        raw_config = {}
-        if Path(config_path).exists():
-            import yaml
-            raw_config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
-        pipeline = Pipeline(raw_config)
-        result = pipeline.run(source, output_dir, product=product, verbose=verbose)
-        if result.errors:
-            click.echo(f"\n⚠ {len(result.errors)} 个错误:")
-            for e in result.errors:
-                click.echo(f"  - {e}")
-    else:
-        result = _parse_legacy(source, output_dir, config_path, verbose)
+    raw_config = {}
+    if Path(config_path).exists():
+        import yaml
+        raw_config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    pipeline = Pipeline(raw_config)
+    result = pipeline.run(source, output_dir, product=product, verbose=verbose)
+    if result.errors:
+        click.echo(f"\n⚠ {len(result.errors)} 个错误:")
+        for e in result.errors:
+            click.echo(f"  - {e}")
 
-    # 输出摘要（新老管道共用）
+    # 输出摘要
     _print_summary(result, output_dir)
 
 
