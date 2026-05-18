@@ -11,7 +11,6 @@ from typing import Any
 
 from backend.models import (
     ActivePeriod,
-    BoardRole,
     MechLogEntry,
     MechResult,
     MechSlotOutput,
@@ -21,6 +20,7 @@ from backend.models import (
     SlotInfo,
 )
 from backend.parsing.cycle_detector import CycleDetector
+from backend.parsing.role_identifier import RoleIdentifier
 from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.plugins.base import LogParserPlugin
 
@@ -68,9 +68,9 @@ class ParserPlugin(LogParserPlugin):
         # 4. 主控判定：机制模块优先，兜底 Identifier 逻辑
         for module_key, mech in results.items():
             result.mech_results.append(mech)
-            self._apply_mech_roles(mech, result)
+            RoleIdentifier.apply_mech_roles(mech, result)
 
-        self._fallback_roles(result)
+        RoleIdentifier.fallback_roles(result)
 
         return result
 
@@ -361,28 +361,6 @@ class ParserPlugin(LogParserPlugin):
         if file_path.is_file():
             return self._ts_extractor._read_file(file_path)
         return ""
-
-    # ── 角色判定 ──────────────────────────────────────────
-
-    @staticmethod
-    def _apply_mech_roles(mech_result: MechResult, result: ParseResult) -> None:
-        if not mech_result.active_master_slots:
-            return
-        for slot in result.diagnostic_slots:
-            if slot.slot_id in mech_result.active_master_slots:
-                slot.role = BoardRole.ACTIVE
-
-    @staticmethod
-    def _fallback_roles(result: ParseResult) -> None:
-        for slot in result.diagnostic_slots:
-            if slot.role != BoardRole.UNKNOWN:
-                continue
-            if slot.active_periods:
-                slot.role = BoardRole.ACTIVE
-            elif slot.diagnostic_logs:
-                slot.role = BoardRole.STANDBY
-            else:
-                slot.role = BoardRole.UNKNOWN
 
     # ── 输出落盘 ──────────────────────────────────────────
 

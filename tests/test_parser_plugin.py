@@ -21,6 +21,7 @@ from backend.models import (
 )
 from backend.plugins.default.parser import ParserPlugin
 from backend.parsing.cycle_detector import CycleDetector
+from backend.parsing.role_identifier import RoleIdentifier
 
 
 @pytest.fixture
@@ -205,7 +206,7 @@ class TestRoleIdentification:
             module_name="EXAMPLE",
             active_master_slots=["1"],
         )
-        ParserPlugin._apply_mech_roles(mech, sample_parse_result)
+        RoleIdentifier.apply_mech_roles(mech, sample_parse_result)
         assert sample_parse_result.diagnostic_slots[0].role == BoardRole.ACTIVE
 
     def test_fallback_active(self):
@@ -216,7 +217,7 @@ class TestRoleIdentification:
             end=datetime(2026, 1, 3, 1, 0),
         ))
         result.diagnostic_slots.append(slot)
-        ParserPlugin._fallback_roles(result)
+        RoleIdentifier.fallback_roles(result)
         assert slot.role == BoardRole.ACTIVE
 
     def test_fallback_standby(self):
@@ -226,14 +227,14 @@ class TestRoleIdentification:
             path="/tmp/f", name="f.log", size_bytes=100,
         ))
         result.diagnostic_slots.append(slot)
-        ParserPlugin._fallback_roles(result)
+        RoleIdentifier.fallback_roles(result)
         assert slot.role == BoardRole.STANDBY
 
     def test_fallback_unknown(self):
         result = ParseResult()
         slot = SlotInfo(slot_id="1", name="slot_1", path="/tmp")
         result.diagnostic_slots.append(slot)
-        ParserPlugin._fallback_roles(result)
+        RoleIdentifier.fallback_roles(result)
         assert slot.role == BoardRole.UNKNOWN
 
 
