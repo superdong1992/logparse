@@ -1,0 +1,7 @@
+2026-01-03T00:00:00.000001 [SLOT_1] System boot as ACTIVE master
+2026-01-03 00:01:00.100000 Service=SERVICE; Slot=1; CPU-Id=0; ProcessName=SERVICE-12345; Context=No[1] EXAMPLE init ok)
+2026-01-03 00:02:00.200000 Service=SERVICE; Slot=1; CPU-Id=0; ProcessName=SERVICE-12345; Context=No[2] EXAMPLE heartbeat)
+2026-01-03T00:05:00.100000 [SLOT_1] Board init OK
+2026-01-03T03:00:00.200000 [SLOT_1] Interface LPU-1 OK, LPU-2 OK
+2026-01-03 06:00:00.300000 Service=SERVICE; Slot=1; CPU-Id=0; ProcessName=SERVICE-12345; Context=No[3] MASTER_CONFIRMED slot_1 is active)
+2026-01-03T06:00:00.300000 [SLOT_1] Periodic check passed

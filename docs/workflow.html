@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ailogparse 工作流程</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  body {
+    margin: 0;
+    padding: 20px;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  h1 { text-align: center; color: #eee; margin-bottom: 5px; }
+  p.subtitle { text-align: center; color: #888; margin-top: 0; font-size: 14px; }
+  .mermaid { display: flex; justify-content: center; margin: 20px auto; }
+  .legend {
+    max-width: 900px;
+    margin: 30px auto;
+    padding: 15px 25px;
+    background: #16213e;
+    border-radius: 8px;
+    border: 1px solid #333;
+  }
+  .legend h3 { margin-top: 0; color: #0f3460; }
+  .legend table { width: 100%; border-collapse: collapse; }
+  .legend td { padding: 6px 12px; font-size: 14px; }
+  .legend td:first-child { font-family: monospace; white-space: nowrap; }
+</style>
+</head>
+<body>
+<h1>ailogparse 工作流程</h1>
+<p class="subtitle">日志压缩包预处理管道 — 插件化架构</p>
+
+<div class="mermaid">
+flowchart TB
+    subgraph INPUT["📦 输入"]
+        A["日志压缩包\n.zip / .tar.gz"]
+    end
+
+    subgraph STEP1["Step 1: 外层解压"]
+        B["Decompressor\nrecursive=False"]
+        B1["extracted/\n全部文件展开"]
+    end
+
+    subgraph STEP2["Step 2: 目录发现 📂"]
+        C{"产品插件\nDirectoryDiscoveryPlugin"}
+        C1["ScannerPlugin\n(default产品)\ndiag/ + varlog/"]
+        C2["CompactScannerPlugin\n(compact产品)\nboards/ + logs/"]
+    end
+
+    subgraph STEP3["Step 3: 内层解压"]
+        D["Decompressor\n解压 diag.zip 等\n到 contents/ 子目录"]
+    end
+
+    subgraph STEP4["Step 4: 日志解析 🔍"]
+        E["ParserPlugin\n解析编排层"]
+        E1["TimestampExtractor\n时间戳提取 + 时区对齐"]
+        E2["CycleDetector\n重启周期切分\nPID变化 + 序号回绕"]
+        E3["RoleIdentifier\n主控判定\n机制优先 + 兜底"]
+    end
+
+    subgraph STEP5["Step 5: 落盘"]
+        F["MechOutputWriter\nslot/周期/cpu_N/\n进程名-PID.log"]
+    end
+
+    subgraph STEP6["Step 6: 元数据"]
+        G["MetadataGenerator\nmetadata.json\nresult.json"]
+    end
+
+    subgraph OUTPUT["📤 输出"]
+        H["output/{task_id}/"]
+    end
+
+    A --> B
+    B --> B1
+    B1 --> C
+    C -->|default| C1
+    C -->|compact| C2
+    C1 & C2 --> D
+    D --> E
+    E --> E1
+    E1 --> E2
+    E2 --> E3
+    E3 --> F
+    E3 --> G
+    F --> H
+    G --> H
+
+    style INPUT fill:#0f3460,stroke:#1a1a2e,color:#fff
+    style OUTPUT fill:#0f3460,stroke:#1a1a2e,color:#fff
+    style STEP1 fill:#16213e,stroke:#0f3460,color:#e0e0e0
+    style STEP2 fill:#16213e,stroke:#0f3460,color:#e0e0e0
+    style STEP3 fill:#16213e,stroke:#0f3460,color:#e0e0e0
+    style STEP4 fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
+    style STEP5 fill:#16213e,stroke:#0f3460,color:#e0e0e0
+    style STEP6 fill:#16213e,stroke:#0f3460,color:#e0e0e0
+    style E fill:#e94560,stroke:#c81e45,color:#fff
+    style E1 fill:#533483,stroke:#3d2466,color:#e0e0e0
+    style E2 fill:#533483,stroke:#3d2466,color:#e0e0e0
+    style E3 fill:#533483,stroke:#3d2466,color:#e0e0e0
+</div>
+
+<div class="mermaid">
+flowchart LR
+    subgraph CYCLE["重启周期切分示例"]
+        direction TB
+        I1["dhcp PID=100\nNo[1] No[2] ... No[50]"]
+        I2["dhcp PID=200 ← PID变化\nNo[1] No[2] ... No[30]"]
+        SPLIT["CycleDetector 检测"]
+        R1["周期 1\n20260103T000100-\n20260103T050000"]
+        R2["周期 2\n20260103T060000-\n20260103T110000"]
+    end
+
+    I1 --> SPLIT
+    I2 --> SPLIT
+    SPLIT --> R1
+    SPLIT --> R2
+
+    style CYCLE fill:#16213e,stroke:#533483,color:#e0e0e0
+    style SPLIT fill:#e94560,stroke:#c81e45,color:#fff
+    style R1 fill:#0f3460,stroke:#1a508b,color:#e0e0e0
+    style R2 fill:#0f3460,stroke:#1a508b,color:#e0e0e0
+</div>
+
+<div class="legend">
+  <h3>模块职责速查</h3>
+  <table>
+    <tr><td style="color:#e94560">Pipeline</td><td>6 步管道编排，按产品名加载插件对</td></tr>
+    <tr><td style="color:#533483">TimestampExtractor</td><td>从文本/文件/LogEntry 提取时间戳，处理 .gz 和 UTF-8/GBK 编码</td></tr>
+    <tr><td style="color:#533483">CycleDetector</td><td>indicator 进程 PID 变化 + 序号回绕反向扫描，板卡重启传播到子 CPU</td></tr>
+    <tr><td style="color:#533483">RoleIdentifier</td><td>机制模块 active_master_keyword 优先，兜底按 ActivePeriod/日志存在性判定</td></tr>
+    <tr><td style="color:#0f3460">MechOutputWriter</td><td>slot/周期/cpu_N/ 进程名-PID.log 三层目录落盘</td></tr>
+    <tr><td style="color:#0f3460">ScannerPlugin</td><td>发现 diag/slot_*/ 和 varlog/slot_*/ 目录结构，解压内层 varlog.zip</td></tr>
+  </table>
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#0f3460',
+    primaryTextColor: '#e0e0e0',
+    primaryBorderColor: '#1a508b',
+    lineColor: '#533483',
+    secondaryColor: '#16213e',
+    tertiaryColor: '#1a1a2e',
+    fontSize: '14px'
+  },
+  flowchart: {
+    htmlLabels: true,
+    curve: 'basis',
+    padding: 20
+  }
+});
+</script>
+</body>
+</html>

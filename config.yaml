@@ -1,54 +1,97 @@
 # 日志解析维护工具 - 配置
+#
+# 标记说明：
+#   [按需修改] — 根据实际产品/日志格式需要调整的配置
+#   [通常不改] — 一般情况保持默认即可，仅在特殊场景调整
 
 # ── 管道配置 ──────────────────────────────────────────
 pipeline:
-  recursive_extraction: true
-  inner_extraction: true
-  generate_metadata: true
-  output_base_dir: "./output"
+  recursive_extraction: true   # [通常不改] 外层包是否递归解压
+  inner_extraction: true       # [通常不改] 是否解压诊断日志内层 .zip
+  generate_metadata: true      # [通常不改] 是否生成 metadata.json
+  output_base_dir: "./output"  # [按需修改] 输出根目录
 
 # ── 产品插件注册 ──────────────────────────────────────
+# 每个产品定义一对插件：
+#   discovery  — 目录发现插件（找到 slot、匹配文件）
+#   log_parser — 日志解析插件（提取时间戳、构建周期、判定角色）
+# 新增产品：复制一份产品段，修改 plugin 路径和 config 即可
 products:
   default:
     discovery:
-      plugin: "backend.plugins.default.scanner.ScannerPlugin"
+      plugin: "backend.plugins.default.scanner.ScannerPlugin"  # [通常不改] 插件类路径
       config:
-        diagnostic_dir: "diag"
-        private_dir: "varlog"
-        slot_dir_pattern: "slot_*"
-        diag_file_patterns:
+        diagnostic_dir: "diag"              # [按需修改] 诊断日志目录名（外层包内的顶层目录）
+        private_dir: "varlog"               # [按需修改] 私有日志目录名
+        slot_dir_pattern: "slot_*"          # [按需修改] 槽位目录匹配（glob），如 "board_*"
+        diag_file_patterns:                 # [按需修改] 诊断日志文件名匹配（glob 列表）
           - "diag.zip"
           - "diaglog_*.log.zip"
           - "diaglog_*.zip"
-        filename_timestamp_regex: ".*_(\\d{14})\\..*"
-        private_dir_patterns:
+        filename_timestamp_regex: ".*_(\\d{14})\\..*"  # [按需修改] 文件名转储时间戳提取正则，\d{14}=YYYYMMDDHHmmss
+        private_dir_patterns:               # [按需修改] 私有日志目录匹配（glob 列表），支持 slot 和 slot_cpu 子卡
           - "slot_*"
           - "slot_*_cpu_*"
-        archive_name: "varlog.zip"
-        journal_file_patterns:
+        archive_name: "varlog.zip"          # [按需修改] 内层压缩包名
+        journal_file_patterns:              # [按需修改] journal 文件名匹配（glob 列表）
           - "journal.log"
           - "journal.log.*.gz"
-        journal_sequence_regex: "journal\\.log(?:\\.(\\d+))?(?:\\.gz)?"
-        compressed_extensions: [".gz", ".zip", ".tar.gz", ".tgz", ".tar"]
+        journal_sequence_regex: "journal\\.log(?:\\.(\\d+))?(?:\\.gz)?"  # [通常不改] journal 序号提取
+        compressed_extensions: [".gz", ".zip", ".tar.gz", ".tgz", ".tar"]  # [通常不改] 识别为压缩文件的扩展名
+
     log_parser:
-      plugin: "backend.plugins.default.parser.ParserPlugin"
+      plugin: "backend.plugins.default.parser.ParserPlugin"  # [通常不改] 插件类路径
       config:
+        # [按需修改] 日志行时间戳提取正则
+        # 必须含两个捕获组：组1=时间戳，组2=可选时区偏移
+        # 默认匹配格式：2026-01-03T10:37:07.980482+08:00 或 2026-01-03 10:37:07
         timestamp_regex: "(\\d{4}-\\d{1,2}-\\d{1,2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)([+-]\\d{2}:\\d{2})?"
+
+        # [按需修改] ActivePeriod 切分阈值（秒）
+        # 两个连续时间戳间隔超过此值时，切分为新的 ActivePeriod
         active_period_gap_threshold: 300
+
         mechanism_modules:
-          module1:
-            module_name: "EXAMPLE"
-            enabled: true
+          module1:   # [按需修改] 模块标识（可任意命名，如 module1、ctrl、aaa）
+            module_name: "EXAMPLE"  # [按需修改] 日志中实际出现的模块名（全大写），用于 Stage1 大小写敏感预过滤
+            enabled: true           # [按需修改] 是否启用此模块
+
+            # [按需修改] 诊断日志匹配正则
+            # 必须含命名组：Slot, CPU_Id, ProcessName, Context
+            # 可用 test-pattern 命令验证是否匹配
             diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
+
+            # [按需修改] 主控判定关键字（正则），命中 Context 时该 Slot 判为 ACTIVE
+            # 留空则仅靠 ActivePeriod 兜底判定
             active_master_keyword: ""
+
+            # [按需修改] 板卡重启标识进程名（小写）
+            # 此进程 PID 变化时触发重启周期切分，留空则不按 PID 切分
             board_restart_indicator: ""
+
+            # [按需修改] 进程名映射：诊断日志名 → journal 日志名
+            # 用于 journal 中 indicator 进程名与诊断日志不一致时的映射
+            # 示例：{"DHCP": "dhcpd", "AAA": "aaa_svc"}
             process_name_mapping: {}
+
             journal:
+              # [按需修改] journal 格式1正则（完整元数据块）
+              # 4 个捕获组：进程名、PID、序号、上下文
               line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
+
+              # [按需修改] journal 格式2正则（无元数据块，PID 可选，fallback）
+              # 4 个捕获组：进程名、PID（可选）、序号、上下文
               line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
+
+              # [按需修改] journal Stage1 关键字预过滤（小写）
+              # journal 行必须包含此关键字才会进入正则匹配，加速过滤
               identifying_keyword: "EXAMPLE"
+
+            # [通常不改] 序号提取正则，用于丢号检测和重启序号回绕判定
             sequence_pattern: 'No\[(\d+)\]'
 
+  # ── compact 产品示例 ──────────────────────────────────
+  # 演示不同目录布局（boards/ + logs/）如何复用默认 ParserPlugin
   compact:
       discovery:
         plugin: "backend.plugins.compact.scanner.CompactScannerPlugin"

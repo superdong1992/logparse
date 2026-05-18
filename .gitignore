@@ -7,3 +7,9 @@ venv/
 .idea/
 .vscode/
 *.egg-info/
+*.pyc
+*.pyo
+.pytest_cache/
+dist/
+build/
+*.egg
