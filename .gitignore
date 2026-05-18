@@ -1,6 +1,5 @@
 .claude/
 .superpowers/
-tests/
 __pycache__/
 output/
 .venv/
