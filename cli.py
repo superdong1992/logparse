@@ -23,7 +23,7 @@ from pathlib import Path
 
 import click
 
-from backend.config import BoardConfig, ConfigLoader, glob_to_regex
+from backend.utils import glob_to_regex
 from backend.models import ParseResult
 from backend.pipeline import Pipeline
 
@@ -257,71 +257,75 @@ def check_config(config):
     errors: list[str] = []
     warnings: list[str] = []
 
-    # 加载配置
     try:
-        loader = ConfigLoader(config_path)
-        loader.load()
-        cfg = loader.get_config()
+        import yaml
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         click.echo("✓ 配置加载成功")
     except Exception as e:
         click.echo(f"✗ 配置加载失败: {e}")
         sys.exit(1)
 
-    # 检查正则可编译
-    checks = [
-        ("诊断日志文件名时间戳正则", cfg.diagnostic_files.filename_timestamp_regex),
-        ("日志内容时间戳正则", cfg.log_content.timestamp_regex),
-        ("journal 文件序号正则", cfg.private_logs.journal_files.sequence_regex),
-    ]
-    for label, pattern in checks:
-        try:
-            re.compile(pattern)
-        except re.error as e:
-            errors.append(f"{label}: 正则无效 - {e}")
+    products = raw.get("products", {})
+    if not products:
+        errors.append("无产品配置 (products 段为空)")
+    else:
+        for prod_name, prod_cfg in products.items():
+            prefix = f"[{prod_name}]"
 
-    # 检查 glob 模式
-    globs = [
-        ("slot 目录匹配", cfg.boards.get("main_control", BoardConfig()).dir_pattern),
-        *[(f"varlog 目录匹配[{p}]", p) for p in cfg.private_logs.dir_patterns],
-        *[(f"诊断日志文件匹配[{p}]", p) for p in cfg.diagnostic_files.patterns],
-        *[(f"journal 文件匹配[{p}]", p) for p in cfg.private_logs.journal_files.patterns],
-    ]
-    for label, pattern in globs:
-        try:
-            glob_to_regex(pattern)
-        except Exception:
-            errors.append(f"{label}: glob 无效 - {pattern}")
+            # Discovery config
+            disc = prod_cfg.get("discovery", {}).get("config", {})
+            for label, pattern in [
+                ("slot_dir_pattern", disc.get("slot_dir_pattern", "slot_*")),
+            ]:
+                try:
+                    glob_to_regex(pattern)
+                except Exception:
+                    errors.append(f"{prefix} {label}: glob 无效 - {pattern}")
 
-    # 检查机制模块配置
-    for mod_key, mod_cfg in cfg.mechanism_modules.items():
-        if not mod_cfg.enabled:
-            continue
-        if not mod_cfg.module_name:
-            warnings.append(f"[{mod_key}] module_name 为空，不会生效")
-        if mod_cfg.diag_pattern:
-            try:
-                re.compile(mod_cfg.diag_pattern)
-            except re.error as e:
-                errors.append(f"[{mod_key}] diag_pattern 无效: {e}")
-        else:
-            warnings.append(f"[{mod_key}] diag_pattern 为空")
-        if mod_cfg.journal.line_pattern:
-            try:
-                re.compile(mod_cfg.journal.line_pattern)
-            except re.error as e:
-                errors.append(f"[{mod_key}] journal.line_pattern 无效: {e}")
-        if mod_cfg.journal.line_pattern2:
-            try:
-                re.compile(mod_cfg.journal.line_pattern2)
-            except re.error as e:
-                errors.append(f"[{mod_key}] journal.line_pattern2 无效: {e}")
-        if not mod_cfg.journal.identifying_keyword:
-            warnings.append(f"[{mod_key}] journal.identifying_keyword 为空")
-        if mod_cfg.sequence_pattern:
-            try:
-                re.compile(mod_cfg.sequence_pattern)
-            except re.error as e:
-                errors.append(f"[{mod_key}] sequence_pattern 无效: {e}")
+            for p in disc.get("diag_file_patterns", []):
+                try:
+                    glob_to_regex(p)
+                except Exception:
+                    errors.append(f"{prefix} diag_file_pattern: glob 无效 - {p}")
+
+            # Parser config
+            parser_cfg = prod_cfg.get("log_parser", {}).get("config", {})
+
+            ts_re = parser_cfg.get("timestamp_regex", "")
+            if ts_re:
+                try:
+                    re.compile(ts_re)
+                except re.error as e:
+                    errors.append(f"{prefix} timestamp_regex: 正则无效 - {e}")
+
+            for mod_key, mod_cfg in parser_cfg.get("mechanism_modules", {}).items():
+                mp = f"{prefix}[{mod_key}]"
+                if not mod_cfg.get("module_name"):
+                    warnings.append(f"{mp} module_name 为空")
+                if mod_cfg.get("diag_pattern"):
+                    try:
+                        r = re.compile(mod_cfg["diag_pattern"])
+                        required = {"Slot", "CPU_Id", "ProcessName", "Context"}
+                        if not required.issubset(r.groupindex):
+                            warnings.append(f"{mp} diag_pattern 缺少命名组: {required - set(r.groupindex)}")
+                    except re.error as e:
+                        errors.append(f"{mp} diag_pattern: 正则无效 - {e}")
+
+                jnl = mod_cfg.get("journal", {})
+                for pat_name in ("line_pattern", "line_pattern2"):
+                    val = jnl.get(pat_name, "")
+                    if val:
+                        try:
+                            re.compile(val)
+                        except re.error as e:
+                            errors.append(f"{mp} journal.{pat_name}: 正则无效 - {e}")
+
+                seq_pat = mod_cfg.get("sequence_pattern", "")
+                if seq_pat:
+                    try:
+                        re.compile(seq_pat)
+                    except re.error as e:
+                        errors.append(f"{mp} sequence_pattern: 正则无效 - {e}")
 
     if warnings:
         click.echo(f"\n⚠ {len(warnings)} 个警告:")
@@ -344,45 +348,57 @@ def check_config(config):
 @click.argument("line")
 def test_pattern(config, module, log_type, line):
     """用配置的正则测试一条日志行。"""
-    loader = ConfigLoader(config)
-    loader.load()
-    mod_cfg = loader.get_mech_module_config(module)
+    import yaml
+    config_path = Path(config)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {} if config_path.exists() else {}
+
+    # Find module config from first product that has it
+    mod_cfg = None
+    for prod_name, prod_cfg in raw.get("products", {}).items():
+        parser_cfg = prod_cfg.get("log_parser", {}).get("config", {})
+        modules = parser_cfg.get("mechanism_modules", {})
+        if module in modules:
+            mod_cfg = modules[module]
+            break
+
     if mod_cfg is None:
         click.echo(f"✗ 模块 '{module}' 未配置", err=True)
         sys.exit(1)
 
     if log_type == "diag":
-        if not mod_cfg.diag_pattern:
+        if not mod_cfg.get("diag_pattern"):
             click.echo("✗ diag_pattern 未配置", err=True)
             sys.exit(1)
-        pat = re.compile(mod_cfg.diag_pattern)
+        pat = re.compile(mod_cfg["diag_pattern"])
         m = pat.search(line)
         if not m:
             click.echo("✗ 不匹配 diag_pattern")
             sys.exit(1)
         click.echo("✓ 匹配 diag_pattern")
-        click.echo(f"  模块名预过滤: {mod_cfg.module_name} {'✓' if mod_cfg.module_name in line else '✗ (Stage1 会被过滤)'}")
+        mod_name = mod_cfg.get("module_name", "")
+        click.echo(f"  模块名预过滤: {mod_name} {'✓' if mod_name in line else '✗ (Stage1 会被过滤)'}")
         for name, value in m.groupdict().items():
             click.echo(f"  {name}: {value}")
-        seq_m = re.search(mod_cfg.sequence_pattern, line) if mod_cfg.sequence_pattern else None
-        if seq_m:
-            click.echo(f"  序号: {seq_m.group(1)}")
-        if mod_cfg.active_master_keyword and re.search(mod_cfg.active_master_keyword, line):
-            click.echo(f"  ✓ 命中主控关键字: {mod_cfg.active_master_keyword}")
-        ts = loader.extract_content_timestamps(line)
-        if ts:
-            click.echo(f"  时间戳: {ts[0].isoformat()}")
+        seq_pat = mod_cfg.get("sequence_pattern", "")
+        if seq_pat:
+            seq_m = re.search(seq_pat, line)
+            if seq_m:
+                click.echo(f"  序号: {seq_m.group(1)}")
+        master_kw = mod_cfg.get("active_master_keyword", "")
+        if master_kw and re.search(master_kw, line):
+            click.echo(f"  ✓ 命中主控关键字: {master_kw}")
 
     else:  # journal
-        if not mod_cfg.journal.line_pattern and not mod_cfg.journal.line_pattern2:
+        jnl = mod_cfg.get("journal", {})
+        if not jnl.get("line_pattern") and not jnl.get("line_pattern2"):
             click.echo("✗ journal.line_pattern 和 line_pattern2 均未配置", err=True)
             sys.exit(1)
         pat_name = "journal.line_pattern"
-        pat = re.compile(mod_cfg.journal.line_pattern) if mod_cfg.journal.line_pattern else None
+        pat = re.compile(jnl["line_pattern"]) if jnl.get("line_pattern") else None
         m = pat.match(line) if pat else None
-        if not m and mod_cfg.journal.line_pattern2:
+        if not m and jnl.get("line_pattern2"):
             pat_name = "journal.line_pattern2"
-            pat = re.compile(mod_cfg.journal.line_pattern2)
+            pat = re.compile(jnl["line_pattern2"])
             m = pat.match(line)
         if not m:
             click.echo("✗ 不匹配 journal.line_pattern 及 line_pattern2")
@@ -393,10 +409,11 @@ def test_pattern(config, module, log_type, line):
             click.echo(f"  pid: {m.group(2)}")
         click.echo(f"  序号: {m.group(3)}")
         click.echo(f"  Context: {m.group(4)}")
-        keyword = mod_cfg.journal.identifying_keyword
+        keyword = jnl.get("identifying_keyword", "")
         if keyword:
             click.echo(f"  识别关键字 '{keyword}': {'✓' if keyword in line.lower() else '✗ (Stage1 会被过滤)'}")
-        click.echo(f"  模块名预过滤: {mod_cfg.module_name} {'✓' if mod_cfg.module_name in line else '✗ (Stage1 会被过滤)'}")
+        mod_name = mod_cfg.get("module_name", "")
+        click.echo(f"  模块名预过滤: {mod_name} {'✓' if mod_name in line else '✗ (Stage1 会被过滤)'}")
 
 
 if __name__ == "__main__":
