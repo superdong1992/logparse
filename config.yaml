@@ -49,6 +49,40 @@ products:
               identifying_keyword: "EXAMPLE"
             sequence_pattern: 'No\[(\d+)\]'
 
+  compact:
+      discovery:
+        plugin: "backend.plugins.compact.scanner.CompactScannerPlugin"
+        config:
+          diagnostic_dir: "boards"
+          private_dir: "logs"
+          slot_dir_pattern: "slot_*"
+          diag_file_patterns:
+            - "debug_*.log"
+          filename_timestamp_regex: ".*_(\\d{8})\\..*"
+          private_dir_patterns:
+            - "slot_*"
+          syslog_file_patterns:
+            - "syslog.log"
+          compressed_extensions: [".gz", ".zip", ".tar.gz", ".tgz", ".tar"]
+      log_parser:
+        plugin: "backend.plugins.default.parser.ParserPlugin"
+        config:
+          timestamp_regex: "(\\d{4}-\\d{1,2}-\\d{1,2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)([+-]\\d{2}:\\d{2})?"
+          active_period_gap_threshold: 7200
+          mechanism_modules:
+            ctrl:
+              module_name: "COMPACT"
+              enabled: true
+              diag_pattern: 'COMPACT\s+(?P<Service>\S+).*?proc=(?P<ProcessName>\S+).*?slot\s+(?P<Slot>\d+).*?cpu\s+(?P<CPU_Id>\d+).*?\|(?P<Context>.+)'
+              active_master_keyword: ""
+              board_restart_indicator: ""
+              process_name_mapping: {}
+              journal:
+                line_pattern: ''
+                line_pattern2: '^\S+\s+\S+\s+(\S+)(?:-(\d+))?:\s+COMPACT\s+No\[(\d+)\](.+)$'
+                identifying_keyword: "COMPACT"
+              sequence_pattern: 'No\[(\d+)\]'
+
 # ── 旧版扁平配置（保留向后兼容） ──────────────────────────
 
 output:

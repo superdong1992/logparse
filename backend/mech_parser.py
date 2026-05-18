@@ -209,7 +209,7 @@ class MechParser:
                 if journal_keyword not in line.lower():
                     continue
                 # Stage 2: 正则（格式1优先，格式2兜底）
-                m = journal_re.match(line)
+                m = journal_re.match(line) if journal_re else None
                 if not m and journal_re2:
                     m = journal_re2.match(line)
                 if not m:
@@ -449,6 +449,16 @@ class MechParser:
                                     "无法读取文件 %s (UTF-8/GBK 均失败)", f
                                 )
                 return "\n".join(parts)
+        # 未压缩文件：直接读取
+        file_path = Path(log_entry.path)
+        if file_path.is_file():
+            try:
+                return file_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                try:
+                    return file_path.read_text(encoding="gbk", errors="replace")
+                except Exception:
+                    return ""
         return ""
 
     def _read_file(self, file_path: Path) -> str:

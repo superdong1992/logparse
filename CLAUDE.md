@@ -202,6 +202,20 @@ Source Archive
 
 **当前状态**：默认插件（ScannerPlugin + ParserPlugin）已完成，`--product default` 可走新管道。旧管道（`--product` 不指定时）保留向后兼容。
 
+**第二产品示例**：`--product compact` 使用 CompactScannerPlugin（`boards/` + `logs/` 布局）搭配默认 ParserPlugin，演示插件对可自由组合。
+
+### 已有产品插件
+
+| 产品 | Scanner | Parser | 目录布局 | 压缩 |
+|------|---------|--------|---------|------|
+| `default` | ScannerPlugin | ParserPlugin | diag/ + varlog/ | 内层 zip |
+| `compact` | CompactScannerPlugin | ParserPlugin (复用) | boards/ + logs/ | 无压缩 |
+
+新增产品的步骤：
+1. 创建 ScannerPlugin 子类（或复用已有）
+2. 在 `config.yaml` 的 `products:` 下添加配置段
+3. `python cli.py parse <pkg> --product <name>`
+
 ### 新管道 vs 旧管道
 
 | 方面 | 旧管道 (cli.py _parse_legacy) | 新管道 (Pipeline.run()) |

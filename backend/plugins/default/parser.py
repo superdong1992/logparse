@@ -306,7 +306,7 @@ class ParserPlugin(LogParserPlugin):
                 if journal_keyword not in line.lower():
                     continue
 
-                m = journal_re.match(line)
+                m = journal_re.match(line) if journal_re else None
                 if not m and journal_re2:
                     m = journal_re2.match(line)
                 if not m:
@@ -539,6 +539,10 @@ class ParserPlugin(LogParserPlugin):
                         if text:
                             parts.append(text)
                 return "\n".join(parts)
+        # 未压缩文件：直接读取
+        file_path = Path(log_entry.path)
+        if file_path.is_file():
+            return self._read_file(file_path)
         return ""
 
     @staticmethod
