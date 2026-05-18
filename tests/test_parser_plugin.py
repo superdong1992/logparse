@@ -19,7 +19,8 @@ from backend.models import (
     PrivateSlotInfo,
     SlotInfo,
 )
-from backend.plugins.default.parser import ParserPlugin, SEQ_ROLLBACK_THRESHOLD
+from backend.plugins.default.parser import ParserPlugin
+from backend.parsing.cycle_detector import CycleDetector
 
 
 @pytest.fixture
@@ -96,7 +97,7 @@ class TestParseDiagProcName:
 
 class TestBuildProcesses:
     def test_single_process(self, sample_mech_entries):
-        procs = ParserPlugin._build_processes(sample_mech_entries[:5])
+        procs = CycleDetector._build_processes(sample_mech_entries[:5])
         assert len(procs) == 1
         assert procs[0].process_name == "dhcp"
         assert procs[0].pid == "100"
@@ -107,7 +108,7 @@ class TestBuildProcesses:
             MechLogEntry(process_name="svc", pid="1", sequence=i, raw=f"line{i}")
             for i in [1, 2, 4, 5, 8]
         ]
-        procs = ParserPlugin._build_processes(entries)
+        procs = CycleDetector._build_processes(entries)
         assert len(procs) == 1
         assert procs[0].missing_sequences == [3, 6, 7]
 
@@ -117,12 +118,12 @@ class TestBuildProcesses:
             MechLogEntry(process_name="svc", pid="2", sequence=1, raw="b"),
             MechLogEntry(process_name="other", pid="1", sequence=1, raw="c"),
         ]
-        procs = ParserPlugin._build_processes(entries)
+        procs = CycleDetector._build_processes(entries)
         assert len(procs) == 3
 
 
 class TestBuildCycles:
-    def test_single_cycle_no_restart(self, plugin):
+    def test_single_cycle_no_restart(self):
         entries = [
             MechLogEntry(
                 timestamp=datetime(2026, 1, 3, 0, i, 0),
@@ -132,10 +133,11 @@ class TestBuildCycles:
             )
             for i in range(1, 6)
         ]
-        cycles = plugin._build_cycles(entries, indicator=None)
+        detector = CycleDetector(indicator=None)
+        cycles = detector.detect(entries)
         assert len(cycles) == 1
 
-    def test_pid_change_creates_two_cycles(self, plugin):
+    def test_pid_change_creates_two_cycles(self):
         entries = [
             MechLogEntry(
                 timestamp=datetime(2026, 1, 3, 0, i, 0),
@@ -153,10 +155,11 @@ class TestBuildCycles:
             )
             for i in range(1, 4)
         ]
-        cycles = plugin._build_cycles(entries, indicator="dhcp")
+        detector = CycleDetector(indicator="dhcp")
+        cycles = detector.detect(entries)
         assert len(cycles) == 2
 
-    def test_cpu_subcard_isolation(self, plugin):
+    def test_cpu_subcard_isolation(self):
         board_entries = [
             MechLogEntry(
                 timestamp=datetime(2026, 1, 3, 0, i, 0),
@@ -184,7 +187,8 @@ class TestBuildCycles:
             for i in range(1, 4)
         ]
         all_entries = board_entries + cpu_entries
-        cycles = plugin._build_cycles(all_entries, indicator="dhcp")
+        detector = CycleDetector(indicator="dhcp")
+        cycles = detector.detect(all_entries)
         board_cycles = [c for c in cycles if any(
             p.pid == "100" for p in c.processes
         )]
@@ -237,10 +241,10 @@ class TestFmtDir:
     def test_both_times(self):
         s = datetime(2026, 1, 3, 10, 37, 7)
         e = datetime(2026, 1, 3, 11, 37, 8)
-        assert ParserPlugin._fmt_dir(s, e) == "20260103T103707-20260103T113708"
+        assert CycleDetector._fmt_dir(s, e) == "20260103T103707-20260103T113708"
 
     def test_start_only(self):
-        assert ParserPlugin._fmt_dir(datetime(2026, 1, 3, 0, 0, 0), None) == "20260103T000000"
+        assert CycleDetector._fmt_dir(datetime(2026, 1, 3, 0, 0, 0), None) == "20260103T000000"
 
     def test_none(self):
-        assert ParserPlugin._fmt_dir(None, None) == "unknown"
+        assert CycleDetector._fmt_dir(None, None) == "unknown"
