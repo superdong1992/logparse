@@ -89,11 +89,10 @@ class Decompressor:
         # 递归扫描解压出的新压缩包
         passes = 0
         changed = True
+        pass_log: list[list[str]] = []
         while changed:
             passes += 1
-            if passes > MAX_RECURSIVE_PASSES:
-                logger.warning("递归解压超过最大轮次 %d，终止", MAX_RECURSIVE_PASSES)
-                break
+            this_pass: list[str] = []
             changed = False
             for root, dirs, files in os.walk(dest_dir):
                 for f in files:
@@ -101,14 +100,30 @@ class Decompressor:
                         file_path = Path(root) / f
                         relative_parent = Path(root).relative_to(dest_dir)
                         target_dir = dest_dir / relative_parent / f"{f}_extracted"
+                        if target_dir.exists():
+                            continue
                         try:
                             self._extract_single(file_path, target_dir, extracted_files)
                         except Exception as e:
                             logger.warning("解压失败 %s: %s", file_path, e)
+                            # 清理失败时可能已创建的空目录，避免阻止后续重试
+                            if target_dir.is_dir() and not any(target_dir.iterdir()):
+                                target_dir.rmdir()
                             continue
-                        else:
-                            file_path.unlink()
+                        this_pass.append(str(file_path.relative_to(dest_dir)))
                         changed = True
+            pass_log.append(this_pass)
+            if passes > MAX_RECURSIVE_PASSES:
+                logger.warning(
+                    "递归解压超过最大轮次 %d，终止。各轮解压文件：",
+                    MAX_RECURSIVE_PASSES,
+                )
+                for i, files in enumerate(pass_log, 1):
+                    logger.warning(
+                        "  第 %d 轮: %d 个文件 — %s",
+                        i, len(files), files,
+                    )
+                break
 
         return extracted_files
 
@@ -130,7 +145,6 @@ class Decompressor:
 
     def _extract_zip(self, source: Path, dest_dir: Path, extracted_files: list[str]) -> None:
         dest_dir.mkdir(parents=True, exist_ok=True)
-        compressed_size = source.stat().st_size
         with zipfile.ZipFile(source, "r") as zf:
             for info in zf.infolist():
                 if not self._is_safe_path(info.filename):
@@ -138,7 +152,7 @@ class Decompressor:
                     continue
                 if info.is_dir():
                     continue
-                if not self._check_zip_bomb(compressed_size, info.file_size, info.filename):
+                if not self._check_zip_bomb(info.compress_size, info.file_size, info.filename):
                     continue
                 zf.extract(info, dest_dir)
                 extracted_files.append(str(dest_dir / info.filename))

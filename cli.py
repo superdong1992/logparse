@@ -107,6 +107,15 @@ def cli(ctx, config):
 @click.pass_context
 def parse(ctx, package_path, output, verbose, product):
     """解析日志压缩包。"""
+    if verbose:
+        import logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stdout,
+            force=True,
+        )
+
     config_path = ctx.obj["config_path"]
     source = Path(package_path)
     output_dir = Path(output)

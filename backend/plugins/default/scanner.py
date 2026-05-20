@@ -161,11 +161,15 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
                                 )
                             else:
                                 import zipfile
+                                from backend.decompressor import MAX_UNCOMPRESSED_SIZE
                                 with zipfile.ZipFile(archive_path, "r") as zf:
                                     for member in zf.infolist():
                                         if not self._is_safe_member(member.filename):
                                             logger.warning("跳过不安全路径: %s 中的 %s",
                                                            archive_path, member.filename)
+                                            continue
+                                        if member.file_size > MAX_UNCOMPRESSED_SIZE:
+                                            logger.warning("文件过大，跳过: %s", member.filename)
                                             continue
                                         zf.extract(member, extract_dir)
                     except Exception:
@@ -191,7 +195,7 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
             if not self._match_any(f.name, self._journal_file_patterns):
                 continue
             seq = extract_journal_sequence(f.name, self._journal_seq_regex)
-            if any(j.name == f.name for j in private_slot.journal_logs):
+            if any(j.path == str(f) for j in private_slot.journal_logs):
                 continue
             private_slot.journal_logs.append(JournalLogFile(
                 path=str(f),

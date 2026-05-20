@@ -66,8 +66,19 @@ products:
             active_master_keyword: ""
 
             # [按需修改] 板卡重启标识进程名（小写）
-            # 此进程 PID 变化时触发重启周期切分，留空则不按 PID 切分
+            # 此进程 PID 变化时触发重启周期切分，一定是非独立重启进程
+            # 留空则不按 PID 切分
             board_restart_indicator: ""
+
+            # [按需修改] 切分计算白名单进程（小写列表）
+            # 白名单内的进程需满足：不重名、不支持独立重启
+            # 切分点计算仅参考白名单进程的 PID 和序号信息，避免同名/独立重启进程干扰
+            # 留空则退化为仅用 indicator 的时间戳作为切分点
+            board_restart_whitelist: []
+            # 示例:
+            # board_restart_whitelist:
+            #   - "svc_a"
+            #   - "svc_b"
 
             # [按需修改] 进程名映射：诊断日志名 → journal 日志名
             # 用于 journal 中 indicator 进程名与诊断日志不一致时的映射

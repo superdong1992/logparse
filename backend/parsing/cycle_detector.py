@@ -1,27 +1,76 @@
-"""重启周期检测：PID 变化 + 序号回绕反向扫描。"""
+"""重启周期检测：基于 indicator PID 变化 + 白名单进程安全切分。
+
+算法概述（三步切分）：
+
+  Step 1 - 检测板卡重启
+    indicator 进程 PID 变化 → 判定为板卡重启。
+    indicator 是配置选定的非独立重启进程，PID 变化仅发生在板卡重启时。
+
+  Step 2 - 确定安全切分点
+    仅参考白名单进程（不重名、不支持独立重启）的 PID 信息：
+    - old_pid_end = 白名单内所有进程旧 PID 最后一条时间戳的最大值
+    - new_pid_start = 白名单内所有进程新 PID 第一条时间戳的最小值
+    - 初始切分点 = old_pid_end（保证旧 PID 段不被拆断）
+    若 old_pid_end > new_pid_start（进程拉起时间重叠），优先保证同 PID 完整性。
+
+  Step 3 - Journal 序号前移
+    对白名单内每个进程：
+    a) 从诊断日志获取旧 PID 的最后一个 No（如 No[500]）
+    b) 在该进程的全部条目（诊断 + journal）中找序号跳变（从 ~500 跳到小号）
+    c) 跳变后第一条的时间戳 = 该进程的候选前移点
+    d) journal_earliest = 所有进程候选前移点的最小值
+    前移约束：最终切分点 = max(journal_earliest, old_pid_end)
+
+  非白名单进程不参与切分点计算，按最终切分点被动分配。
+
+  详见: docs/superpowers/specs/2026-05-22-cycle-split-algorithm-design.md
+"""
+
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from backend.models import MechBoardCycle, MechLogEntry, MechProcessLifecycle
 
-SEQ_ROLLBACK_THRESHOLD = 3
+logger = logging.getLogger(__name__)
+
+SEQ_JUMP_THRESHOLD = 3
 
 
 class CycleDetector:
-    def __init__(self, indicator: str | None = None):
+    """重启周期检测器。
+
+    Args:
+        indicator: 板卡重启标识进程名（小写），PID 变化时触发切分。
+        whitelist: 参与切分点计算的白名单进程名列表（小写），
+                   这些进程不重名且不支持独立重启。
+    """
+
+    def __init__(
+        self,
+        indicator: str | None = None,
+        whitelist: list[str] | None = None,
+    ):
         self._indicator = indicator
+        self._whitelist = [w.lower() for w in (whitelist or [])]
 
     def detect(self, entries: list[MechLogEntry]) -> list[MechBoardCycle]:
-        return self._build_cycles(entries, self._indicator)
+        """检测重启周期，返回按时间排列的周期列表。"""
+        logger.info(
+            "CycleDetector.detect: 共 %d 条日志, indicator=%r, whitelist=%s",
+            len(entries), self._indicator, self._whitelist,
+        )
+        return self._build_cycles(entries)
 
-    def _build_cycles(
-        self, entries: list[MechLogEntry], indicator: str | None,
-    ) -> list[MechBoardCycle]:
+    # ── 主流程 ──────────────────────────────────────────────
+
+    def _build_cycles(self, entries: list[MechLogEntry]) -> list[MechBoardCycle]:
         if not entries:
             return []
 
+        # 按 (slot, cpu_key) 分组
         by_cpu: dict[str, list[MechLogEntry]] = defaultdict(list)
         for e in entries:
             cpu_key = e.cpu_id or ""
@@ -34,89 +83,453 @@ class CycleDetector:
                 e.sequence,
             ))
 
+        logger.info("按 cpu_key 分组: %s", {k: len(v) for k, v in by_cpu.items()})
+
+        if not self._indicator:
+            logger.warning("indicator 为空，不做 PID 切分，整体作为一个周期")
+            all_entries = [e for group in by_cpu.values() for e in group]
+            return self._make_cycles(all_entries) if all_entries else []
+
+        # 收集所有 cpu_key 的切分时间点
+        all_split_timestamps: list[datetime] = []
+
+        # 板卡级（cpu_key=""）的切分时间点
         board_splits: list[datetime] = []
-        if "" in by_cpu and indicator:
-            group = by_cpu[""]
-            max_seq: dict[tuple[str, str], int] = {}
-            seg_start = 0
-            prev_pid = None
-            for i, e in enumerate(group):
-                if e.sequence > 0:
-                    key = (e.process_name.lower(), e.pid or "")
-                    max_seq[key] = max(max_seq.get(key, 0), e.sequence)
-                if indicator in e.process_name.lower():
-                    if prev_pid and e.pid and prev_pid != e.pid:
-                        boundary = self._find_seq_wrap_boundary(
-                            group, i - 1, seg_start, max_seq,
-                        )
-                        board_splits.append(
-                            group[boundary].timestamp if group[boundary].timestamp else e.timestamp
-                        )
-                        seg_start = boundary
-                    if e.pid:
-                        prev_pid = e.pid
+        if "" in by_cpu:
+            board_splits = self._detect_splits_for_group(by_cpu[""])
+
+        for cpu_key in sorted(by_cpu.keys()):
+            if cpu_key == "":
+                all_split_timestamps.extend(board_splits)
+                continue
+            # 子卡：板卡级切分 + 自身 PID 变化切分
+            all_split_timestamps.extend(board_splits)
+            cpu_splits = self._detect_splits_for_group(by_cpu[cpu_key])
+            all_split_timestamps.extend(cpu_splits)
+            if cpu_splits:
+                logger.info(
+                    "cpu_key=%r 切分时间点(%d): %s",
+                    cpu_key, len(cpu_splits),
+                    [ts.isoformat() for ts in cpu_splits],
+                )
+
+        # 去重排序，形成统一切分时间线
+        unique_splits = sorted(set(ts for ts in all_split_timestamps if ts is not None))
+        logger.info(
+            "统一切分时间点(%d): %s",
+            len(unique_splits),
+            [ts.isoformat() for ts in unique_splits],
+        )
 
         cycles: list[MechBoardCycle] = []
-        for cpu_key in sorted(by_cpu.keys()):
-            group = by_cpu[cpu_key]
-            max_seq: dict[tuple[str, str], int] = {}
 
-            local_splits: set[int] = set()
-            seg_start = 0
-            if indicator:
-                prev_pid = None
-                for i, e in enumerate(group):
-                    if e.sequence > 0:
-                        key = (e.process_name.lower(), e.pid or "")
-                        max_seq[key] = max(max_seq.get(key, 0), e.sequence)
-                    if indicator in e.process_name.lower():
-                        if prev_pid and e.pid and prev_pid != e.pid:
-                            boundary = self._find_seq_wrap_boundary(
-                                group, i - 1, seg_start, max_seq,
-                            )
-                            local_splits.add(boundary)
-                            seg_start = boundary
-                        if e.pid:
-                            prev_pid = e.pid
+        if not unique_splits:
+            all_entries = [e for group in by_cpu.values() for e in group]
+            if all_entries:
+                cycles = self._make_cycles(all_entries)
+        else:
+            all_entries = [e for group in by_cpu.values() for e in group]
+            segments = self._segment_by_timestamps(all_entries, unique_splits)
+            for seg in segments:
+                if seg:
+                    cycles.extend(self._make_cycles(seg))
 
-            if cpu_key != "" and board_splits:
-                for split_ts in board_splits:
-                    if split_ts is None:
-                        continue
-                    for i, e in enumerate(group):
-                        if e.timestamp and e.timestamp >= split_ts:
-                            boundary = self._find_seq_wrap_boundary(
-                                group, i, seg_start, max_seq,
-                            )
-                            local_splits.add(boundary)
-                            seg_start = boundary
-                            break
-
-            all_splits = sorted(local_splits)
-            seg_start = 0
-            for split_i in all_splits:
-                if split_i > seg_start:
-                    cycles.extend(self._make_cycles(group[seg_start:split_i]))
-                seg_start = split_i
-            if seg_start < len(group):
-                cycles.extend(self._make_cycles(group[seg_start:]))
+        logger.info("最终切分结果: %d 个周期", len(cycles))
+        for i, c in enumerate(cycles):
+            logger.info("  周期[%d]: %s, %d 个进程组", i, c.dir_name, len(c.processes))
 
         return cycles
 
-    @staticmethod
-    def _find_seq_wrap_boundary(
-        group: list[MechLogEntry], search_end: int, search_start: int,
-        max_seq: dict[tuple[str, str], int],
-    ) -> int:
-        boundary = search_end + 1
-        for j in range(search_end, search_start - 1, -1):
-            e = group[j]
+    # ── 单组切分检测（核心算法）───────────────────────────────
+
+    def _detect_splits_for_group(
+        self, group: list[MechLogEntry],
+    ) -> list[datetime]:
+        """检测单 (slot, cpu_key) 组内的板卡重启切分点。
+
+        算法：
+          1. 在 indicator 进程中检测 PID 变化，定位重启事件
+          2. 对每个重启事件，用白名单进程计算安全切分点
+          3. 尝试通过 journal 序号跳变前移切分点
+        """
+        if not group:
+            return []
+
+        # Step 1: 找到 indicator 的所有 PID 变化点
+        indicator_splits = self._find_indicator_pid_changes(group)
+        if not indicator_splits:
+            logger.info("indicator=%r 无 PID 变化", self._indicator)
+            return []
+
+        logger.info(
+            "indicator=%r 检测到 %d 次 PID 变化",
+            self._indicator, len(indicator_splits),
+        )
+
+        # Step 2 + 3: 对每个 PID 变化点，计算精确切分时间
+        split_timestamps: list[datetime] = []
+        for idx, (old_pid, change_idx) in enumerate(indicator_splits):
+            # 确定搜索范围：从上一个切分点到当前切分点之后
+            search_start = 0
+            if idx > 0:
+                prev_change_idx = indicator_splits[idx - 1][1]
+                # 搜索起点从上一次变化点开始（包含旧生命周期尾部）
+                search_start = prev_change_idx
+
+            split_ts = self._compute_split_timestamp(
+                group, change_idx, search_start, old_pid,
+            )
+            if split_ts:
+                split_timestamps.append(split_ts)
+                logger.info(
+                    "PID 变化 #%d: indicator old_pid=%s → 切分时间=%s",
+                    idx + 1, old_pid, split_ts.isoformat(),
+                )
+
+        return split_timestamps
+
+    def _find_indicator_pid_changes(
+        self, group: list[MechLogEntry],
+    ) -> list[tuple[str, int]]:
+        """找到 indicator 进程的所有 PID 变化点。
+
+        Returns:
+            列表，每项为 (旧PID, 变化发生的条目索引)。
+        """
+        indicator_lower = self._indicator.lower()
+        changes: list[tuple[str, int]] = []
+        prev_pid: str | None = None
+
+        for i, e in enumerate(group):
+            if e.process_name.lower() != indicator_lower:
+                continue
+            if not e.pid:
+                continue
+            if prev_pid and e.pid != prev_pid:
+                changes.append((prev_pid, i))
+                logger.info(
+                    "indicator PID 变化: %s → %s at index=%d, ts=%s",
+                    prev_pid, e.pid, i,
+                    e.timestamp.isoformat() if e.timestamp else None,
+                )
+            prev_pid = e.pid
+
+        return changes
+
+    # ── 安全切分点计算 ──────────────────────────────────────
+
+    def _compute_split_timestamp(
+        self,
+        group: list[MechLogEntry],
+        change_idx: int,
+        search_start: int,
+        indicator_old_pid: str,
+    ) -> datetime | None:
+        """计算单次重启的精确切分时间戳。
+
+        Args:
+            group: 按 (slot, cpu_key) 分组并排序后的全部条目
+            change_idx: indicator PID 变化发生的条目索引
+            search_start: 搜索范围起始索引（上一个切分点）
+            indicator_old_pid: indicator 的旧 PID
+        """
+        # 确定 indicator 新 PID 的第一条时间戳，作为 fallback
+        indicator_new_ts = group[change_idx].timestamp
+
+        # ── Step 2: 白名单进程安全切分点 ──
+
+        # 找到白名单进程的旧 PID 和新 PID 边界
+        old_pid_ends: list[datetime] = []
+        new_pid_starts: list[datetime] = []
+
+        # 始终包含 indicator 进程
+        whitelist_set = set(self._whitelist)
+        indicator_name = self._indicator.lower()
+        whitelist_set.add(indicator_name)
+
+        # 记录每个白名单进程的 PID 变化索引，供后续序号跳变检测使用
+        proc_change_indices: dict[str, int] = {}
+
+        for proc_name_lower in whitelist_set:
+            old_last_ts, new_first_ts, change_at = self._find_pid_boundary(
+                group, proc_name_lower, search_start,
+            )
+            if change_at is not None:
+                proc_change_indices[proc_name_lower] = change_at
+            if old_last_ts:
+                old_pid_ends.append(old_last_ts)
+                logger.debug(
+                    "白名单进程 %r: 旧 PID 最后一条 ts=%s",
+                    proc_name_lower, old_last_ts.isoformat(),
+                )
+            if new_first_ts:
+                new_pid_starts.append(new_first_ts)
+                logger.debug(
+                    "白名单进程 %r: 新 PID 第一条 ts=%s",
+                    proc_name_lower, new_first_ts.isoformat(),
+                )
+
+        if not old_pid_ends and not new_pid_starts:
+            # 退化为 indicator 自身的时间戳
+            return indicator_new_ts
+
+        # old_pid_end = 白名单内旧 PID 最后一条的最大值
+        # 保证切分点之后不会有任何旧 PID 条目（同 PID 不被拆断）
+        old_pid_end = max(old_pid_ends) if old_pid_ends else None
+
+        # new_pid_start = 白名单内新 PID 第一条的最小值
+        new_pid_start = min(new_pid_starts) if new_pid_starts else None
+
+        logger.info(
+            "安全区间: old_pid_end=%s, new_pid_start=%s",
+            old_pid_end.isoformat() if old_pid_end else None,
+            new_pid_start.isoformat() if new_pid_start else None,
+        )
+
+        # 初始切分点：优先取 old_pid_end（保证旧 PID 完整性）
+        if old_pid_end:
+            initial_split = old_pid_end
+        elif new_pid_start:
+            initial_split = new_pid_start
+        else:
+            initial_split = indicator_new_ts
+
+        # ── Step 3: Journal 序号前移 ──
+
+        journal_earliest = self._find_journal_earliest(
+            group, whitelist_set, search_start, proc_change_indices,
+        )
+
+        if journal_earliest:
+            logger.info(
+                "Journal 序号前移候选: %s (初始切分点: %s)",
+                journal_earliest.isoformat(), initial_split.isoformat(),
+            )
+
+        # 最终切分点：从安全候选中取最早值
+        # 板卡重启时所有进程先停再起，old_pid_end < new_pid_start 一定成立
+        # 约束：切分点必须 > old_pid_end（旧 PID 不被拆断）
+        # 使用 >= 比较，条目 >= 切分点 → 新周期
+        lower_bound = old_pid_end
+
+        candidates: list[datetime] = []
+        if new_pid_start:
+            candidates.append(new_pid_start)
+        if journal_earliest and (not lower_bound or journal_earliest > lower_bound):
+            candidates.append(journal_earliest)
+
+        if candidates:
+            final_split = min(candidates)
+        elif lower_bound:
+            final_split = lower_bound + timedelta(microseconds=1)
+        else:
+            final_split = initial_split
+
+        return final_split
+
+    def _find_pid_boundary(
+        self,
+        group: list[MechLogEntry],
+        proc_name_lower: str,
+        search_start: int,
+    ) -> tuple[datetime | None, datetime | None, int | None]:
+        """找到指定进程的旧 PID 最后一条、新 PID 第一条及 PID 变化索引。
+
+        通过检测 PID 变化来区分旧生命周期和新生命周期。
+        仅考虑有 PID 的条目（journal 无 PID 条目不参与 PID 边界判定）。
+
+        Returns:
+            (旧 PID 最后一条时间戳, 新 PID 第一条时间戳, PID 变化索引)
+        """
+        prev_pid: str | None = None
+        old_pid: str | None = None
+        new_first_ts: datetime | None = None
+        change_at: int | None = None
+        found_change = False
+
+        for i in range(search_start, len(group)):
+            e = group[i]
+            if e.process_name.lower() != proc_name_lower:
+                continue
+            if not e.pid:
+                continue
+
+            if prev_pid and e.pid != prev_pid and not found_change:
+                found_change = True
+                old_pid = prev_pid
+                change_at = i
+                if e.timestamp:
+                    new_first_ts = e.timestamp
+            prev_pid = e.pid
+
+        if not found_change:
+            logger.debug(
+                "进程 %r 在搜索范围内未检测到 PID 变化", proc_name_lower,
+            )
+            return None, None, None
+
+        # 从 PID 变化点向前扫描，只取旧 PID 条目的最后一条
+        old_last_ts: datetime | None = None
+        if old_pid:
+            for i in range(change_at - 1, search_start - 1, -1):
+                e = group[i]
+                if e.process_name.lower() != proc_name_lower:
+                    continue
+                if e.pid != old_pid:
+                    continue
+                if e.timestamp:
+                    old_last_ts = e.timestamp
+                    break
+            if not old_last_ts:
+                logger.warning(
+                    "进程 %r 旧 PID=%s 无时间戳条目，切分点可能偏移",
+                    proc_name_lower, old_pid,
+                )
+
+        return old_last_ts, new_first_ts, change_at
+
+    # ── Journal 序号前移 ────────────────────────────────────
+
+    def _find_journal_earliest(
+        self,
+        group: list[MechLogEntry],
+        whitelist_set: set[str],
+        search_start: int,
+        proc_change_indices: dict[str, int],
+    ) -> datetime | None:
+        """在白名单进程的全部条目中找序号跳变，尝试前移切分点。
+
+        使用每个进程自身的 PID 变化索引，而非 indicator 的 change_idx + 50。
+        """
+        earliest: datetime | None = None
+
+        for proc_name_lower in whitelist_set:
+            change_at = proc_change_indices.get(proc_name_lower)
+            if change_at is None:
+                continue
+            candidate = self._find_seq_jump_for_process(
+                group, proc_name_lower, search_start, change_at,
+            )
+            if candidate:
+                logger.debug(
+                    "进程 %r journal 序号前移候选: %s",
+                    proc_name_lower, candidate.isoformat(),
+                )
+                if earliest is None or candidate < earliest:
+                    earliest = candidate
+
+        return earliest
+
+    def _find_seq_jump_for_process(
+        self,
+        group: list[MechLogEntry],
+        proc_name_lower: str,
+        search_start: int,
+        change_at: int,
+    ) -> datetime | None:
+        """找单个进程的序号跳变点。
+
+        使用该进程自身的 PID 变化索引 change_at 作为扫描上界。
+
+        1. 从诊断日志获取旧 PID 阶段的最后一个 No
+        2. 在全部条目中找序号从旧 No 附近跳到小号的第一条
+        3. 跳变后第一条的时间戳即为候选前移点
+        """
+        # 获取旧 PID 阶段的最后一个序号
+        old_max_seq = self._get_old_pid_max_seq(
+            group, proc_name_lower, search_start, change_at,
+        )
+        if old_max_seq <= 0:
+            return None
+
+        # 收集该进程在 search_start..change_at（不含）范围内有序号的条目
+        # 不含 change_at：该位置是新 PID 第一条，其小序号会与旧 PID 末尾产生伪跳变
+        proc_entries: list[tuple[int, MechLogEntry]] = []
+        for i in range(search_start, change_at):
+            e = group[i]
+            if e.process_name.lower() != proc_name_lower:
+                continue
             if e.sequence > 0:
-                key = (e.process_name.lower(), e.pid or "")
-                prev_max = max_seq.get(key, 0)
-                if prev_max - e.sequence > SEQ_ROLLBACK_THRESHOLD:
-                    boundary = j
-        return boundary
+                proc_entries.append((i, e))
+
+        if len(proc_entries) < 2:
+            return None
+
+        # 找序号跳变：从高跳到低（差值 > SEQ_JUMP_THRESHOLD）
+        for k in range(len(proc_entries) - 1):
+            _, prev_e = proc_entries[k]
+            idx, curr_e = proc_entries[k + 1]
+            if prev_e.sequence - curr_e.sequence > SEQ_JUMP_THRESHOLD:
+                logger.debug(
+                    "进程 %r 序号跳变: No[%d] → No[%d] at index=%d",
+                    proc_name_lower, prev_e.sequence, curr_e.sequence, idx,
+                )
+                return curr_e.timestamp
+
+        return None
+
+    @staticmethod
+    def _get_old_pid_max_seq(
+        group: list[MechLogEntry],
+        proc_name_lower: str,
+        search_start: int,
+        change_at: int,
+    ) -> int:
+        """获取指定进程在旧 PID 阶段（PID 变化点之前）的最大序号。"""
+        max_seq = 0
+        for i in range(search_start, change_at):
+            e = group[i]
+            if e.process_name.lower() != proc_name_lower:
+                continue
+            if e.sequence > max_seq:
+                max_seq = e.sequence
+
+        return max_seq
+
+    # ── 分段与构建 ──────────────────────────────────────────
+
+    @staticmethod
+    def _segment_by_timestamps(
+        entries: list[MechLogEntry], split_timestamps: list[datetime],
+    ) -> list[list[MechLogEntry]]:
+        """按统一切分时间线对所有条目分段。
+
+        使用 ``>=`` 比较：条目 >= 切分点 → 新周期。
+        切分点由 _compute_split_timestamp 计算，已包含 +1us 偏移（来自 old_pid_end 时）
+        以保证旧 PID 最后一条不被划到新周期。
+        """
+        sorted_entries = sorted(entries, key=lambda e: (
+            0 if e.timestamp else 1,
+            e.timestamp.timestamp() if e.timestamp else 0,
+            e.sequence,
+        ))
+
+        segments: list[list[MechLogEntry]] = []
+        current: list[MechLogEntry] = []
+        split_idx = 0
+
+        # 先收集无时间戳条目，延迟到有时间戳条目触发切分时一起分配
+        pending_no_ts: list[MechLogEntry] = []
+
+        for e in sorted_entries:
+            if not e.timestamp:
+                pending_no_ts.append(e)
+                continue
+            while (split_idx < len(split_timestamps)
+                   and e.timestamp >= split_timestamps[split_idx]):
+                # 切分时，无时间戳条目归入前一段（当前段结束）
+                current.extend(pending_no_ts)
+                pending_no_ts = []
+                segments.append(current)
+                current = []
+                split_idx += 1
+            current.append(e)
+
+        if current or pending_no_ts:
+            current.extend(pending_no_ts)
+            segments.append(current)
+
+        return segments
 
     @staticmethod
     def _make_cycles(entries: list[MechLogEntry]) -> list[MechBoardCycle]:
@@ -136,13 +549,35 @@ class CycleDetector:
     def _build_processes(
         entries: list[MechLogEntry],
     ) -> list[MechProcessLifecycle]:
-        by_key: dict[tuple[str, str], list[MechLogEntry]] = defaultdict(list)
+        # 分组键含 cpu_id，防止不同 CPU 同名同 PID 进程日志合并
+        by_key: dict[tuple[str, str, str], list[MechLogEntry]] = defaultdict(list)
         for e in entries:
-            by_key[(e.process_name, e.pid)].append(e)
+            by_key[(e.process_name, e.pid, e.cpu_id or "")].append(e)
+
+        # 将无 PID 的 journal 条目合并到同进程名+同 cpu_id 有 PID 的分组
+        # 同一生命周期内同一进程只有一个 PID，journal 无 PID 条目属于该 PID
+        no_pid_keys = [k for k in by_key if k[1] == ""]
+        for proc_name, _empty_pid, cpu_key in no_pid_keys:
+            no_pid_logs = by_key.pop((proc_name, "", cpu_key))
+            # 找同进程名+同 cpu_id 有 PID 的分组
+            pid_key = None
+            for k in by_key:
+                if k[0] == proc_name and k[1] and k[2] == cpu_key:
+                    pid_key = k
+                    break
+            if pid_key:
+                by_key[pid_key].extend(no_pid_logs)
+            else:
+                # 没找到有 PID 的分组，保留原样
+                by_key[(proc_name, "", cpu_key)] = no_pid_logs
 
         lifecycles: list[MechProcessLifecycle] = []
-        for (proc_name, pid), logs in sorted(by_key.items()):
-            logs.sort(key=lambda e: e.sequence)
+        for (proc_name, pid, _cpu_key), logs in sorted(by_key.items()):
+            logs.sort(key=lambda e: (
+                0 if e.timestamp else 1,
+                e.timestamp.timestamp() if e.timestamp else 0,
+                e.sequence,
+            ))
             seqs = [l.sequence for l in logs if l.sequence > 0]
             missing: list[int] = []
             if len(seqs) >= 2:

@@ -26,7 +26,7 @@ class MechOutputWriter:
                         out_dir = cycle_dir / f"cpu_{cpu_key}"
                     out_dir.mkdir(parents=True, exist_ok=True)
                     for proc in procs:
-                        fname = f"{proc.process_name}-{proc.pid}.log"
+                        fname = f"{proc.process_name}-{proc.pid}.log" if proc.pid else f"{proc.process_name}.log"
                         out_path = out_dir / fname
                         with open(out_path, "w", encoding="utf-8") as fh:
                             for log in proc.logs:

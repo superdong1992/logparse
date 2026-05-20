@@ -133,9 +133,15 @@ output/{task_id}/mech_modules/{module_name}/
 
 ### 重启周期切分规则（CycleDetector）
 
-1. **indicator PID 变化**（`board_restart_indicator` 配置）：同一 (slot, cpu) 组内 indicator 进程的 PID 变化时触发切分
-2. **序号回绕反向扫描**：PID 变化后向前扫描，找最早的序号回绕点，前移切分边界。阈值 `SEQ_ROLLBACK_THRESHOLD=3`
-3. **层级传播**：板卡级 PID 变化 → 所有子 cpu 组同步切分；cpu 级 PID 变化 → 仅该 cpu 组切分
+三步切分算法（详见 `docs/superpowers/specs/2026-05-22-cycle-split-algorithm-design.md`）：
+
+1. **检测板卡重启**：indicator 进程（`board_restart_indicator`，非独立重启）PID 变化 → 判定板卡重启
+2. **安全切分点**：仅参考白名单进程（`board_restart_whitelist`，不重名、不支持独立重启）的 PID 信息：
+   - `old_pid_end` = 白名单内所有进程旧 PID 最后一条时间戳的最大值
+   - `new_pid_start` = 白名单内所有进程新 PID 第一条时间戳的最小值
+   - 切分点 = 安全候选中的最早值，保证同 PID 段不被拆断
+3. **Journal 序号前移**：对白名单内进程，从诊断日志获取旧 PID 最后 No，在全部条目（含 journal）中找序号跳变（从大号跳到小号），尝试前移切分点（受安全约束限制）
+4. **层级传播**：板卡级 PID 变化 → 所有子 cpu 组同步切分；cpu 级 PID 变化 → 仅该 cpu 组切分
 
 ### 配置驱动
 
@@ -147,7 +153,8 @@ output/{task_id}/mech_modules/{module_name}/
 - `log_parser.config.active_period_gap_threshold` — ActivePeriod 切分阈值（秒）
 - `log_parser.config.mechanism_modules` — 机制模块配置
   - `journal.line_pattern` / `line_pattern2` — 双正则 fallback
-  - `board_restart_indicator` — 板卡重启标识进程名
+  - `board_restart_indicator` — 板卡重启标识进程名（非独立重启）
+  - `board_restart_whitelist` — 切分计算白名单进程列表（不重名、不支持独立重启）
   - `sequence_pattern` — 序号提取正则
 
 ### 解压安全规范

@@ -81,6 +81,25 @@ class ParserPlugin(LogParserPlugin):
         for slot in slots:
             for entry in slot.diagnostic_logs:
                 entry.content_timestamps = self._ts_extractor.extract_from_entry(entry)
+        # 时区归一化：在排序/构建 ActivePeriod 前，将 naive datetime 统一时区
+        tzinfo = None
+        for slot in slots:
+            for entry in slot.diagnostic_logs:
+                for ts in entry.content_timestamps:
+                    if ts.tzinfo:
+                        tzinfo = ts.tzinfo
+                        break
+                if tzinfo:
+                    break
+            if tzinfo:
+                break
+        if tzinfo:
+            for slot in slots:
+                for entry in slot.diagnostic_logs:
+                    entry.content_timestamps = [
+                        ts.replace(tzinfo=tzinfo) if ts.tzinfo is None else ts
+                        for ts in entry.content_timestamps
+                    ]
 
     # ── ActivePeriod 构建 ─────────────────────────────────
 
@@ -129,7 +148,18 @@ class ParserPlugin(LogParserPlugin):
                           if cfg.get("active_master_keyword") else None)
         indicator = (cfg.get("board_restart_indicator", "").lower()
                      if cfg.get("board_restart_indicator") else None)
+        whitelist = cfg.get("board_restart_whitelist", [])
         name_map: dict[str, str] = cfg.get("process_name_mapping", {})
+
+        # 白名单进程不能出现在映射表中（白名单要求不重名，映射表进程存在重名）
+        whitelist_set = {w.lower() for w in whitelist}
+        map_keys = {k.lower() for k in name_map}
+        conflict = whitelist_set & map_keys
+        if conflict:
+            raise ValueError(
+                f"白名单进程不能同时配置在 process_name_mapping 中"
+                f"（白名单要求不重名，mapping 进程存在重名）: {sorted(conflict)}"
+            )
 
         all_entries: list[MechLogEntry] = []
 
@@ -144,11 +174,11 @@ class ParserPlugin(LogParserPlugin):
                         )
                     )
 
-        # 时区对齐起点
-        tzinfo = None
+        # 诊断日志时区，供 journal 扫描时即时归一化
+        diag_tz = None
         for e in all_entries:
             if e.timestamp and e.timestamp.tzinfo:
-                tzinfo = e.timestamp.tzinfo
+                diag_tz = e.timestamp.tzinfo
                 break
 
         # 扫描 journal 日志
@@ -158,7 +188,7 @@ class ParserPlugin(LogParserPlugin):
                     self._scan_journal_entries(
                         ps, journal_re, journal_re2, journal_keyword,
                         seq_re, master_keyword, name_map, indicator,
-                        mod_upper, tzinfo,
+                        mod_upper, diag_tz,
                     )
                 )
 
@@ -184,7 +214,7 @@ class ParserPlugin(LogParserPlugin):
         mech_result = MechResult(module_name=module_name)
         for slot_id, entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
-            detector = CycleDetector(indicator=indicator)
+            detector = CycleDetector(indicator=indicator, whitelist=whitelist)
             slot_output.board_cycles = detector.detect(entries)
             mech_result.slots.append(slot_output)
 
@@ -222,6 +252,8 @@ class ParserPlugin(LogParserPlugin):
 
             slot = m.group("Slot")
             cpu_id = m.group("CPU_Id")
+            if cpu_id == "0":
+                cpu_id = ""
             raw_proc_name = m.group("ProcessName")
             context = m.group("Context")
 
@@ -302,10 +334,10 @@ class ParserPlugin(LogParserPlugin):
                     proc_name = raw_name
                     if "-" in raw_name and not pid:
                         parts = raw_name.rsplit("-", 1)
-                        if parts[-1].isdigit():
+                        # PID 一般 >= 3 位数字，避免误拆含数字后缀的进程名
+                        if len(parts[-1]) >= 3 and parts[-1].isdigit():
                             proc_name = parts[0]
                             pid = parts[-1]
-
                 is_active = bool(master_keyword and master_keyword.search(context))
                 ts = self._extract_first_ts(line)
                 if ts and ts.tzinfo is None and tzinfo is not None:
@@ -315,7 +347,7 @@ class ParserPlugin(LogParserPlugin):
                 entries.append(MechLogEntry(
                     timestamp=ts, source="journal",
                     source_file=src_file,
-                    slot=ps.slot_id, cpu_id=ps.cpu_id or "",
+                    slot=ps.slot_id, cpu_id=ps.cpu_id if ps.cpu_id not in (None, "", "0") else "",
                     process_name=proc_name, pid=pid,
                     context=context, sequence=seq,
                     is_active_signal=is_active, raw=line.strip()[:500],

@@ -80,7 +80,7 @@ class Pipeline:
         # Step 1: 解压（仅外层，内层压缩包留给 Step 3）
         extracted = _safe(f"[1/6] 解压 {source.name}",
               lambda: self.decompressor.extract_all(
-                  source, extract_dir, recursive=self.pipeline_config.get("recursive", False),
+                  source, extract_dir, recursive=self.pipeline_config.get("recursive_extraction", False),
               ))
         if verbose and extracted is not None:
             print(f"    解压文件数: {extracted}")
@@ -108,6 +108,12 @@ class Pipeline:
         if self.pipeline_config.get("inner_extraction", True):
             _safe("[3/6] 解压诊断日志内容",
                   lambda: self._extract_inner_contents(result, output_dir / task_id))
+
+        # Step 3.5: 解压所有 .gz 文件，方便手工浏览
+        gz_count = _safe("解压 .gz 文件",
+                         lambda: self._decompress_gz_in_dir(extract_dir))
+        if verbose and gz_count:
+            print(f"    解压 .gz 文件: {gz_count} 个")
 
         # Step 4: 日志解析
         _safe("[4/6] 日志解析 (时间戳+周期+机制模块+角色)",
@@ -188,3 +194,39 @@ class Pipeline:
                     entry.extracted_path = str(dest)
                 except Exception as e:
                     logger.warning("内层解压失败 %s: %s", src, e)
+
+    @staticmethod
+    def _decompress_gz_in_dir(directory: Path) -> int:
+        """解压目录下所有 .gz 文件（就地展开），方便手工浏览。"""
+        import gzip
+
+        from backend.decompressor import MAX_UNCOMPRESSED_SIZE
+
+        count = 0
+        for gz_path in sorted(directory.rglob("*.gz")):
+            if not gz_path.is_file():
+                continue
+            output_path = gz_path.parent / gz_path.stem
+            if output_path.exists():
+                continue
+            try:
+                exceeded = False
+                with gzip.open(gz_path, "rb") as f_in, open(output_path, "wb") as f_out:
+                    written = 0
+                    while True:
+                        chunk = f_in.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > MAX_UNCOMPRESSED_SIZE:
+                            logger.warning("gzip 解压后超过大小上限，跳过: %s", gz_path)
+                            exceeded = True
+                            break
+                        f_out.write(chunk)
+                if exceeded:
+                    output_path.unlink(missing_ok=True)
+                else:
+                    count += 1
+            except Exception as e:
+                logger.warning("解压 .gz 失败 %s: %s", gz_path, e)
+        return count

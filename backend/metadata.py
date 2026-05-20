@@ -24,10 +24,8 @@ class MetadataGenerator:
             "errors": result.errors,
         }
 
-        metadata_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        with metadata_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, default=str)
         return metadata_path
 
     @staticmethod
@@ -86,6 +84,8 @@ class MetadataGenerator:
         return {
             "module_name": mech.module_name,
             "active_master_slots": mech.active_master_slots,
+            "diag_entry_count": mech.diag_entry_count,
+            "journal_entry_count": mech.journal_entry_count,
             "slots": [
                 {
                     "slot_id": s.slot_id,
@@ -99,17 +99,7 @@ class MetadataGenerator:
                                     "process_name": p.process_name,
                                     "pid": p.pid,
                                     "total_count": p.total_count,
-                                    "missing_sequences": p.missing_sequences,
-                                    "logs": [
-                                        {
-                                            "source": l.source,
-                                            "sequence": l.sequence,
-                                            "timestamp": l.timestamp.isoformat() if l.timestamp else None,
-                                            "context": l.context,
-                                            "is_active_signal": l.is_active_signal,
-                                        }
-                                        for l in p.logs
-                                    ],
+                                    "missing_count": len(p.missing_sequences),
                                 }
                                 for p in c.processes
                             ],
