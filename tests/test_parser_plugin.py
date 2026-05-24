@@ -56,7 +56,7 @@ class TestBuildActivePeriods:
         entry.content_timestamps = [base + timedelta(minutes=i) for i in range(5)]
         slot.add_diagnostic_log(entry)
 
-        periods = plugin._build_active_periods(slot)
+        periods = plugin._active_period_builder.build(slot)
         assert len(periods) == 1
         assert periods[0].start == base
         assert periods[0].end == base + timedelta(minutes=4)
@@ -73,12 +73,12 @@ class TestBuildActivePeriods:
         ]
         slot.add_diagnostic_log(entry)
 
-        periods = plugin._build_active_periods(slot)
+        periods = plugin._active_period_builder.build(slot)
         assert len(periods) == 2
 
     def test_empty_slot(self, plugin):
         slot = SlotInfo(slot_id="1", name="slot_1", path="/tmp")
-        assert plugin._build_active_periods(slot) == []
+        assert plugin._active_period_builder.build(slot) == []
 
 
 class TestParseDiagProcName:

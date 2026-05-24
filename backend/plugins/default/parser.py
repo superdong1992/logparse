@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from backend.config_validation import validate_mechanism_module_config
 from backend.models import (
-    ActivePeriod,
     MechLogEntry,
     MechResult,
     MechSlotOutput,
@@ -20,6 +19,7 @@ from backend.models import (
     PrivateSlotInfo,
     SlotInfo,
 )
+from backend.parsing.active_period_builder import ActivePeriodBuilder
 from backend.parsing.cycle_detector import CycleDetector
 from backend.parsing.output_writer import MechOutputWriter
 from backend.parsing.role_identifier import RoleIdentifier
@@ -36,6 +36,7 @@ class ParserPlugin(LogParserPlugin):
         super().__init__(config)
         self._compile_patterns()
         self._ts_extractor = TimestampExtractor(self._ts_regex)
+        self._active_period_builder = ActivePeriodBuilder(self._gap_threshold)
 
     def _compile_patterns(self) -> None:
         self._ts_regex = re.compile(
@@ -53,7 +54,7 @@ class ParserPlugin(LogParserPlugin):
 
         # 2. 构建 ActivePeriod
         for slot in result.diagnostic_slots:
-            for p in self._build_active_periods(slot):
+            for p in self._active_period_builder.build(slot):
                 slot.add_active_period(p)
 
         # 3. 机制模块解析
@@ -105,29 +106,6 @@ class ParserPlugin(LogParserPlugin):
                         ts.replace(tzinfo=tzinfo) if ts.tzinfo is None else ts
                         for ts in entry.content_timestamps
                     ]
-
-    # ── ActivePeriod 构建 ─────────────────────────────────
-
-    def _build_active_periods(self, slot: SlotInfo) -> list[ActivePeriod]:
-        all_stamps = slot.all_content_timestamps
-        if not all_stamps:
-            return []
-
-        gap = timedelta(seconds=self._gap_threshold)
-        periods: list[ActivePeriod] = []
-        seg_start = all_stamps[0]
-        seg_end = all_stamps[0]
-
-        for ts in all_stamps[1:]:
-            if ts - seg_end <= gap:
-                seg_end = ts
-            else:
-                periods.append(ActivePeriod(start=seg_start, end=seg_end))
-                seg_start = ts
-                seg_end = ts
-
-        periods.append(ActivePeriod(start=seg_start, end=seg_end))
-        return periods
 
     # ── 机制模块解析 ──────────────────────────────────────
 
