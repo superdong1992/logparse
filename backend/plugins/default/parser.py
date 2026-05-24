@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.config_validation import validate_mechanism_module_config
 from backend.models import (
     ActivePeriod,
     MechLogEntry,
@@ -60,8 +61,12 @@ class ParserPlugin(LogParserPlugin):
         for module_key, cfg in self._mech_modules.items():
             if not cfg.get("enabled", True):
                 continue
-            if not cfg.get("module_name"):
+
+            errors = validate_mechanism_module_config(module_key, cfg)
+            if errors:
+                result.errors.extend(errors)
                 continue
+
             mech = self._parse_one_mech(result, cfg, module_key)
             if mech:
                 results[module_key] = mech
@@ -136,7 +141,8 @@ class ParserPlugin(LogParserPlugin):
         if diag_re:
             required = {"Slot", "CPU_Id", "ProcessName", "Context"}
             if not required.issubset(diag_re.groupindex):
-                return None
+                missing = required - set(diag_re.groupindex)
+                raise ValueError(f"{module_key} diag_pattern 缺少命名组: {sorted(missing)}")
 
         jnl_cfg: dict = cfg.get("journal", {})
         journal_re = re.compile(jnl_cfg["line_pattern"]) if jnl_cfg.get("line_pattern") else None
