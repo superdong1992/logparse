@@ -56,3 +56,93 @@ class TestMechLogPath:
         # No result.json → module_name is None → fallback path
         path = svc.mech_log_path("task1", "1", "cycle1", "PROC-123")
         assert path == tmp_path / "task1" / "mech_modules" / "slot_1" / "cycle1" / "PROC-123.log"
+
+
+def _write_result(tmp_path, task_id, mech_results):
+    task_dir = tmp_path / task_id
+    task_dir.mkdir(exist_ok=True)
+    (task_dir / "result.json").write_text(json.dumps({
+        "mech_results": mech_results,
+    }, ensure_ascii=False), encoding="utf-8")
+
+
+class TestMechModules:
+    def test_returns_all_modules_by_default(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {"module_name": "EXAMPLE", "slots": [{"slot_id": "1", "board_cycles": []}]},
+            {"module_name": "OTHER", "slots": [{"slot_id": "1", "board_cycles": []}]},
+        ])
+        modules = svc.mech_modules("task")
+        assert len(modules) == 2
+
+    def test_filters_by_module_name(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {"module_name": "EXAMPLE", "slots": []},
+            {"module_name": "OTHER", "slots": []},
+        ])
+        modules = svc.mech_modules("task", module_name="OTHER")
+        assert len(modules) == 1
+        assert modules[0]["module_name"] == "OTHER"
+
+    def test_returns_empty_when_no_file(self, svc):
+        assert svc.mech_modules("nonexistent") == []
+
+
+class TestMechSlotsMultiModule:
+    def test_returns_all_modules_by_default(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {"module_name": "EXAMPLE", "slots": [
+                {"slot_id": "1", "board_cycles": []},
+                {"slot_id": "2", "board_cycles": []},
+            ]},
+            {"module_name": "OTHER", "slots": [
+                {"slot_id": "1", "board_cycles": []},
+            ]},
+        ])
+        slots = svc.mech_slots("task")
+        assert {s["_module_name"] for s in slots} == {"EXAMPLE", "OTHER"}
+        assert len(slots) == 3
+
+    def test_can_filter_by_module(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {"module_name": "EXAMPLE", "slots": [{"slot_id": "1", "board_cycles": []}]},
+            {"module_name": "OTHER", "slots": [{"slot_id": "1", "board_cycles": []}]},
+        ])
+        slots = svc.mech_slots("task", module_name="OTHER")
+        assert len(slots) == 1
+        assert slots[0]["_module_name"] == "OTHER"
+
+
+class TestMechLifecyclesMultiModule:
+    def test_returns_all_matching_modules(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {"module_name": "EXAMPLE", "slots": [
+                {"slot_id": "1", "board_cycles": [{"dir_name": "c1"}]},
+            ]},
+            {"module_name": "OTHER", "slots": [
+                {"slot_id": "1", "board_cycles": [{"dir_name": "c2"}]},
+            ]},
+        ])
+        groups = svc.mech_lifecycles("task", slot_id="1")
+        assert {g["module_name"] for g in groups} == {"EXAMPLE", "OTHER"}
+        assert len(groups) == 2
+
+    def test_can_filter_by_module(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {"module_name": "EXAMPLE", "slots": [
+                {"slot_id": "1", "board_cycles": [{"dir_name": "c1"}]},
+            ]},
+            {"module_name": "OTHER", "slots": [
+                {"slot_id": "1", "board_cycles": [{"dir_name": "c2"}]},
+            ]},
+        ])
+        groups = svc.mech_lifecycles("task", slot_id="1", module_name="EXAMPLE")
+        assert len(groups) == 1
+        assert groups[0]["module_name"] == "EXAMPLE"
+
+    def test_returns_empty_when_no_match(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {"module_name": "EXAMPLE", "slots": [{"slot_id": "1", "board_cycles": []}]},
+        ])
+        groups = svc.mech_lifecycles("task", slot_id="99")
+        assert groups == []

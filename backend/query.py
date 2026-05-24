@@ -40,23 +40,47 @@ class ResultQueryService:
                 return s
         return None
 
-    def mech_slots(self, task_id: str) -> list[dict]:
-        """列出机制模块各 slot 概况。"""
+    def mech_modules(self, task_id: str, module_name: str | None = None) -> list[dict]:
+        """列出机制模块解析结果，可按模块名过滤。"""
         data = self.read_result(task_id)
         if not data:
             return []
-        mech = data.get("mech_results")
-        if not mech:
-            return []
-        return mech[0].get("slots", [])
+        modules = data.get("mech_results") or []
+        if module_name:
+            modules = [m for m in modules if m.get("module_name") == module_name]
+        return modules
 
-    def mech_lifecycles(self, task_id: str, slot_id: str) -> list[dict] | None:
-        """列出某 slot 的周期和进程。"""
-        slots = self.mech_slots(task_id)
-        for s in slots:
-            if s["slot_id"] == slot_id:
-                return s.get("board_cycles", [])
-        return None
+    def mech_slots(self, task_id: str, module_name: str | None = None) -> list[dict]:
+        """列出机制模块各 slot 概况，默认返回全部模块的 slots。"""
+        modules = self.mech_modules(task_id, module_name)
+        results: list[dict] = []
+        for module in modules:
+            name = module.get("module_name", "")
+            for slot in module.get("slots", []):
+                item = dict(slot)
+                item["_module_name"] = name
+                results.append(item)
+        return results
+
+    def mech_lifecycles(
+        self,
+        task_id: str,
+        slot_id: str,
+        module_name: str | None = None,
+    ) -> list[dict]:
+        """列出某 slot 的周期和进程，默认返回全部模块中的该 slot。"""
+        modules = self.mech_modules(task_id, module_name)
+        results: list[dict] = []
+        for module in modules:
+            name = module.get("module_name", "")
+            for slot in module.get("slots", []):
+                if slot.get("slot_id") == slot_id:
+                    results.append({
+                        "module_name": name,
+                        "slot_id": slot_id,
+                        "board_cycles": slot.get("board_cycles", []),
+                    })
+        return results
 
     def first_module_name(self, task_id: str) -> str | None:
         """从 result.json 中获取第一个机制模块名。"""

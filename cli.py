@@ -191,8 +191,9 @@ def query_diag(task_id, slot, output):
 
 @cli.command()
 @click.argument("task_id")
+@click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认展示全部模块")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_slots(task_id, output):
+def mech_slots(task_id, module_name, output):
     """列出机制模块各 slot 概况。"""
     svc = ResultQueryService(Path(output))
     result_data = svc.read_result(task_id)
@@ -203,36 +204,43 @@ def mech_slots(task_id, output):
             sys.exit(1)
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
-    slots = svc.mech_slots(task_id)
+    slots = svc.mech_slots(task_id, module_name=module_name)
     if not slots:
         click.echo("无机制模块解析结果")
         return
     for s in slots:
         total_logs = sum(cp["total_count"] for c in s["board_cycles"] for cp in c["processes"])
         total_procs = sum(len(c["processes"]) for c in s["board_cycles"])
-        click.echo(f"slot_{s['slot_id']}: {len(s['board_cycles'])} 周期, {total_procs} 进程, {total_logs} 条日志")
+        mod = s.get("_module_name", "")
+        click.echo(
+            f"[{mod}] slot_{s['slot_id']}: "
+            f"{len(s['board_cycles'])} 周期, {total_procs} 进程, {total_logs} 条日志"
+        )
 
 
 @cli.command()
 @click.argument("task_id")
 @click.option("--slot", "-s", required=True, help="槽位 ID")
+@click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认展示全部模块")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_lifecycles(task_id, slot, output):
+def mech_lifecycles(task_id, slot, module_name, output):
     """列出某 slot 的机制模块周期和进程。"""
     svc = ResultQueryService(Path(output))
     result_data = svc.read_result(task_id)
     if not result_data:
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
-    cycles = svc.mech_lifecycles(task_id, slot)
-    if cycles is None:
+    groups = svc.mech_lifecycles(task_id, slot, module_name=module_name)
+    if not groups:
         click.echo(f"未找到 slot_{slot}", err=True)
         return
-    for c in cycles:
-        click.echo(f"{c['dir_name']}")
-        for p in c["processes"]:
-            missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
-            click.echo(f"  {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
+    for group in groups:
+        click.echo(f"[{group['module_name']}] slot_{slot}")
+        for c in group["board_cycles"]:
+            click.echo(f"  {c['dir_name']}")
+            for p in c["processes"]:
+                missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
+                click.echo(f"    {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
 
 
 @cli.command()
