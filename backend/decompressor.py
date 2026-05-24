@@ -181,7 +181,10 @@ class Decompressor:
                 if not self._is_safe_path(info.name):
                     logger.warning("路径穿越风险，跳过: %s", info.name)
                     continue
-                if info.isdir():
+                if info.issym() or info.islnk():
+                    logger.warning("符号链接/硬链接风险，跳过: %s -> %s", info.name, info.linkname)
+                    continue
+                if not info.isfile():
                     continue
                 if info.size > MAX_UNCOMPRESSED_SIZE:
                     logger.warning("文件过大，跳过: %s (%d bytes)", info.name, info.size)

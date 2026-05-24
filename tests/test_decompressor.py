@@ -156,3 +156,47 @@ class TestExtractAll:
         dest = tmp_path / "out"
         extracted = decompressor.extract_all(zip_path, dest)
         assert extracted == []
+
+
+class TestExtractTarSymlinks:
+    def test_tar_symlink_rejected(self, decompressor, tmp_path):
+        tar_path = tmp_path / "bad.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            info = tarfile.TarInfo("safe_link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/tmp/evil_target"
+            tf.addfile(info)
+
+        out = tmp_path / "out"
+        extracted = []
+        decompressor._extract_tar(tar_path, out, extracted)
+
+        assert not (out / "safe_link").exists()
+        assert not (out / "safe_link").is_symlink()
+        assert extracted == []
+
+    def test_tar_hardlink_rejected(self, decompressor, tmp_path):
+        # Need a real file to create a hardlink reference
+        tar_path = tmp_path / "bad_hardlink.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            # Add a regular file first
+            data = b"content"
+            regular = tarfile.TarInfo("regular.txt")
+            regular.size = len(data)
+            regular.type = tarfile.REGTYPE
+            tf.addfile(regular, __import__("io").BytesIO(data))
+
+            # Add a hardlink pointing to it
+            link = tarfile.TarInfo("hard_link")
+            link.type = tarfile.LNKTYPE
+            link.linkname = "regular.txt"
+            tf.addfile(link)
+
+        out = tmp_path / "out"
+        extracted = []
+        decompressor._extract_tar(tar_path, out, extracted)
+
+        # Regular file should be extracted, hardlink should be rejected
+        assert (out / "regular.txt").exists()
+        assert not (out / "hard_link").exists()
+        assert len(extracted) == 1
