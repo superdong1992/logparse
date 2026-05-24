@@ -232,3 +232,26 @@ class TestRecursiveGzGate:
 
         assert (out / "journal.log.1.gz").exists()
         assert (out / "journal.log.1.gz_extracted").exists()
+
+
+class TestTarNoDeprecationWarning:
+    def test_extract_tar_no_deprecation_warning(self, decompressor, tmp_path):
+        import io
+        import warnings
+
+        tar_path = tmp_path / "test.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            data = b"hello world"
+            info = tarfile.TarInfo("test.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        out = tmp_path / "out"
+        extracted = []
+
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            decompressor._extract_tar(tar_path, out, extracted)
+
+        assert not any("Python 3.14" in str(w.message) for w in records)
+        assert (out / "test.txt").exists()

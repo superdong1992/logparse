@@ -202,7 +202,12 @@ class Decompressor:
                     logger.warning("文件过大，跳过: %s (%d bytes)", info.name, info.size)
                     continue
                 safe_members.append(info)
-            tf.extractall(dest_dir, members=safe_members)
+            for member in safe_members:
+                try:
+                    tf.extract(member, dest_dir, filter="data")
+                except TypeError:
+                    # Python < 3.12 不支持 filter 参数
+                    tf.extract(member, dest_dir)
             extracted_files.extend(
                 str(dest_dir / m.name) for m in safe_members
             )
