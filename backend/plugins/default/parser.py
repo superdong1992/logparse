@@ -20,6 +20,7 @@ from backend.models import (
     SlotInfo,
 )
 from backend.parsing.active_period_builder import ActivePeriodBuilder
+from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.cycle_detector import CycleDetector
 from backend.parsing.output_writer import MechOutputWriter
 from backend.parsing.role_identifier import RoleIdentifier
@@ -146,6 +147,7 @@ class ParserPlugin(LogParserPlugin):
             )
 
         all_entries: list[MechLogEntry] = []
+        resolver = ProcessNameResolver(name_map)
 
         # 扫描诊断日志
         if diag_re:
@@ -154,7 +156,7 @@ class ParserPlugin(LogParserPlugin):
                     all_entries.extend(
                         self._scan_diag_entries(
                             log_entry, slot.slot_id, diag_re, seq_re,
-                            master_keyword, name_map, mod_upper,
+                            master_keyword, resolver, mod_upper,
                         )
                     )
 
@@ -171,7 +173,7 @@ class ParserPlugin(LogParserPlugin):
                 all_entries.extend(
                     self._scan_journal_entries(
                         ps, journal_re, journal_re2, journal_keyword,
-                        seq_re, master_keyword, name_map, indicator,
+                        seq_re, master_keyword, resolver, indicator,
                         mod_upper, diag_tz,
                     )
                 )
@@ -219,7 +221,7 @@ class ParserPlugin(LogParserPlugin):
         self, log_entry: LogEntry, slot_id: str,
         diag_re: re.Pattern, seq_re: re.Pattern,
         master_keyword: re.Pattern | None,
-        name_map: dict[str, str],
+        resolver: ProcessNameResolver,
         mod_upper: str,
     ) -> list[MechLogEntry]:
         entries: list[MechLogEntry] = []
@@ -241,7 +243,7 @@ class ParserPlugin(LogParserPlugin):
             raw_proc_name = m.group("ProcessName")
             context = m.group("Context")
 
-            proc_name, pid = self._parse_diag_proc_name(raw_proc_name, name_map)
+            proc_name, pid = resolver.parse_diag_process_name(raw_proc_name)
 
             sm = seq_re.search(line)
             if not sm:
@@ -273,7 +275,7 @@ class ParserPlugin(LogParserPlugin):
         journal_re: re.Pattern, journal_re2: re.Pattern | None,
         journal_keyword: str,
         seq_re: re.Pattern, master_keyword: re.Pattern | None,
-        name_map: dict[str, str], indicator: str | None,
+        resolver: ProcessNameResolver, indicator: str | None,
         mod_upper: str, tzinfo: Any,
     ) -> list[MechLogEntry]:
         entries: list[MechLogEntry] = []
@@ -304,24 +306,10 @@ class ParserPlugin(LogParserPlugin):
                     seq = int(seq_str)
                 except ValueError:
                     seq = 0
-                pid = raw_pid or ""
 
-                if pid and indicator and indicator in raw_name.lower():
-                    proc_name = None
-                    for diag_n, jnl_name in name_map.items():
-                        if jnl_name.lower() == raw_name.lower():
-                            proc_name = diag_n
-                            break
-                    if proc_name is None:
-                        proc_name = raw_name
-                else:
-                    proc_name = raw_name
-                    if "-" in raw_name and not pid:
-                        parts = raw_name.rsplit("-", 1)
-                        # PID 一般 >= 3 位数字，避免误拆含数字后缀的进程名
-                        if len(parts[-1]) >= 3 and parts[-1].isdigit():
-                            proc_name = parts[0]
-                            pid = parts[-1]
+                proc_name, pid = resolver.resolve_journal_process_name(
+                    raw_name, raw_pid, indicator,
+                )
                 is_active = bool(master_keyword and master_keyword.search(context))
                 ts = self._extract_first_ts(line)
                 if ts and ts.tzinfo is None and tzinfo is not None:
@@ -338,21 +326,6 @@ class ParserPlugin(LogParserPlugin):
                 ))
 
         return entries
-
-    # ── 进程名解析 ────────────────────────────────────────
-
-    @staticmethod
-    def _parse_diag_proc_name(raw: str, name_map: dict[str, str]) -> tuple[str, str]:
-        for diag_n in name_map:
-            if raw.startswith(diag_n):
-                rest = raw[len(diag_n):]
-                pid = rest[1:] if rest.startswith("-") else ""
-                return diag_n, pid
-        if "-" in raw:
-            parts = raw.rsplit("-", 1)
-            if parts[-1].isdigit():
-                return parts[0], parts[-1]
-        return raw, ""
 
     # ── 时间戳工具 ────────────────────────────────────────
 
