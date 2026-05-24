@@ -53,6 +53,24 @@ class TestRoleIdentifier:
         assert slot1.role == BoardRole.UNKNOWN
         assert slot2.role == BoardRole.UNKNOWN
 
+    def test_fallback_multiple_candidates_with_logs_stay_unknown(self, identifier):
+        """多个 slot 有 ActivePeriod 且有日志 → 仍保持 UNKNOWN，不判 STANDBY。"""
+        result = ParseResult()
+        slot1 = SlotInfo(slot_id="1", name="slot_1", path="/tmp")
+        slot1.add_active_period(ActivePeriod(
+            start=datetime(2026, 1, 3, 0, 0), end=datetime(2026, 1, 3, 1, 0),
+        ))
+        slot1.add_diagnostic_log(LogEntry(path="/tmp/f1", name="f1.log", size_bytes=100))
+        slot2 = SlotInfo(slot_id="2", name="slot_2", path="/tmp")
+        slot2.add_active_period(ActivePeriod(
+            start=datetime(2026, 1, 3, 0, 0), end=datetime(2026, 1, 3, 1, 0),
+        ))
+        slot2.add_diagnostic_log(LogEntry(path="/tmp/f2", name="f2.log", size_bytes=100))
+        result.diagnostic_slots.extend([slot1, slot2])
+        identifier.fallback_roles(result)
+        assert slot1.role == BoardRole.UNKNOWN
+        assert slot2.role == BoardRole.UNKNOWN
+
     def test_fallback_standby(self, identifier):
         result = ParseResult()
         slot = SlotInfo(slot_id="1", name="slot_1", path="/tmp")

@@ -36,14 +36,12 @@ class RoleIdentifier:
                 if slot is not candidates[0] and slot.diagnostic_logs:
                     slot.role = BoardRole.STANDBY
         elif len(candidates) > 1:
-            # 多个候选时不武断判 active
+            # 多个候选时不武断判 active，保持 UNKNOWN
             logger.warning(
                 "多个 slot 有 ActivePeriod，无法确定主控: %s",
                 [s.slot_id for s in candidates],
             )
-            for slot in result.diagnostic_slots:
-                if slot.diagnostic_logs and slot.role == BoardRole.UNKNOWN:
-                    slot.role = BoardRole.STANDBY
+            return
         else:
             # 无候选，仅判 standby
             for slot in result.diagnostic_slots:
