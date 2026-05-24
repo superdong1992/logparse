@@ -13,13 +13,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -r requirements.txt
 
 # CLI 解析（默认使用 default 产品插件管道）
-python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product default|compact]
+python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product default|compact] [--debug-expand-gz]
 python cli.py info <task_id>
 python cli.py list-slots <task_id>
 python cli.py query-diag <task_id> -s <slot_id>
-python cli.py mech-slots <task_id>
-python cli.py mech-lifecycles <task_id> -s <slot_id>
-python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc_name>-<pid>
+python cli.py mech-slots <task_id> [-m <module_name>]
+python cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>]
+python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc_name> [-m <module_name>]
 
 # 调试工具
 python cli.py check-config [-c config.yaml]            # 检查配置有效性
@@ -36,10 +36,12 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 
 ### 调试能力
 
-- **`check-config`**：检查所有正则可编译、glob 有效、模块配置完整，错误和警告分开
+- **`check-config`**：检查所有正则可编译、glob 有效、模块配置完整、插件类继承基类、关键方法存在，错误和警告分开
 - **`test-pattern`**：用配置正则测试实际日志行，显示提取字段、Stage1 预过滤结果、时间戳、主控关键字命中
 - **错误隔离**：每一步失败不终止全流程，继续执行并在最后汇总所有错误
 - **`--verbose`**：输出每步耗时、处理项数、机制模块 诊断/journal 条数对比、同名进程多实例检测
+- **`--debug-expand-gz`**：调试用，将普通 `.gz` 日志就地展开（如 `journal.log.1.gz` → `journal.log.1.gz_extracted/`），正式批量解析不建议开启
+- **`--module` / `-m`**：mech 查询命令可按机制模块名过滤，不传则展示全部模块
 - **Windows 编码**：CLI 入口自动将 stdout/stderr 切换为 UTF-8，避免 GBK 编码下 Unicode 符号报错
 
 ## 架构
@@ -56,6 +58,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 
 关键设计决策：
 - **解压与扫描分离**：外层包 `recursive=False` 解压到 `extracted/`，内部压缩包保留原样供 ScannerPlugin 收集元数据，之后再解压内容到 `_extracted` 子目录做解析
+- **普通 `.gz` 流式读取**：默认不展开普通 `.gz` 日志（如 `journal.log.1.gz`），parser 直接流式读取；仅 `--debug-expand-gz` 或配置 `debug_expand_gz: true` 时才展开。`.tar.gz` / `.tgz` 归档不受此控制
 - **机制模块优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界
 - **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。从全部条目中检测时区并归一化所有 naive timestamp
 - **journal 双正则 fallback**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式
@@ -85,7 +88,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 | `backend/metadata.py` | 生成 `metadata.json`（含 mech_results 键） |
 | `backend/models.py` | Pydantic 数据模型（SlotInfo、ParseResult、MechResult 等） |
 | `backend/utils.py` | 纯函数工具：glob_to_regex、时间戳提取、文件读取等 |
-| `cli.py` | Click CLI：parse/info/list-slots/query-diag/mech-slots/mech-lifecycles/mech-logs/check-config/test-pattern，查询命令委托 ResultQueryService |
+| `cli.py` | Click CLI：parse/info/list-slots/query-diag/mech-slots/mech-lifecycles/mech-logs/check-config/test-pattern，mech 查询命令支持 `--module` 按模块过滤 |
 
 ### 核心模型 (`backend/models.py`)
 
@@ -154,6 +157,8 @@ output/{task_id}/mech_modules/{module_name}/
 ### 配置驱动
 
 所有匹配规则在 `config.yaml` 的 `products.{name}` 下配置，代码不做硬编码：
+- `pipeline.recursive_extraction` — 外层包是否递归解压
+- `pipeline.debug_expand_gz` — 是否调试展开普通 `.gz` 日志
 - `discovery.config.diagnostic_dir` / `private_dir` — 目录名
 - `discovery.config.slot_dir_pattern` — slot 目录匹配 (glob)
 - `discovery.config.diag_file_patterns` — 诊断日志文件名匹配 (glob)
@@ -214,23 +219,26 @@ Source Archive
 
 ### 测试
 
-123 个单元测试，覆盖：
+167 个单元测试，覆盖：
 - `tests/test_utils.py` — utils 纯函数（glob、slot 提取、时间戳等）
 - `tests/test_decompressor.py` — 解压安全（路径穿越、Windows 绝对路径、UNC 路径、zip 炸弹）和提取逻辑
 - `tests/test_config_validation.py` — 机制模块配置校验（正则合法性、命名组、白名单冲突）
 - `tests/test_parser_plugin.py` — ParserPlugin 编排层（ActivePeriod、进程名解析）
 - `tests/test_plugin_loader.py` — 动态插件加载
+- `tests/test_pipeline.py` — Pipeline 管道编排（debug_expand_gz 配置透传）
 - `tests/test_scanner_plugin.py` — ScannerPlugin 目录发现
 - `tests/test_timestamp_extractor.py` — TimestampExtractor（文本/文件/gz/LogEntry）
 - `tests/test_cycle_detector.py` — CycleDetector（PID 变化切分、白名单安全切分、journal 序号前移、CPU 隔离、split trace）
 - `tests/test_process_name_resolver.py` — ProcessNameResolver（diag 名解析、journal 映射、PID 拆分阈值）
 - `tests/test_role_identifier.py` — RoleIdentifier（mech 优先 + 保守兜底、多候选不武断）
 - `tests/test_output_writer.py` — MechOutputWriter（目录结构、日志内容）
+- `tests/test_query.py` — ResultQueryService（mech-slots/lifecycles/logs 查询）
 
 ### 最近变更摘要
 
 | 日期 | 变更 |
 |------|------|
+| 2026-05-24 | **v0.3.1**：`--module`/`-m` 参数支持按机制模块过滤查询结果；`--debug-expand-gz` 控制普通 `.gz` 展开；默认流式读取 `.gz`；`check-config` 新增插件类继承和方法校验；167 个单元测试 |
 | 2026-05-24 | **v0.2 演进完成**：9 步渐进式重构，123 个单元测试。修复解压安全路径 bug、配置校验前置化、CycleDetector split trace、ParserPlugin 拆为 5 组件、流式文件读取、保守角色判定、查询服务从 CLI 提取 |
 | 2026-05-18 | **P0-P3 重构完成**：93 个单元测试、新管道默认化、删除旧管道 5 模块 (-1123 行)、ParserPlugin 拆为 4 组件 |
 | 2026-05-18 | **Phase 2+3 完成**：ScannerPlugin + ParserPlugin 创建，config.yaml products 段 |
