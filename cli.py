@@ -23,7 +23,7 @@ from pathlib import Path
 
 import click
 
-from backend.config_validation import validate_mechanism_module_config
+from backend.config_validation import validate_config
 from backend.query import ResultQueryService
 from backend.utils import glob_to_regex
 from backend.models import ParseResult
@@ -279,9 +279,6 @@ def check_config(config):
         click.echo(f"✗ 配置文件不存在: {config_path}")
         sys.exit(1)
 
-    errors: list[str] = []
-    warnings: list[str] = []
-
     try:
         import yaml
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -290,48 +287,7 @@ def check_config(config):
         click.echo(f"✗ 配置加载失败: {e}")
         sys.exit(1)
 
-    products = raw.get("products", {})
-    if not products:
-        errors.append("无产品配置 (products 段为空)")
-    else:
-        for prod_name, prod_cfg in products.items():
-            prefix = f"[{prod_name}]"
-
-            # Discovery config
-            disc = prod_cfg.get("discovery", {}).get("config", {})
-            for label, pattern in [
-                ("slot_dir_pattern", disc.get("slot_dir_pattern", "slot_*")),
-            ]:
-                try:
-                    glob_to_regex(pattern)
-                except Exception:
-                    errors.append(f"{prefix} {label}: glob 无效 - {pattern}")
-
-            for p in disc.get("diag_file_patterns", []):
-                try:
-                    glob_to_regex(p)
-                except Exception:
-                    errors.append(f"{prefix} diag_file_pattern: glob 无效 - {p}")
-
-            # Parser config
-            parser_cfg = prod_cfg.get("log_parser", {}).get("config", {})
-
-            ts_re = parser_cfg.get("timestamp_regex", "")
-            if ts_re:
-                try:
-                    re.compile(ts_re)
-                except re.error as e:
-                    errors.append(f"{prefix} timestamp_regex: 正则无效 - {e}")
-
-            for mod_key, mod_cfg in parser_cfg.get("mechanism_modules", {}).items():
-                mod_errors = validate_mechanism_module_config(mod_key, mod_cfg)
-                for err in mod_errors:
-                    errors.append(f"{prefix} {err}")
-
-    if warnings:
-        click.echo(f"\n⚠ {len(warnings)} 个警告:")
-        for w in warnings:
-            click.echo(f"  - {w}")
+    errors = validate_config(raw)
 
     if errors:
         click.echo(f"\n✗ {len(errors)} 个错误:")
