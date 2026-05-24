@@ -239,11 +239,18 @@ def mech_lifecycles(task_id, slot, output):
 @click.option("--slot", "-s", required=True, help="槽位 ID")
 @click.option("--cycle", "-c", required=True, help="周期目录名")
 @click.option("--proc", "-p", required=True, help="进程名-pid")
+@click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认取第一个")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_logs(task_id, slot, cycle, proc, output):
+def mech_logs(task_id, slot, cycle, proc, module_name, output):
     """查看指定进程批次的机制模块日志。"""
     svc = ResultQueryService(Path(output))
-    log_file = svc.mech_log_path(task_id, slot, cycle, proc)
+    log_file = svc.mech_log_path(
+        task_id=task_id,
+        slot_id=slot,
+        cycle=cycle,
+        proc=proc,
+        module_name=module_name,
+    )
     if not log_file.exists():
         click.echo(f"文件不存在: {log_file}", err=True)
         sys.exit(1)

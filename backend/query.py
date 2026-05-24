@@ -58,11 +58,28 @@ class ResultQueryService:
                 return s.get("board_cycles", [])
         return None
 
+    def first_module_name(self, task_id: str) -> str | None:
+        """从 result.json 中获取第一个机制模块名。"""
+        data = self.read_result(task_id)
+        if not data:
+            return None
+        mech_results = data.get("mech_results") or []
+        if not mech_results:
+            return None
+        return mech_results[0].get("module_name")
+
     def mech_log_path(
-        self, task_id: str, slot_id: str, cycle: str, proc: str,
+        self,
+        task_id: str,
+        slot_id: str,
+        cycle: str,
+        proc: str,
+        module_name: str | None = None,
     ) -> Path:
         """获取指定进程日志的文件路径。"""
-        return (
-            self._output_dir / task_id / "mech_modules"
-            / f"slot_{slot_id}" / cycle / f"{proc}.log"
-        )
+        if module_name is None:
+            module_name = self.first_module_name(task_id)
+        base = self._output_dir / task_id / "mech_modules"
+        if module_name:
+            return base / module_name / f"slot_{slot_id}" / cycle / f"{proc}.log"
+        return base / f"slot_{slot_id}" / cycle / f"{proc}.log"
