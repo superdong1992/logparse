@@ -23,6 +23,7 @@ from pathlib import Path
 
 import click
 
+from backend.query import ResultQueryService
 from backend.utils import glob_to_regex
 from backend.models import ParseResult
 from backend.pipeline import Pipeline
@@ -140,11 +141,12 @@ def parse(ctx, package_path, output, verbose, product):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def info(task_id, output):
     """查看任务的元数据。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
+    svc = ResultQueryService(Path(output))
+    metadata = svc.read_metadata(task_id)
+    if not metadata:
         click.echo(f"任务 {task_id} 的元数据不存在", err=True)
         sys.exit(1)
-    click.echo(metadata_path.read_text(encoding="utf-8"))
+    click.echo(json.dumps(metadata, ensure_ascii=False, indent=2))
 
 
 @cli.command()
@@ -152,12 +154,14 @@ def info(task_id, output):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def list_slots(task_id, output):
     """列出任务中识别到的所有槽位。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
-        click.echo(f"任务 {task_id} 的元数据不存在", err=True)
-        sys.exit(1)
-    data = json.loads(metadata_path.read_text(encoding="utf-8"))
-    for slot in data.get("diagnostic_slots", []):
+    svc = ResultQueryService(Path(output))
+    slots = svc.list_slots(task_id)
+    if not slots:
+        metadata = svc.read_metadata(task_id)
+        if not metadata:
+            click.echo(f"任务 {task_id} 的元数据不存在", err=True)
+            sys.exit(1)
+    for slot in slots:
         diag_count = len(slot.get("diagnostic_logs", []))
         periods = slot.get("active_periods", [])
         period_str = ""
@@ -172,18 +176,16 @@ def list_slots(task_id, output):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def query_diag(task_id, slot, output):
     """查询特定槽位的诊断日志列表。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
-        click.echo(f"任务 {task_id} 的元数据不存在", err=True)
-        sys.exit(1)
-    data = json.loads(metadata_path.read_text(encoding="utf-8"))
-
-    for s in data.get("diagnostic_slots", []):
-        if s["slot_id"] == slot:
-            click.echo(json.dumps(s, ensure_ascii=False, indent=2))
-            return
-
-    click.echo(f"未找到 slot_{slot}", err=True)
+    svc = ResultQueryService(Path(output))
+    result = svc.query_diag(task_id, slot)
+    if result is None:
+        metadata = svc.read_metadata(task_id)
+        if not metadata:
+            click.echo(f"任务 {task_id} 的元数据不存在", err=True)
+            sys.exit(1)
+        click.echo(f"未找到 slot_{slot}", err=True)
+        return
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 @cli.command()
@@ -191,22 +193,20 @@ def query_diag(task_id, slot, output):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def mech_slots(task_id, output):
     """列出机制模块各 slot 概况。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
-        click.echo(f"任务 {task_id} 的元数据不存在", err=True)
-        sys.exit(1)
-    # 直接从 result.json 读取完整结构
-    result_path = Path(output) / task_id / "result.json"
-    if not result_path.exists():
+    svc = ResultQueryService(Path(output))
+    result_data = svc.read_result(task_id)
+    if not result_data:
+        metadata = svc.read_metadata(task_id)
+        if not metadata:
+            click.echo(f"任务 {task_id} 的元数据不存在", err=True)
+            sys.exit(1)
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
-    data = json.loads(result_path.read_text(encoding="utf-8"))
-    mech = data.get("mech_results")
-    if not mech:
+    slots = svc.mech_slots(task_id)
+    if not slots:
         click.echo("无机制模块解析结果")
         return
-    mech = mech[0]  # 取第一个模块
-    for s in mech.get("slots", []):
+    for s in slots:
         total_logs = sum(cp["total_count"] for c in s["board_cycles"] for cp in c["processes"])
         total_procs = sum(len(c["processes"]) for c in s["board_cycles"])
         click.echo(f"slot_{s['slot_id']}: {len(s['board_cycles'])} 周期, {total_procs} 进程, {total_logs} 条日志")
@@ -218,25 +218,20 @@ def mech_slots(task_id, output):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def mech_lifecycles(task_id, slot, output):
     """列出某 slot 的机制模块周期和进程。"""
-    result_path = Path(output) / task_id / "result.json"
-    if not result_path.exists():
+    svc = ResultQueryService(Path(output))
+    result_data = svc.read_result(task_id)
+    if not result_data:
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
-    data = json.loads(result_path.read_text(encoding="utf-8"))
-    mech = data.get("mech_results")
-    if not mech:
-        click.echo("无机制模块解析结果")
+    cycles = svc.mech_lifecycles(task_id, slot)
+    if cycles is None:
+        click.echo(f"未找到 slot_{slot}", err=True)
         return
-    mech = mech[0]
-    for s in mech.get("slots", []):
-        if s["slot_id"] == slot:
-            for c in s["board_cycles"]:
-                click.echo(f"{c['dir_name']}")
-                for p in c["processes"]:
-                    missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
-                    click.echo(f"  {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
-            return
-    click.echo(f"未找到 slot_{slot}", err=True)
+    for c in cycles:
+        click.echo(f"{c['dir_name']}")
+        for p in c["processes"]:
+            missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
+            click.echo(f"  {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
 
 
 @cli.command()
@@ -247,7 +242,8 @@ def mech_lifecycles(task_id, slot, output):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def mech_logs(task_id, slot, cycle, proc, output):
     """查看指定进程批次的机制模块日志。"""
-    log_file = Path(output) / task_id / "mech_modules" / f"slot_{slot}" / cycle / f"{proc}.log"
+    svc = ResultQueryService(Path(output))
+    log_file = svc.mech_log_path(task_id, slot, cycle, proc)
     if not log_file.exists():
         click.echo(f"文件不存在: {log_file}", err=True)
         sys.exit(1)
