@@ -80,7 +80,9 @@ class Pipeline:
         # Step 1: 解压（仅外层，内层压缩包留给 Step 3）
         extracted = _safe(f"[1/6] 解压 {source.name}",
               lambda: self.decompressor.extract_all(
-                  source, extract_dir, recursive=self.pipeline_config.get("recursive_extraction", False),
+                  source, extract_dir,
+                  recursive=self.pipeline_config.get("recursive_extraction", False),
+                  expand_gz=self.pipeline_config.get("debug_expand_gz", False),
               ))
         if verbose and extracted is not None:
             print(f"    解压文件数: {extracted}")

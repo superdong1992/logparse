@@ -200,3 +200,35 @@ class TestExtractTarSymlinks:
         assert (out / "regular.txt").exists()
         assert not (out / "hard_link").exists()
         assert len(extracted) == 1
+
+
+class TestRecursiveGzGate:
+    def test_recursive_skips_plain_gz_by_default(self, decompressor, tmp_path):
+        gz_file = tmp_path / "journal.log.1.gz"
+        with gzip.open(gz_file, "wt", encoding="utf-8") as f:
+            f.write("hello\n")
+
+        zip_path = tmp_path / "pkg.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(gz_file, "journal.log.1.gz")
+
+        out = tmp_path / "out"
+        decompressor.extract_all(zip_path, out, recursive=True, expand_gz=False)
+
+        assert (out / "journal.log.1.gz").exists()
+        assert not (out / "journal.log.1.gz_extracted").exists()
+
+    def test_recursive_expands_plain_gz_when_enabled(self, decompressor, tmp_path):
+        gz_file = tmp_path / "journal.log.1.gz"
+        with gzip.open(gz_file, "wt", encoding="utf-8") as f:
+            f.write("hello\n")
+
+        zip_path = tmp_path / "pkg.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(gz_file, "journal.log.1.gz")
+
+        out = tmp_path / "out"
+        decompressor.extract_all(zip_path, out, recursive=True, expand_gz=True)
+
+        assert (out / "journal.log.1.gz").exists()
+        assert (out / "journal.log.1.gz_extracted").exists()

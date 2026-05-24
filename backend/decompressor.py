@@ -88,10 +88,11 @@ class Decompressor:
             return False
         return True
 
-    def extract_all(self, source: Path, dest_dir: Path, recursive: bool = True) -> list[str]:
+    def extract_all(self, source: Path, dest_dir: Path, recursive: bool = True, expand_gz: bool = False) -> list[str]:
         """
         解压 source 到 dest_dir。
         recursive=False 时只解压一层，不递归处理内部压缩包。
+        expand_gz=False 时递归阶段跳过普通 .gz 文件（保留 .tar.gz / .tgz）。
         返回所有被解压过的文件路径列表。
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +113,17 @@ class Decompressor:
             changed = False
             for root, dirs, files in os.walk(dest_dir):
                 for f in files:
+                    lower_name = f.lower()
+
+                    # 跳过普通 .gz 但保留 .tar.gz / .tgz
+                    is_plain_gz = (
+                        lower_name.endswith(".gz")
+                        and not lower_name.endswith(".tar.gz")
+                        and not lower_name.endswith(".tgz")
+                    )
+                    if is_plain_gz and not expand_gz:
+                        continue
+
                     if self.is_compressed(f):
                         file_path = Path(root) / f
                         relative_parent = Path(root).relative_to(dest_dir)
