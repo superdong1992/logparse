@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 
 from backend.models import LogEntry, MechLogEntry
+from backend.parsing.file_iter import iter_log_entry_lines
 from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.timestamp_extractor import TimestampExtractor
 
@@ -33,11 +33,8 @@ class MechDiagScanner:
 
     def scan(self, log_entry: LogEntry, slot_id: str) -> list[MechLogEntry]:
         entries: list[MechLogEntry] = []
-        text = self._read_log_entry(log_entry)
-        if not text:
-            return entries
 
-        for line in text.splitlines():
+        for line in iter_log_entry_lines(log_entry):
             if self._mod_upper not in line:
                 continue
             m = self._diag_re.search(line)
@@ -79,19 +76,3 @@ class MechDiagScanner:
     def _extract_first_ts(self, line: str) -> datetime | None:
         stamps = self._ts_extractor.extract_from_text(line)
         return stamps[0] if stamps else None
-
-    def _read_log_entry(self, log_entry: LogEntry) -> str:
-        if log_entry.extracted_path:
-            ext_dir = Path(log_entry.extracted_path)
-            if ext_dir.is_dir():
-                parts: list[str] = []
-                for f in sorted(ext_dir.rglob("*")):
-                    if f.is_file():
-                        text = self._ts_extractor._read_file(f)
-                        if text:
-                            parts.append(text)
-                return "\n".join(parts)
-        file_path = Path(log_entry.path)
-        if file_path.is_file():
-            return self._ts_extractor._read_file(file_path)
-        return ""

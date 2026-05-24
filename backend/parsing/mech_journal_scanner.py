@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.models import MechLogEntry, PrivateSlotInfo
+from backend.parsing.file_iter import iter_text_file_lines
 from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.timestamp_extractor import TimestampExtractor
 
@@ -42,11 +43,11 @@ class MechJournalScanner:
         entries: list[MechLogEntry] = []
 
         for jl in ps.journal_logs:
-            text = self._ts_extractor._read_file(Path(jl.path))
-            if not text:
+            jl_path = Path(jl.path)
+            if not jl_path.is_file():
                 continue
 
-            for line in text.splitlines():
+            for line in iter_text_file_lines(jl_path):
                 if self._mod_upper not in line:
                     continue
                 if self._journal_keyword not in line.lower():
