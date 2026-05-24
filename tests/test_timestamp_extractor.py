@@ -64,3 +64,24 @@ class TestTimestampExtractor:
         )
         stamps = self.extractor.extract_from_entry(entry)
         assert len(stamps) == 1
+
+    def test_extract_from_file_does_not_use_read_text(self, tmp_path, monkeypatch):
+        """Verify streaming: read_text should not be called."""
+        p = tmp_path / "log.txt"
+        p.write_text("2026-01-03T00:01:00 test\n", encoding="utf-8")
+
+        original_read_text = Path.read_text
+
+        def fail_read_text(self, *args, **kwargs):
+            raise AssertionError("read_text should not be called in streaming mode")
+
+        monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+        stamps = self.extractor.extract_from_file(p)
+        assert len(stamps) == 1
+
+    def test_extract_from_file_read_failure_returns_empty(self, tmp_path):
+        """读取不存在的文件应返回空列表，不抛异常。"""
+        p = tmp_path / "nonexistent.log"
+        stamps = self.extractor.extract_from_file(p)
+        assert stamps == []
