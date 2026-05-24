@@ -23,6 +23,7 @@ from pathlib import Path
 
 import click
 
+from backend.config_validation import validate_mechanism_module_config
 from backend.query import ResultQueryService
 from backend.utils import glob_to_regex
 from backend.models import ParseResult
@@ -311,33 +312,9 @@ def check_config(config):
                     errors.append(f"{prefix} timestamp_regex: 正则无效 - {e}")
 
             for mod_key, mod_cfg in parser_cfg.get("mechanism_modules", {}).items():
-                mp = f"{prefix}[{mod_key}]"
-                if not mod_cfg.get("module_name"):
-                    warnings.append(f"{mp} module_name 为空")
-                if mod_cfg.get("diag_pattern"):
-                    try:
-                        r = re.compile(mod_cfg["diag_pattern"])
-                        required = {"Slot", "CPU_Id", "ProcessName", "Context"}
-                        if not required.issubset(r.groupindex):
-                            warnings.append(f"{mp} diag_pattern 缺少命名组: {required - set(r.groupindex)}")
-                    except re.error as e:
-                        errors.append(f"{mp} diag_pattern: 正则无效 - {e}")
-
-                jnl = mod_cfg.get("journal", {})
-                for pat_name in ("line_pattern", "line_pattern2"):
-                    val = jnl.get(pat_name, "")
-                    if val:
-                        try:
-                            re.compile(val)
-                        except re.error as e:
-                            errors.append(f"{mp} journal.{pat_name}: 正则无效 - {e}")
-
-                seq_pat = mod_cfg.get("sequence_pattern", "")
-                if seq_pat:
-                    try:
-                        re.compile(seq_pat)
-                    except re.error as e:
-                        errors.append(f"{mp} sequence_pattern: 正则无效 - {e}")
+                mod_errors = validate_mechanism_module_config(mod_key, mod_cfg)
+                for err in mod_errors:
+                    errors.append(f"{prefix} {err}")
 
     if warnings:
         click.echo(f"\n⚠ {len(warnings)} 个警告:")
