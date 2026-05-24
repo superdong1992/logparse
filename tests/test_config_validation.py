@@ -11,7 +11,7 @@ class TestValidateMechanismModuleConfig:
         cfg = {
             "module_name": "EXAMPLE",
             "diag_pattern": r"Slot=(?P<Slot>\d+);CPU=(?P<CPU_Id>\d+);Proc=(?P<ProcessName>\w+);Ctx=(?P<Context>.+)",
-            "journal": {"line_pattern": r"(.+?)\s+No\[(\d+)\]\s+(.*)"},
+            "journal": {"line_pattern": r"(\S+)\s+No\[(\d+)\]\s+(\d{4}-\d{2}-\d{2}\S+)\s+(.*)"},
             "sequence_pattern": r"No\[(\d+)\]",
             "board_restart_whitelist": ["PROC1"],
             "process_name_mapping": {"DHCP": "dhcpd"},
@@ -81,3 +81,20 @@ class TestValidateMechanismModuleConfig:
         }
         errors = validate_mechanism_module_config("module1", cfg)
         assert len(errors) >= 2
+
+    def test_journal_pattern_requires_four_capture_groups(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "journal": {"line_pattern": r"(proc) (pid) (context)"},
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "至少需要 4 个捕获组" in errors[0]
+
+    def test_journal_pattern_with_four_groups_passes(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "journal": {"line_pattern": r"(proc) (pid) (seq) (context)"},
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert not any("至少需要 4 个捕获组" in e for e in errors)

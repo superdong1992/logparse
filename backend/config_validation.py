@@ -37,10 +37,17 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
         pattern = journal_cfg.get(field)
         if pattern:
             try:
-                re.compile(pattern)
+                compiled = re.compile(pattern)
             except re.error as e:
                 errors.append(
                     f"mechanism_modules.{module_key}.journal.{field} 正则非法: {e}"
+                )
+                continue
+
+            if compiled.groups < 4:
+                errors.append(
+                    f"mechanism_modules.{module_key}.journal.{field} 至少需要 4 个捕获组: "
+                    "process_name, pid, sequence, context"
                 )
 
     seq_pattern = cfg.get("sequence_pattern")
