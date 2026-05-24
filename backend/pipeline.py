@@ -109,11 +109,14 @@ class Pipeline:
             _safe("[3/6] 解压诊断日志内容",
                   lambda: self._extract_inner_contents(result, output_dir / task_id))
 
-        # Step 3.5: 解压所有 .gz 文件，方便手工浏览
-        gz_count = _safe("解压 .gz 文件",
-                         lambda: self._decompress_gz_in_dir(extract_dir))
-        if verbose and gz_count:
-            print(f"    解压 .gz 文件: {gz_count} 个")
+        # Step 3.5: 调试用解压 .gz 文件（默认关闭）
+        if self.pipeline_config.get("debug_expand_gz", False):
+            gz_count = _safe(
+                "调试展开 .gz 文件",
+                lambda: self._decompress_gz_in_dir(extract_dir),
+            )
+            if verbose and gz_count:
+                print(f"    调试展开 .gz 文件: {gz_count} 个")
 
         # Step 4: 日志解析
         _safe("[4/6] 日志解析 (时间戳+周期+机制模块+角色)",

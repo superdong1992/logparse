@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 from pathlib import Path
 from typing import Iterable
 
@@ -9,11 +10,16 @@ from backend.models import LogEntry
 
 
 def iter_text_file_lines(path: Path, encoding: str = "utf-8") -> Iterable[str]:
-    """逐行迭代文本文件。"""
+    """逐行迭代文本文件，支持 .gz 压缩文件。"""
     try:
-        with path.open("r", encoding=encoding, errors="ignore") as f:
-            for line in f:
-                yield line.rstrip("\n")
+        if path.suffix == ".gz":
+            with gzip.open(path, "rt", encoding=encoding, errors="replace") as f:
+                for line in f:
+                    yield line.rstrip("\n")
+        else:
+            with path.open("r", encoding=encoding, errors="ignore") as f:
+                for line in f:
+                    yield line.rstrip("\n")
     except OSError:
         return
 

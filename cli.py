@@ -106,8 +106,9 @@ def cli(ctx, config):
 @click.option("--output", "-o", default="./output", help="输出目录")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
 @click.option("--product", "-p", default="default", help="产品名（default/compact）")
+@click.option("--debug-expand-gz", is_flag=True, default=False, help="调试用：解析过程中将 .gz 文件就地展开")
 @click.pass_context
-def parse(ctx, package_path, output, verbose, product):
+def parse(ctx, package_path, output, verbose, product, debug_expand_gz):
     """解析日志压缩包。"""
     if verbose:
         import logging
@@ -126,6 +127,9 @@ def parse(ctx, package_path, output, verbose, product):
     if Path(config_path).exists():
         import yaml
         raw_config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    if debug_expand_gz:
+        raw_config.setdefault("pipeline", {})
+        raw_config["pipeline"]["debug_expand_gz"] = True
     pipeline = Pipeline(raw_config)
     result = pipeline.run(source, output_dir, product=product, verbose=verbose)
     if result.errors:
