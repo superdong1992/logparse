@@ -9,7 +9,7 @@ class ProcessNameResolver:
 
     def parse_diag_process_name(self, raw: str) -> tuple[str, str]:
         """解析诊断日志中的进程名，返回 (process_name, pid)。"""
-        for diag_name in self._name_map:
+        for diag_name in sorted(self._name_map, key=len, reverse=True):
             if raw.startswith(diag_name):
                 rest = raw[len(diag_name):]
                 pid = rest[1:] if rest.startswith("-") else ""

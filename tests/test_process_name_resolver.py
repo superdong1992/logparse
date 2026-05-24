@@ -29,6 +29,14 @@ class TestParseDiagProcessName:
         resolver = ProcessNameResolver(name_map={"DHCP": "dhcpd"})
         assert resolver.parse_diag_process_name("DHCP-99") == ("DHCP", "99")
 
+    def test_longest_prefix_match(self):
+        """PROC_AGENT should match before PROC when both are in the map."""
+        resolver = ProcessNameResolver(name_map={
+            "PROC": "proc",
+            "PROC_AGENT": "proc-agent",
+        })
+        assert resolver.parse_diag_process_name("PROC_AGENT-123") == ("PROC_AGENT", "123")
+
 
 class TestResolveJournalProcessName:
     def test_indicator_reverse_mapping(self):
