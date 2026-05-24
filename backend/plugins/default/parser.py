@@ -20,9 +20,11 @@ from backend.models import (
     SlotInfo,
 )
 from backend.parsing.active_period_builder import ActivePeriodBuilder
-from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.cycle_detector import CycleDetector
+from backend.parsing.mech_diag_scanner import MechDiagScanner
+from backend.parsing.mech_journal_scanner import MechJournalScanner
 from backend.parsing.output_writer import MechOutputWriter
+from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.role_identifier import RoleIdentifier
 from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.plugins.base import LogParserPlugin
@@ -151,14 +153,13 @@ class ParserPlugin(LogParserPlugin):
 
         # 扫描诊断日志
         if diag_re:
+            diag_scanner = MechDiagScanner(
+                diag_re, seq_re, master_keyword, resolver,
+                mod_upper, self._ts_extractor,
+            )
             for slot in result.diagnostic_slots:
                 for log_entry in slot.diagnostic_logs:
-                    all_entries.extend(
-                        self._scan_diag_entries(
-                            log_entry, slot.slot_id, diag_re, seq_re,
-                            master_keyword, resolver, mod_upper,
-                        )
-                    )
+                    all_entries.extend(diag_scanner.scan(log_entry, slot.slot_id))
 
         # 诊断日志时区，供 journal 扫描时即时归一化
         diag_tz = None
@@ -169,14 +170,13 @@ class ParserPlugin(LogParserPlugin):
 
         # 扫描 journal 日志
         if (journal_re or journal_re2) and journal_keyword:
+            journal_scanner = MechJournalScanner(
+                journal_re, journal_re2, journal_keyword,
+                seq_re, master_keyword, resolver, indicator,
+                mod_upper, self._ts_extractor,
+            )
             for ps in result.private_slots:
-                all_entries.extend(
-                    self._scan_journal_entries(
-                        ps, journal_re, journal_re2, journal_keyword,
-                        seq_re, master_keyword, resolver, indicator,
-                        mod_upper, diag_tz,
-                    )
-                )
+                all_entries.extend(journal_scanner.scan(ps, diag_tz))
 
         if not all_entries:
             return None
@@ -214,143 +214,6 @@ class ParserPlugin(LogParserPlugin):
         mech_result.journal_entry_count = sum(1 for e in all_entries if e.source == "journal")
 
         return mech_result
-
-    # ── 诊断日志扫描 ──────────────────────────────────────
-
-    def _scan_diag_entries(
-        self, log_entry: LogEntry, slot_id: str,
-        diag_re: re.Pattern, seq_re: re.Pattern,
-        master_keyword: re.Pattern | None,
-        resolver: ProcessNameResolver,
-        mod_upper: str,
-    ) -> list[MechLogEntry]:
-        entries: list[MechLogEntry] = []
-        text = self._read_log_entry(log_entry)
-        if not text:
-            return entries
-
-        for line in text.splitlines():
-            if mod_upper not in line:
-                continue
-            m = diag_re.search(line)
-            if not m:
-                continue
-
-            slot = m.group("Slot")
-            cpu_id = m.group("CPU_Id")
-            if cpu_id == "0":
-                cpu_id = ""
-            raw_proc_name = m.group("ProcessName")
-            context = m.group("Context")
-
-            proc_name, pid = resolver.parse_diag_process_name(raw_proc_name)
-
-            sm = seq_re.search(line)
-            if not sm:
-                continue
-            try:
-                seq = int(sm.group(1))
-            except ValueError:
-                continue
-
-            is_active = bool(master_keyword and master_keyword.search(context))
-            ts = self._extract_first_ts(line)
-
-            src_file = f"slot_{slot_id}/{log_entry.name}"
-            entries.append(MechLogEntry(
-                timestamp=ts, source="diagnostic",
-                source_file=src_file,
-                slot=slot, cpu_id=cpu_id,
-                process_name=proc_name, pid=pid,
-                context=context, sequence=seq,
-                is_active_signal=is_active, raw=line.strip()[:500],
-            ))
-
-        return entries
-
-    # ── journal 日志扫描 ──────────────────────────────────
-
-    def _scan_journal_entries(
-        self, ps: PrivateSlotInfo,
-        journal_re: re.Pattern, journal_re2: re.Pattern | None,
-        journal_keyword: str,
-        seq_re: re.Pattern, master_keyword: re.Pattern | None,
-        resolver: ProcessNameResolver, indicator: str | None,
-        mod_upper: str, tzinfo: Any,
-    ) -> list[MechLogEntry]:
-        entries: list[MechLogEntry] = []
-
-        for jl in ps.journal_logs:
-            text = self._ts_extractor._read_file(Path(jl.path))
-            if not text:
-                continue
-
-            for line in text.splitlines():
-                if mod_upper not in line:
-                    continue
-                if journal_keyword not in line.lower():
-                    continue
-
-                m = journal_re.match(line) if journal_re else None
-                if not m and journal_re2:
-                    m = journal_re2.match(line)
-                if not m:
-                    continue
-
-                raw_name = m.group(1)
-                raw_pid = m.group(2)
-                seq_str = m.group(3)
-                context = m.group(4)
-
-                try:
-                    seq = int(seq_str)
-                except ValueError:
-                    seq = 0
-
-                proc_name, pid = resolver.resolve_journal_process_name(
-                    raw_name, raw_pid, indicator,
-                )
-                is_active = bool(master_keyword and master_keyword.search(context))
-                ts = self._extract_first_ts(line)
-                if ts and ts.tzinfo is None and tzinfo is not None:
-                    ts = ts.replace(tzinfo=tzinfo)
-
-                src_file = f"{ps.dir_name}/{jl.name}"
-                entries.append(MechLogEntry(
-                    timestamp=ts, source="journal",
-                    source_file=src_file,
-                    slot=ps.slot_id, cpu_id=ps.cpu_id if ps.cpu_id not in (None, "", "0") else "",
-                    process_name=proc_name, pid=pid,
-                    context=context, sequence=seq,
-                    is_active_signal=is_active, raw=line.strip()[:500],
-                ))
-
-        return entries
-
-    # ── 时间戳工具 ────────────────────────────────────────
-
-    def _extract_first_ts(self, line: str) -> datetime | None:
-        stamps = self._ts_extractor.extract_from_text(line)
-        return stamps[0] if stamps else None
-
-    # ── 文件读取 ──────────────────────────────────────────
-
-    def _read_log_entry(self, log_entry: LogEntry) -> str:
-        if log_entry.extracted_path:
-            ext_dir = Path(log_entry.extracted_path)
-            if ext_dir.is_dir():
-                parts: list[str] = []
-                for f in sorted(ext_dir.rglob("*")):
-                    if f.is_file():
-                        text = self._ts_extractor._read_file(f)
-                        if text:
-                            parts.append(text)
-                return "\n".join(parts)
-        # 未压缩文件：直接读取
-        file_path = Path(log_entry.path)
-        if file_path.is_file():
-            return self._ts_extractor._read_file(file_path)
-        return ""
 
     # ── 输出落盘 ──────────────────────────────────────────
 
