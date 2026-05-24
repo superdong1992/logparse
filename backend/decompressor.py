@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import logging
 import os
+import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -49,13 +50,28 @@ class Decompressor:
     @staticmethod
     def _is_safe_path(member_name: str) -> bool:
         """检查压缩包内文件路径是否安全（无路径穿越）。"""
-        # 拒绝绝对路径（含跨平台）
+        if not member_name:
+            return False
+
+        # 拒绝 Unix 绝对路径
         if os.path.isabs(member_name):
             return False
+
+        # 拒绝 Windows 盘符绝对路径，例如 C:\Windows 或 C:/Windows
+        if re.match(r"^[a-zA-Z]:[\\/]", member_name):
+            return False
+
         normed = member_name.replace("\\", "/")
+
+        # 拒绝 Unix 风格绝对路径
         if normed.startswith("/"):
             return False
-        # 拒绝 .. 路径穿越
+
+        # 拒绝 UNC 路径，例如 \\server\share
+        if normed.startswith("//"):
+            return False
+
+        # 拒绝路径穿越
         return ".." not in normed.split("/")
 
     @staticmethod

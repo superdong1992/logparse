@@ -46,6 +46,15 @@ class TestSafePath:
     def test_absolute_windows(self):
         assert not Decompressor._is_safe_path("C:\\Windows\\system32")
 
+    def test_absolute_windows_forward_slash(self):
+        assert not Decompressor._is_safe_path("C:/Windows/system32")
+
+    def test_unc_path(self):
+        assert not Decompressor._is_safe_path("\\\\server\\share")
+
+    def test_empty_path(self):
+        assert not Decompressor._is_safe_path("")
+
     def test_nested_traversal(self):
         assert not Decompressor._is_safe_path("dir/../../etc/passwd")
 
