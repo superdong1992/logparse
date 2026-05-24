@@ -6,6 +6,8 @@ import importlib
 import re
 from typing import Any
 
+from backend.plugins.base import DirectoryDiscoveryPlugin, LogParserPlugin
+
 
 class ConfigValidationError(ValueError):
     pass
@@ -102,11 +104,13 @@ def _validate_plugin_loadable(
     kind: str,
     plugin_path: str,
 ) -> list[str]:
-    """校验插件类路径可导入、类存在、具备期望方法。"""
+    """校验插件类路径可导入、类存在、继承正确基类、具备期望方法。"""
     if kind == "discovery":
         expected_methods = ["discover"]
+        expected_base = DirectoryDiscoveryPlugin
     elif kind == "log_parser":
         expected_methods = ["parse", "write_output"]
+        expected_base = LogParserPlugin
     else:
         return [f"products.{product_name}.{kind}: 未知插件类型"]
 
@@ -131,6 +135,18 @@ def _validate_plugin_loadable(
         ]
 
     errors: list[str] = []
+
+    try:
+        is_subclass = issubclass(cls, expected_base)
+    except TypeError:
+        is_subclass = False
+
+    if not is_subclass:
+        errors.append(
+            f"products.{product_name}.{kind}.plugin={plugin_path!r} "
+            f"不是 {expected_base.__name__} 的子类"
+        )
+
     for method in expected_methods:
         if not callable(getattr(cls, method, None)):
             errors.append(

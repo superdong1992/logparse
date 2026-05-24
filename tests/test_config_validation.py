@@ -216,3 +216,64 @@ class TestValidateConfig:
     def test_product_config_not_dict(self):
         errors = validate_config({"products": {"default": "not a dict"}})
         assert any("必须是对象" in e for e in errors)
+
+
+class TestPluginSubclassValidation:
+    def test_plugin_not_subclass_of_discovery_base(self, monkeypatch):
+        """插件类存在但未继承 DirectoryDiscoveryPlugin 时应报错。"""
+        import types
+        import importlib as il
+
+        class FakeScanner:
+            def discover(self, root):
+                pass
+
+        fake_module = types.ModuleType("fake_scanner")
+        fake_module.FakeScanner = FakeScanner
+
+        original_import = il.import_module
+
+        def fake_import(name, *args, **kwargs):
+            if name == "fake_scanner":
+                return fake_module
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(il, "import_module", fake_import)
+
+        cfg = _valid_product_config()
+        cfg["discovery"]["plugin"] = "fake_scanner.FakeScanner"
+        errors = validate_config({"products": {"default": cfg}})
+        assert any("DirectoryDiscoveryPlugin" in e for e in errors)
+
+    def test_plugin_not_subclass_of_parser_base(self, monkeypatch):
+        """插件类存在但未继承 LogParserPlugin 时应报错。"""
+        import types
+        import importlib as il
+
+        class FakeParser:
+            def parse(self, result):
+                pass
+            def write_output(self, mr, d):
+                pass
+
+        fake_module = types.ModuleType("fake_parser")
+        fake_module.FakeParser = FakeParser
+
+        original_import = il.import_module
+
+        def fake_import(name, *args, **kwargs):
+            if name == "fake_parser":
+                return fake_module
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(il, "import_module", fake_import)
+
+        cfg = _valid_product_config()
+        cfg["log_parser"]["plugin"] = "fake_parser.FakeParser"
+        errors = validate_config({"products": {"default": cfg}})
+        assert any("LogParserPlugin" in e for e in errors)
+
+    def test_valid_plugins_pass_subclass_check(self):
+        """使用实际插件类时应通过子类校验。"""
+        errors = validate_config({"products": {"default": _valid_product_config()}})
+        assert not any("子类" in e for e in errors)
