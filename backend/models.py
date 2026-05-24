@@ -113,11 +113,23 @@ class MechProcessLifecycle(BaseModel):
     missing_sequences: list[int] = Field(default_factory=list)
 
 
+class MechCycleSplitTrace(BaseModel):
+    """重启周期切分原因追踪。"""
+    timestamp: datetime
+    reason: str = ""
+    cpu_id: str = ""
+    indicator: str = ""
+    old_pid: str = ""
+    new_pid: str = ""
+    detail: str = ""
+
+
 class MechBoardCycle(BaseModel):
     """一次整板重启周期。"""
     dir_name: str = ""              # "{启动时间}-{恢复时间}"
     start_time: datetime | None = None
     end_time: datetime | None = None
+    split_traces: list[MechCycleSplitTrace] = Field(default_factory=list)
     processes: list[MechProcessLifecycle] = Field(default_factory=list)
 
 

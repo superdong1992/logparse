@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from backend.models import MechLogEntry
+from backend.models import MechLogEntry, MechCycleSplitTrace
 from backend.parsing.cycle_detector import CycleDetector
 
 
@@ -190,3 +190,36 @@ class TestCpuSubcardIsolation:
         # 周期2: CPU-1 重启后
         cpu_procs_after = [p for p in cycles[1].processes if p.pid == "60"]
         assert len(cpu_procs_after) == 1
+
+
+class TestSplitTrace:
+    """切分原因追踪。"""
+
+    def test_split_trace_on_pid_change(self, detector):
+        """indicator PID 变化 → 结果中出现 split_traces。"""
+        entries = [
+            _entry("dhcp", "100", i, _ts(1, 3, 0, i)) for i in range(1, 4)
+        ] + [
+            _entry("dhcp", "200", i, _ts(1, 3, 1, i)) for i in range(1, 4)
+        ]
+        cycles = detector.detect(entries)
+        assert len(cycles) == 2
+
+        # 至少有一个 cycle 包含 split trace
+        all_traces: list[MechCycleSplitTrace] = []
+        for c in cycles:
+            all_traces.extend(c.split_traces)
+        assert len(all_traces) == 1
+
+        trace = all_traces[0]
+        assert trace.old_pid == "100"
+        assert trace.new_pid == "200"
+        assert trace.reason == "indicator_pid_changed"
+        assert trace.indicator == "dhcp"
+
+    def test_no_split_trace_without_pid_change(self, detector):
+        """无 PID 变化 → 无 split_traces。"""
+        entries = [_entry("svc", "100", i, _ts(1, 3, 0, i)) for i in range(1, 6)]
+        cycles = detector.detect(entries)
+        assert len(cycles) == 1
+        assert cycles[0].split_traces == []
