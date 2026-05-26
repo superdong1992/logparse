@@ -35,3 +35,28 @@ class TestGzExpansionGate:
         count = pipeline._decompress_gz_in_dir(extract_dir)
         assert count == 1
         assert (extract_dir / "test.log").exists()
+
+
+class TestUnifiedExtractionBoundary:
+    def test_pipeline_has_no_middle_inner_extraction_stage(self):
+        assert not hasattr(Pipeline, "_extract_inner_contents")
+
+    def test_run_does_not_perform_middle_inner_extraction(self, tmp_path):
+        class FakeDecompressor:
+            def extract_all(self, source, dest_dir, recursive=True, expand_gz=False):
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                return []
+
+        class FakeDiscovery:
+            def discover(self, extract_dir):
+                return [], []
+
+        class FakeParser:
+            def parse(self, result):
+                return result
+
+        pipeline = Pipeline({"pipeline": {"inner_extraction": True}})
+        pipeline.decompressor = FakeDecompressor()
+        pipeline._plugin_cache["default"] = (FakeDiscovery(), FakeParser())
+
+        pipeline.run(tmp_path / "package.zip", tmp_path / "out")

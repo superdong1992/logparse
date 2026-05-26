@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -109,12 +108,14 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
 
             dump_time = extract_dump_time(f.name, self._filename_ts_regex)
             compressed = self._is_compressed(f.name)
+            extracted_dir = f.parent / f"{f.name}_extracted"
             entry = LogEntry(
                 path=str(f),
                 name=f.name,
                 size_bytes=f.stat().st_size,
                 compressed=compressed,
                 original_format=f.suffix if compressed else "",
+                extracted_path=str(extracted_dir) if compressed and extracted_dir.is_dir() else "",
                 dump_time=dump_time,
             )
             slot.add_diagnostic_log(entry)
@@ -130,8 +131,6 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
         if varlog_dir is None:
             return private_slots
 
-        archive_name = self.config.get("archive_name", "varlog.zip")
-
         for entry in sorted(varlog_dir.iterdir()):
             if not entry.is_dir():
                 continue
@@ -146,38 +145,10 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
                 path=str(entry),
             )
 
-            # 优先检测是否已被外层递归解压
-            pre_extracted = (entry / "varlog").is_dir()
-            if not pre_extracted:
-                archive_path = entry / archive_name
-                if archive_path.exists():
-                    try:
-                        extract_dir = entry / f"{archive_name}_extracted"
-                        if not extract_dir.exists():
-                            extract_dir.mkdir(parents=True, exist_ok=True)
-                            if self.decompressor:
-                                self.decompressor.extract_all(
-                                    archive_path, extract_dir, recursive=False,
-                                )
-                            else:
-                                import zipfile
-                                from backend.decompressor import MAX_UNCOMPRESSED_SIZE
-                                with zipfile.ZipFile(archive_path, "r") as zf:
-                                    for member in zf.infolist():
-                                        if not self._is_safe_member(member.filename):
-                                            logger.warning("跳过不安全路径: %s 中的 %s",
-                                                           archive_path, member.filename)
-                                            continue
-                                        if member.file_size > MAX_UNCOMPRESSED_SIZE:
-                                            logger.warning("文件过大，跳过: %s", member.filename)
-                                            continue
-                                        zf.extract(member, extract_dir)
-                    except Exception:
-                        logger.warning("解压 varlog.zip 失败: %s", archive_path)
-
-            # 扫描解压目录中的 journal 文件
+            # Scanner only consumes directories prepared by the unified
+            # decompression stage. It must not extract varlog.zip itself.
             for subdir in entry.iterdir():
-                if subdir.is_dir() and subdir.name != archive_name:
+                if subdir.is_dir():
                     self._scan_journal_in_dir(subdir, private_slot)
 
             private_slots.append(private_slot)
@@ -213,18 +184,6 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
 
     def _is_compressed(self, name: str) -> bool:
         return is_compressed(name, self._compressed_exts)
-
-    @staticmethod
-    def _is_safe_member(name: str) -> bool:
-        """检查压缩包内文件路径是否安全（无路径穿越、无绝对路径）。"""
-        if os.path.isabs(name):
-            return False
-        # 防御 Unix 风格绝对路径 (/etc/passwd) 在 Windows 上不被 os.path.isabs 识别
-        normed = name.replace("\\", "/")
-        if normed.startswith("/"):
-            return False
-        parts = normed.split("/")
-        return ".." not in parts
 
     @staticmethod
     def _find_dir(root: Path, target: str) -> Path | None:

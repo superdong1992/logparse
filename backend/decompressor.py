@@ -115,6 +115,10 @@ class Decompressor:
                 for f in files:
                     lower_name = f.lower()
 
+                    # Archive formats are expanded here, but plain .gz log files
+                    # such as journal.log.1.gz are kept by default and read
+                    # streamingly by the parser. Set expand_gz=True only for
+                    # debug/manual inspection workflows.
                     # 跳过普通 .gz 但保留 .tar.gz / .tgz
                     is_plain_gz = (
                         lower_name.endswith(".gz")

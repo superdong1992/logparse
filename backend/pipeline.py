@@ -9,7 +9,7 @@ from typing import Any
 
 from backend.decompressor import Decompressor
 from backend.metadata import MetadataGenerator
-from backend.models import LogEntry, ParseResult, PrivateSlotInfo, SlotInfo
+from backend.models import ParseResult
 from backend.plugins.base import (
     DirectoryDiscoveryPlugin,
     LogParserPlugin,
@@ -23,12 +23,11 @@ class Pipeline:
     """产品无关日志解析编排器。
 
     步骤:
-      1. Decompress        — 解压外层压缩包（通用）
+      1. Decompress        — 统一解压 archive（通用）
       2. Discovery         — 发现 slot 和文件（产品插件）
-      3. Inner Extraction  — 解压 LogEntry 内层压缩包（通用）
-      4. Parse             — 解析日志内容（产品插件）
-      5. Write Output      — 落盘（产品插件）
-      6. Metadata          — 生成 metadata.json（通用）
+      3. Parse             — 解析日志内容（产品插件）
+      4. Write Output      — 落盘（产品插件）
+      5. Metadata          — 生成 metadata.json（通用）
     """
 
     def __init__(self, config: dict[str, Any]):
@@ -77,7 +76,8 @@ class Pipeline:
                 print(f"  {message} [OK]{extra}")
             return r
 
-        # Step 1: 解压（仅外层，内层压缩包留给 Step 3）
+        # Step 1: unified archive extraction. Plain .gz log files are kept
+        # unless debug_expand_gz is enabled, and parsers can stream them.
         extracted = _safe(f"[1/6] 解压 {source.name}",
               lambda: self.decompressor.extract_all(
                   source, extract_dir,
@@ -106,19 +106,9 @@ class Pipeline:
             errors=errors,
         )
 
-        # Step 3: 内层解压
-        if self.pipeline_config.get("inner_extraction", True):
-            _safe("[3/6] 解压诊断日志内容",
-                  lambda: self._extract_inner_contents(result, output_dir / task_id))
-
-        # Step 3.5: 调试用解压 .gz 文件（默认关闭）
-        if self.pipeline_config.get("debug_expand_gz", False):
-            gz_count = _safe(
-                "调试展开 .gz 文件",
-                lambda: self._decompress_gz_in_dir(extract_dir),
-            )
-            if verbose and gz_count:
-                print(f"    调试展开 .gz 文件: {gz_count} 个")
+        # Step 3 is intentionally absent: all archive extraction happens in
+        # Step 1. Scanners consume the unified extracted workspace and parsers
+        # stream plain .gz log files unless debug_expand_gz was enabled.
 
         # Step 4: 日志解析
         _safe("[4/6] 日志解析 (时间戳+周期+机制模块+角色)",
@@ -180,25 +170,6 @@ class Pipeline:
 
         self._plugin_cache[product] = (discovery, log_parser)
         return discovery, log_parser
-
-    def _extract_inner_contents(
-        self, result: ParseResult, task_output_dir: Path,
-    ) -> None:
-        """解压所有诊断日志的内层压缩包，设置 LogEntry.extracted_path。"""
-        contents_dir = task_output_dir / "contents"
-        for slot in result.diagnostic_slots:
-            for entry in slot.diagnostic_logs:
-                if not entry.compressed:
-                    continue
-                src = Path(entry.path)
-                if not src.exists():
-                    continue
-                dest = contents_dir / slot.name / src.stem
-                try:
-                    self.decompressor.extract_all(src, dest, recursive=False)
-                    entry.extracted_path = str(dest)
-                except Exception as e:
-                    logger.warning("内层解压失败 %s: %s", src, e)
 
     @staticmethod
     def _decompress_gz_in_dir(directory: Path) -> int:

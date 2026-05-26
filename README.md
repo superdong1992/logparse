@@ -1,6 +1,6 @@
 # logparse
 
-日志解析维护工具，用于预处理产品设备的日志压缩包。支持多层解压，发现诊断日志和私有日志（varlog），通过可配置的机制模块优先判定主控，兜底通过目录+时间戳推断。输出结构化元数据供 AI agent 消费。
+日志解析维护工具，用于预处理产品设备的日志压缩包。支持统一多层归档解压，发现诊断日志和私有日志（varlog），通过可配置的机制模块优先判定主控，兜底通过目录+时间戳推断。输出结构化元数据供 AI agent 消费。
 
 ## 快速开始
 
@@ -19,7 +19,7 @@ python cli.py check-config
 ```bash
 # 解析
 python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product default|compact]
-python cli.py parse <package_path> --debug-expand-gz   # 调试用：就地展开 .gz
+python cli.py parse <package_path> --debug-expand-gz   # 调试用：就地展开普通 .gz 日志
 
 # 查询
 python cli.py info <task_id>
@@ -35,11 +35,30 @@ python cli.py test-pattern -m module1 -t diag "日志行"
 python cli.py test-pattern -m module1 -t journal "日志行"
 ```
 
+## 工作流程
+
+```text
+外层压缩包
+  → Decompressor 统一解压归档包（外层 + 内层 zip/tar/tgz/tar.gz）
+  → DirectoryDiscoveryPlugin 扫描已解压工作区，发现 slot、诊断日志和 varlog/journal
+  → LogParserPlugin 解析时间戳、ActivePeriod、机制模块日志和角色
+  → MechOutputWriter 写出机制模块日志
+  → MetadataGenerator 生成 metadata.json，CLI 写出 result.json
+```
+
+解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用。
+
+普通 `.gz` 日志（如 `journal.log.1.gz`）默认不会展开成独立文件，parser 会直接流式读取，避免批量解析时产生大量重复文件。只有传入 `--debug-expand-gz` 或配置 `pipeline.debug_expand_gz: true` 时，才会额外展开普通 `.gz`，方便人工排查。
+
 ## 测试
 
 ```bash
 python -m pytest tests/ -v
 ```
+
+## 变更记录
+
+- 2026-05-26：统一解压职责。`Decompressor` 负责外层和内层归档解压；Scanner 插件只扫描已解压工作区，不再自行解压 `varlog.zip` 或诊断日志内层包；普通 `.gz` 日志默认保留并由 parser 流式读取，调试时可通过 `--debug-expand-gz` 展开。
 
 ## Windows 终端编码
 
