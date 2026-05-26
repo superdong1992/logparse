@@ -71,7 +71,12 @@ class ParserPlugin(LogParserPlugin):
             logger.info("[%s] 已加载 %s", module_key, module_entry["plugin"])
 
         for mechanism in mechanism_plugins:
-            mech = mechanism.parse(result)
+            try:
+                mech = mechanism.parse(result)
+            except Exception as e:
+                logger.warning("[%s] parse 异常: %s", mechanism.module_key, e)
+                result.errors.append(f"[{mechanism.module_key}] parse 异常: {e}")
+                continue
             if mech:
                 result.mech_results.append(mech)
                 mechanism.apply_roles(result, mech)
