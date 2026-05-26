@@ -117,7 +117,7 @@ class Module1Plugin(MechanismModulePlugin):
         for entry in all_entries:
             by_slot[entry.slot].append(entry)
 
-        mech_result = MechResult(module_name=module_name)
+        mech_result = MechResult(module_name=module_name, module_key=self.module_key)
         for slot_id, entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
             detector = CycleDetector(indicator=indicator, whitelist=whitelist)

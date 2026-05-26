@@ -142,6 +142,7 @@ class MechSlotOutput(BaseModel):
 class MechResult(BaseModel):
     """机制模块解析结果。"""
     module_name: str = ""
+    module_key: str = ""
     slots: list[MechSlotOutput] = Field(default_factory=list)
     active_master_slots: list[str] = Field(default_factory=list)
     diag_entry_count: int = 0

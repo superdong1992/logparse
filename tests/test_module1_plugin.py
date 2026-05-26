@@ -63,6 +63,7 @@ def test_module1_plugin_parses_diag_entries(tmp_path):
 
     assert mech is not None
     assert mech.module_name == "EXAMPLE"
+    assert mech.module_key == "module1"
     assert mech.diag_entry_count == 1
     assert mech.active_master_slots == ["1"]
     assert mech.slots[0].board_cycles[0].processes[0].process_name == "SERVICE"

@@ -108,6 +108,15 @@ products:
               # [通常不改] 序号提取正则，用于丢号检测和重启序号回绕判定
               sequence_pattern: 'No\[(\d+)\]'
 
+          module2:   # 诊断日志-only 机制模块，复用 module1 生命周期切分结果；必须声明在 module1 之后
+            plugin: "backend.plugins.mechanisms.module2.Module2Plugin"
+            enabled: true
+            config:
+              module_name: "MODULE2"
+              identifying_keyword: "xxx"
+              depends_on_module: "module1"
+              diag_pattern: 'Slot=(?P<Slot>\d+),CPU-Id=(?P<CPU_Id>\d+),ProcessName=(?P<ProcessName>[^,]+),Context="(?P<Context>.*?)"'
+
   # ── compact 产品示例 ──────────────────────────────────
   # 演示不同目录布局（boards/ + logs/）如何复用默认 ParserPlugin
   compact:
