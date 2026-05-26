@@ -218,6 +218,17 @@ class TestValidateConfig:
         assert any("必须是对象" in e for e in errors)
 
 
+class TestValidateConfigOrRaise:
+    def test_raises_on_errors(self):
+        from backend.config_validation import validate_config_or_raise, ConfigValidationError
+        with pytest.raises(ConfigValidationError):
+            validate_config_or_raise({})
+
+    def test_passes_on_valid_config(self):
+        from backend.config_validation import validate_config_or_raise
+        validate_config_or_raise({"products": {"default": _valid_product_config()}})
+
+
 class TestPluginSubclassValidation:
     def test_plugin_not_subclass_of_discovery_base(self, monkeypatch):
         """插件类存在但未继承 DirectoryDiscoveryPlugin 时应报错。"""

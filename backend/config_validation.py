@@ -68,6 +68,13 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_config_or_raise(config: dict[str, Any]) -> None:
+    """Validate config, raising ConfigValidationError on any errors."""
+    errors = validate_config(config)
+    if errors:
+        raise ConfigValidationError("\n".join(errors))
+
+
 # ── 产品级校验 ──────────────────────────────────────────
 
 
