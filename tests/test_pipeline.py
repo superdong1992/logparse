@@ -111,6 +111,7 @@ class TestGzExpansionIntegration:
         assert result is not None
         # Find .gz files in output — the original .gz should still be present
         gz_files = list(out_dir.rglob("*.gz"))
+        assert gz_files, "Should have at least one .gz file in output"
         # For each .gz, the plain file (without .gz suffix) should NOT exist
         for gz_file in gz_files:
             plain_file = gz_file.with_suffix("")
