@@ -252,6 +252,18 @@ class TestRoleIdentification:
         assert slot.role == BoardRole.UNKNOWN
 
 
+class TestMechanismPluginOrchestration:
+    def test_parser_loads_mechanism_plugin(self, sample_config, sample_parse_result):
+        plugin = ParserPlugin(sample_config)
+
+        result = plugin.parse(sample_parse_result)
+
+        assert result is sample_parse_result
+
+    def test_parser_no_longer_exposes_module_specific_parse_method(self, plugin):
+        assert not hasattr(plugin, "_parse_one_mech")
+
+
 class TestFmtDir:
     def test_both_times(self):
         s = datetime(2026, 1, 3, 10, 37, 7)
