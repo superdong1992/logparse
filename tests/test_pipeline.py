@@ -6,8 +6,18 @@ import struct
 import zipfile
 from pathlib import Path
 
+import yaml
+
 from backend.models import LogEntry, ParseResult, SlotInfo
 from backend.pipeline import Pipeline
+
+
+def _load_test_config() -> dict:
+    """Load the real config.yaml for integration tests."""
+    config_path = Path("config.yaml")
+    if config_path.exists():
+        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return {}
 
 
 class TestInnerExtractionErrors:
@@ -41,34 +51,91 @@ class TestInnerExtractionErrors:
         assert any("内层解压失败" in err for err in result.errors)
 
 
-class TestGzExpansionGate:
-    def test_gz_not_expanded_by_default(self, tmp_path):
-        """Default config should not expand .gz files in-place."""
-        # Create a fake extracted dir with a .gz file
-        extract_dir = tmp_path / "task1" / "extracted"
-        extract_dir.mkdir(parents=True)
-        gz_path = extract_dir / "test.log.gz"
+class TestGzExpansionIntegration:
+    """Integration tests for .gz expansion gate through Pipeline.run()."""
+
+    @staticmethod
+    def _build_test_package(tmp_path: Path) -> Path:
+        """Build a minimal test zip with varlog containing a .gz file.
+
+        Structure:
+          test_package.zip
+            varlog/
+              slot_1/
+                varlog.zip
+                  varlog/
+                    journal.log
+                    journal.log.1.gz
+        """
+        # Create inner varlog content with a .gz file
+        varlog_inner = tmp_path / "varlog_inner"
+        varlog_inner.mkdir()
+        varlog_subdir = varlog_inner / "varlog"
+        varlog_subdir.mkdir()
+
+        gz_content = "2026-01-03T00:00:00+08:00 test log line from gz\n"
+        gz_path = varlog_subdir / "journal.log.1.gz"
         with gzip.open(gz_path, "wt", encoding="utf-8") as f:
-            f.write("hello world\n")
+            f.write(gz_content)
 
-        pipeline = Pipeline({"pipeline": {"debug_expand_gz": False}})
-        count = pipeline._decompress_gz_in_dir(extract_dir)
-        # The method still expands when called directly; the gate is in run()
-        # So test that pipeline config controls the gate
-        assert not pipeline.pipeline_config.get("debug_expand_gz", False)
+        # Also add a plain journal.log so the scanner finds journal files
+        (varlog_subdir / "journal.log").write_text(
+            "2026-01-03T00:01:00+08:00 current log line\n", encoding="utf-8"
+        )
 
-    def test_gz_expansion_enabled_via_config(self, tmp_path):
-        extract_dir = tmp_path / "task2" / "extracted"
-        extract_dir.mkdir(parents=True)
-        gz_path = extract_dir / "test.log.gz"
-        with gzip.open(gz_path, "wt", encoding="utf-8") as f:
-            f.write("hello world\n")
+        # Create varlog.zip containing the varlog/ subtree
+        varlog_zip = tmp_path / "varlog.zip"
+        with zipfile.ZipFile(varlog_zip, "w") as zf:
+            for f in varlog_inner.rglob("*"):
+                if f.is_file():
+                    zf.write(f, f.relative_to(varlog_inner))
 
-        pipeline = Pipeline({"pipeline": {"debug_expand_gz": True}})
-        assert pipeline.pipeline_config.get("debug_expand_gz") is True
-        count = pipeline._decompress_gz_in_dir(extract_dir)
-        assert count == 1
-        assert (extract_dir / "test.log").exists()
+        # Create outer zip with proper default-product structure
+        outer_zip = tmp_path / "test_package.zip"
+        with zipfile.ZipFile(outer_zip, "w") as zf:
+            zf.write(varlog_zip, "varlog/slot_1/varlog.zip")
+
+        return outer_zip
+
+    def test_pipeline_does_not_expand_gz_by_default(self, tmp_path):
+        """Pipeline.run() should not expand plain .gz when debug_expand_gz is False."""
+        config = _load_test_config()
+        config.setdefault("pipeline", {})["debug_expand_gz"] = False
+
+        input_zip = self._build_test_package(tmp_path)
+        out_dir = tmp_path / "out"
+
+        pipeline = Pipeline(config)
+        result = pipeline.run(input_zip, out_dir, product="default")
+
+        assert result is not None
+        # Find .gz files in output — the original .gz should still be present
+        gz_files = list(out_dir.rglob("*.gz"))
+        # For each .gz, the plain file (without .gz suffix) should NOT exist
+        for gz_file in gz_files:
+            plain_file = gz_file.with_suffix("")
+            assert not plain_file.exists(), (
+                f"{plain_file} should not exist when debug_expand_gz=False"
+            )
+
+    def test_pipeline_expands_gz_when_debug_enabled(self, tmp_path):
+        """Pipeline.run() should expand plain .gz when debug_expand_gz is True."""
+        config = _load_test_config()
+        config.setdefault("pipeline", {})["debug_expand_gz"] = True
+
+        input_zip = self._build_test_package(tmp_path)
+        out_dir = tmp_path / "out"
+
+        pipeline = Pipeline(config)
+        result = pipeline.run(input_zip, out_dir, product="default")
+
+        assert result is not None
+        gz_files = list(out_dir.rglob("*.gz"))
+        assert gz_files, "Should have at least one .gz file in output"
+        # At least one .gz should have been expanded (plain file exists alongside it)
+        assert any(gz.with_suffix("").exists() for gz in gz_files), (
+            "At least one .gz should have been expanded when debug_expand_gz=True"
+        )
 
 
 class TestPipelineFatalHandling:
