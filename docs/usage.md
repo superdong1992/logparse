@@ -320,7 +320,7 @@ output/
 
 # 配置结构说明
 
-配置文件示例：
+配置文件示例（简化示意，实际配置请以 config.yaml 为准）：
 
 ```yaml
 pipeline:
@@ -330,18 +330,15 @@ pipeline:
 products:
   default:
     discovery:
-      plugin: default
+      plugin: "backend.plugins.default.scanner.ScannerPlugin"
       config:
-        diag_dir_names:
-          - diagnostic_log
-        varlog_dir_names:
-          - varlog
+        diagnostic_dir: "diag"
+        private_dir: "varlog"
 
     log_parser:
-      plugin: default
+      plugin: "backend.plugins.default.parser.ParserPlugin"
       config:
-        timestamp_patterns:
-          - "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"
+        timestamp_regex: "(\\d{4}-\\d{1,2}-\\d{1,2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)([+-]\\d{2}:\\d{2})?"
 
         mechanism_modules:
           example:
@@ -359,7 +356,7 @@ products:
 | `discovery` | 日志发现插件 |
 | `log_parser` | 日志解析插件 |
 | `mechanism_modules` | 机制模块配置 |
-| `timestamp_patterns` | 时间戳正则 |
+| `timestamp_regex` | 时间戳提取正则 |
 
 ---
 
