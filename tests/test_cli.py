@@ -50,11 +50,6 @@ def test_test_pattern_reads_nested_mechanism_config(sample_config, tmp_path):
 
 
 def test_test_pattern_journal_without_sequence(sample_config, tmp_path):
-    sample_config["mechanism_modules"]["module1"]["config"]["journal"] = {
-        "line_pattern": "",
-        "line_pattern2": r"^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+(.+)$",
-        "identifying_keyword": "example",
-    }
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -88,9 +83,48 @@ def test_test_pattern_journal_without_sequence(sample_config, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
+    assert "journal.line_pattern2.auto_no_sequence" in result.output
     assert "SERVICE" in result.output
     assert "12345" in result.output
+    assert "序号: 无" in result.output
     assert "EXAMPLE without sequence" in result.output
+
+
+def test_test_pattern_journal_with_malformed_sequence_does_not_fallback(sample_config, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "products": {
+                    "default": {
+                        "log_parser": {
+                            "config": sample_config,
+                        },
+                    },
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    line = "2026-01-03T00:01:00 host SERVICE-12345: No[bad] EXAMPLE corrupt"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "test-pattern",
+            "-c",
+            str(config_path),
+            "-m",
+            "module1",
+            "-t",
+            "journal",
+            line,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "不匹配 journal.line_pattern 及 line_pattern2" in result.output
 
 
 def test_test_pattern_journal_with_sequence(sample_config, tmp_path):

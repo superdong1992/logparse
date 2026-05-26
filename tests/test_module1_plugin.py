@@ -138,6 +138,49 @@ def test_module1_plugin_parses_diag_entries_without_no(tmp_path):
     assert mech.active_master_slots == ["1"]
 
 
+def _module1_journal_sequence_config() -> dict:
+    cfg = _module1_config()
+    cfg["diag_pattern"] = ""
+    cfg["journal"] = {
+        "line_pattern": "",
+        "line_pattern2": r"^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$",
+        "identifying_keyword": "example",
+    }
+    return cfg
+
+
+def test_module1_plugin_auto_parses_journal_entries_without_no_from_sequence_config(tmp_path):
+    journal_file = tmp_path / "journal.log"
+    journal_file.write_text(
+        "2026-01-03T00:01:00 host SERVICE-12345: EXAMPLE old version without sequence\n",
+        encoding="utf-8",
+    )
+    private_slot = PrivateSlotInfo(
+        dir_name="slot_1",
+        slot_id="1",
+        path=str(tmp_path),
+        journal_logs=[
+            JournalLogFile(path=str(journal_file), name="journal.log"),
+        ],
+    )
+    result = ParseResult(private_slots=[private_slot])
+    plugin = Module1Plugin(
+        _module1_journal_sequence_config(),
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert mech.journal_entry_count == 1
+    proc = mech.slots[0].board_cycles[0].processes[0]
+    assert proc.process_name == "SERVICE"
+    assert proc.pid == "12345"
+    assert proc.logs[0].sequence == 0
+    assert proc.logs[0].context == "EXAMPLE old version without sequence"
+
+
 def test_module1_plugin_applies_roles(sample_parse_result):
     plugin = Module1Plugin(_module1_config(), module_key="module1", ts_extractor=None)
     mech = MechResult(module_name="EXAMPLE", active_master_slots=["1"])

@@ -91,16 +91,15 @@ products:
               journal:
                 # [按需修改] journal pattern supports two capture layouts:
                 # 4 groups: process_name, pid, sequence, context
-                # 3 groups: process_name, pid, context (used by versions without No)
+                # 3 groups: process_name, pid, context
+                # Standard no-sequence logs are auto-supported by deriving a 3-group
+                # fallback from the configured 4-group pattern. Keep the No[n]
+                # pattern below unless the surrounding journal format also changes.
                 line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
 
                 # [按需修改] journal 格式2正则（无元数据块，PID 可选，fallback）
                 # 支持 4 组（进程名、PID、序号、上下文）或 3 组（进程名、PID、上下文）
                 line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
-                # Example without No:
-                # line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+(.+)$'
-                # Example with metadata but without No:
-                # line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)(?:-(\d+))?\]:\s+(.+)$'
 
                 # [按需修改] journal Stage1 关键字预过滤（小写）
                 # journal 行必须包含此关键字才会进入正则匹配，加速过滤

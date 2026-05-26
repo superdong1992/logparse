@@ -10,6 +10,7 @@ from typing import Any
 
 from backend.models import MechLogEntry, PrivateSlotInfo
 from backend.parsing.file_iter import iter_text_file_lines
+from backend.parsing.mech_journal_pattern import JournalPatternMatcher
 from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.timestamp_extractor import TimestampExtractor
 
@@ -33,6 +34,7 @@ class MechJournalScanner:
         self._journal_re2 = journal_re2
         self._journal_keyword = journal_keyword
         self._seq_re = seq_re
+        self._matcher = JournalPatternMatcher(journal_re, journal_re2, seq_re)
         self._master_keyword = master_keyword
         self._resolver = resolver
         self._indicator = indicator
@@ -53,13 +55,14 @@ class MechJournalScanner:
                 if self._journal_keyword not in line.lower():
                     continue
 
-                m = self._journal_re.match(line) if self._journal_re else None
-                if not m and self._journal_re2:
-                    m = self._journal_re2.match(line)
-                if not m:
+                match = self._matcher.match(line)
+                if not match:
                     continue
 
-                raw_name, raw_pid, seq, context = self._extract_positional_fields(m)
+                raw_name = match.raw_name
+                raw_pid = match.raw_pid
+                seq = match.sequence
+                context = match.context
 
                 proc_name, pid = self._resolver.resolve_journal_process_name(
                     raw_name, raw_pid, self._indicator,
@@ -80,23 +83,6 @@ class MechJournalScanner:
                 ))
 
         return entries
-
-    @staticmethod
-    def _extract_positional_fields(m: re.Match) -> tuple[str, str | None, int, str]:
-        raw_name = m.group(1)
-        raw_pid = m.group(2) if m.re.groups >= 2 else None
-
-        if m.re.groups >= 4:
-            seq_str = m.group(3)
-            context = m.group(4)
-            try:
-                seq = int(seq_str)
-            except (TypeError, ValueError):
-                seq = 0
-            return raw_name, raw_pid, seq, context
-
-        context = m.group(3)
-        return raw_name, raw_pid, 0, context
 
     def _extract_first_ts(self, line: str) -> datetime | None:
         stamps = self._ts_extractor.extract_from_text(line)

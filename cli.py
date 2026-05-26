@@ -24,6 +24,7 @@ from pathlib import Path
 import click
 
 from backend.config_validation import validate_config
+from backend.parsing.mech_journal_pattern import JournalPatternMatcher
 from backend.query import ResultQueryService
 from backend.utils import glob_to_regex
 from backend.models import ParseResult
@@ -354,26 +355,23 @@ def test_pattern(config, module, log_type, line):
         if not jnl.get("line_pattern") and not jnl.get("line_pattern2"):
             click.echo("✗ journal.line_pattern 和 line_pattern2 均未配置", err=True)
             sys.exit(1)
-        pat_name = "journal.line_pattern"
-        pat = re.compile(jnl["line_pattern"]) if jnl.get("line_pattern") else None
-        m = pat.match(line) if pat else None
-        if not m and jnl.get("line_pattern2"):
-            pat_name = "journal.line_pattern2"
-            pat = re.compile(jnl["line_pattern2"])
-            m = pat.match(line)
-        if not m:
+        journal_re = re.compile(jnl["line_pattern"]) if jnl.get("line_pattern") else None
+        journal_re2 = re.compile(jnl["line_pattern2"]) if jnl.get("line_pattern2") else None
+        seq_pat = mod_cfg.get("sequence_pattern", r"No\[(\d+)\]")
+        matcher = JournalPatternMatcher(journal_re, journal_re2, re.compile(seq_pat))
+        match = matcher.match(line)
+        if not match:
             click.echo("✗ 不匹配 journal.line_pattern 及 line_pattern2")
             sys.exit(1)
-        click.echo(f"✓ 匹配 {pat_name}")
-        click.echo(f"  进程名: {m.group(1)}")
-        if m.group(2):
-            click.echo(f"  pid: {m.group(2)}")
-        if m.re.groups >= 4:
-            click.echo(f"  序号: {m.group(3)}")
-            click.echo(f"  Context: {m.group(4)}")
+        click.echo(f"✓ 匹配 {match.pattern_name}")
+        click.echo(f"  进程名: {match.raw_name}")
+        if match.raw_pid:
+            click.echo(f"  pid: {match.raw_pid}")
+        if match.sequence:
+            click.echo(f"  序号: {match.sequence}")
         else:
             click.echo("  序号: 无")
-            click.echo(f"  Context: {m.group(3)}")
+        click.echo(f"  Context: {match.context}")
         keyword = jnl.get("identifying_keyword", "")
         if keyword:
             click.echo(f"  识别关键字 '{keyword}': {'✓' if keyword in line.lower() else '✗ (Stage1 会被过滤)'}")
