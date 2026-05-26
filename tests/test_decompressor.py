@@ -217,6 +217,7 @@ class TestRecursiveGzGate:
 
         assert (out / "journal.log.1.gz").exists()
         assert not (out / "journal.log.1.gz_extracted").exists()
+        assert not (out / "journal.log.1").exists()
 
     def test_recursive_expands_plain_gz_when_enabled(self, decompressor, tmp_path):
         gz_file = tmp_path / "journal.log.1.gz"
@@ -231,7 +232,30 @@ class TestRecursiveGzGate:
         decompressor.extract_all(zip_path, out, recursive=True, expand_gz=True)
 
         assert (out / "journal.log.1.gz").exists()
-        assert (out / "journal.log.1.gz_extracted").exists()
+        assert (out / "journal.log.1").exists()
+        assert (out / "journal.log.1").read_text() == "hello\n"
+
+    def test_recursive_gz_skips_when_target_exists(self, decompressor, tmp_path):
+        gz_file = tmp_path / "journal.log.1.gz"
+        with gzip.open(gz_file, "wt", encoding="utf-8") as f:
+            f.write("new_content\n")
+
+        zip_path = tmp_path / "pkg.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(gz_file, "journal.log.1.gz")
+
+        # Extract non-recursively first to get the .gz on disk
+        out = tmp_path / "out"
+        decompressor.extract_all(zip_path, out, recursive=False)
+
+        # Pre-create the target file with different content
+        target = out / "journal.log.1"
+        target.write_text("old_content\n", encoding="utf-8")
+
+        # Now run with expand_gz=True — should NOT overwrite
+        decompressor.extract_all(zip_path, out, recursive=True, expand_gz=True)
+
+        assert target.read_text(encoding="utf-8") == "old_content\n"
 
 
 class TestTarNoDeprecationWarning:

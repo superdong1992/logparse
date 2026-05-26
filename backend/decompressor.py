@@ -124,20 +124,32 @@ class Decompressor:
                     if is_plain_gz and not expand_gz:
                         continue
 
+                    file_path = Path(root) / f
+
                     if self.is_compressed(f):
-                        file_path = Path(root) / f
-                        relative_parent = Path(root).relative_to(dest_dir)
-                        target_dir = dest_dir / relative_parent / f"{f}_extracted"
-                        if target_dir.exists():
-                            continue
-                        try:
-                            self._extract_single(file_path, target_dir, extracted_files)
-                        except Exception as e:
-                            logger.warning("解压失败 %s: %s", file_path, e)
-                            # 清理失败时可能已创建的空目录，避免阻止后续重试
-                            if target_dir.is_dir() and not any(target_dir.iterdir()):
-                                target_dir.rmdir()
-                            continue
+                        if is_plain_gz:
+                            # Plain .gz: extract in-place to same-name file without .gz suffix
+                            target = file_path.with_suffix("")
+                            if target.exists():
+                                continue
+                            try:
+                                self._extract_gz_inplace(file_path, target, extracted_files)
+                            except Exception as e:
+                                logger.warning("解压失败 %s: %s", file_path, e)
+                                continue
+                        else:
+                            relative_parent = Path(root).relative_to(dest_dir)
+                            target_dir = dest_dir / relative_parent / f"{f}_extracted"
+                            if target_dir.exists():
+                                continue
+                            try:
+                                self._extract_single(file_path, target_dir, extracted_files)
+                            except Exception as e:
+                                logger.warning("解压失败 %s: %s", file_path, e)
+                                # 清理失败时可能已创建的空目录，避免阻止后续重试
+                                if target_dir.is_dir() and not any(target_dir.iterdir()):
+                                    target_dir.rmdir()
+                                continue
                         this_pass.append(str(file_path.relative_to(dest_dir)))
                         changed = True
             pass_log.append(this_pass)
@@ -241,3 +253,26 @@ class Decompressor:
             output_path.unlink()
         else:
             extracted_files.append(str(output_path))
+
+    def _extract_gz_inplace(self, source: Path, target: Path, extracted_files: list[str]) -> None:
+        """解压 .gz 文件到同目录去掉 .gz 后缀的文件。"""
+        if target.exists():
+            logger.warning("跳过 gz 展开，目标已存在: %s", target)
+            return
+        exceeded = False
+        with gzip.open(source, "rb") as f_in, open(target, "wb") as f_out:
+            written = 0
+            while True:
+                chunk = f_in.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UNCOMPRESSED_SIZE:
+                    logger.warning("gzip 解压后超过大小上限，跳过: %s", source)
+                    exceeded = True
+                    break
+                f_out.write(chunk)
+        if exceeded:
+            target.unlink(missing_ok=True)
+        else:
+            extracted_files.append(str(target))
