@@ -24,18 +24,21 @@ def sample_config() -> dict:
         "active_period_gap_threshold": 300,
         "mechanism_modules": {
             "module1": {
-                "module_name": "EXAMPLE",
+                "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
                 "enabled": True,
-                "diag_pattern": r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$",
-                "active_master_keyword": "MASTER_ACTIVE",
-                "board_restart_indicator": "dhcp",
-                "process_name_mapping": {},
-                "journal": {
-                    "line_pattern": r"^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$",
-                    "line_pattern2": r"^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$",
-                    "identifying_keyword": "EXAMPLE",
+                "config": {
+                    "module_name": "EXAMPLE",
+                    "diag_pattern": r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$",
+                    "active_master_keyword": "MASTER_ACTIVE",
+                    "board_restart_indicator": "dhcp",
+                    "process_name_mapping": {},
+                    "journal": {
+                        "line_pattern": r"^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$",
+                        "line_pattern2": r"^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$",
+                        "identifying_keyword": "EXAMPLE",
+                    },
+                    "sequence_pattern": r"No\[(\d+)\]",
                 },
-                "sequence_pattern": r"No\[(\d+)\]",
             }
         },
     }

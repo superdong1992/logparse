@@ -125,9 +125,13 @@ def _valid_product_config():
                 "timestamp_regex": r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})([+-]\d{2}:\d{2})?",
                 "mechanism_modules": {
                     "module1": {
-                        "module_name": "EXAMPLE",
-                        "journal": {
-                            "line_pattern": r"(\S+)\s+No\[(\d+)\]\s+(\S+)\s+(.*)",
+                        "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+                        "enabled": True,
+                        "config": {
+                            "module_name": "EXAMPLE",
+                            "journal": {
+                                "line_pattern": r"(\S+)\s+No\[(\d+)\]\s+(\S+)\s+(.*)",
+                            },
                         },
                     },
                 },
@@ -194,7 +198,7 @@ class TestValidateConfig:
 
     def test_journal_pattern_insufficient_groups(self):
         cfg = _valid_product_config()
-        cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["journal"] = {
+        cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]["journal"] = {
             "line_pattern": r"(a) (b) (c)",
         }
         errors = validate_config({"products": {"default": cfg}})
@@ -202,10 +206,35 @@ class TestValidateConfig:
 
     def test_diag_pattern_missing_named_groups(self):
         cfg = _valid_product_config()
-        mod = cfg["log_parser"]["config"]["mechanism_modules"]["module1"]
+        mod = cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
         mod["diag_pattern"] = r"Slot=(?P<Slot>\d+)"
         errors = validate_config({"products": {"default": cfg}})
         assert any("缺少命名组" in e for e in errors)
+
+    def test_mechanism_module_requires_plugin(self):
+        cfg = _valid_product_config()
+        del cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["plugin"]
+
+        errors = validate_config({"products": {"default": cfg}})
+
+        assert any("mechanism_modules.module1.plugin" in e for e in errors)
+
+    def test_mechanism_module_plugin_must_be_loadable(self):
+        cfg = _valid_product_config()
+        cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["plugin"] = "bad.module.Plugin"
+
+        errors = validate_config({"products": {"default": cfg}})
+
+        assert any("bad.module.Plugin" in e for e in errors)
+
+    def test_mechanism_module_nested_config_is_validated(self):
+        cfg = _valid_product_config()
+        mod = cfg["log_parser"]["config"]["mechanism_modules"]["module1"]
+        mod["config"]["diag_pattern"] = r"Slot=(?P<Slot>\d+)"
+
+        errors = validate_config({"products": {"default": cfg}})
+
+        assert any("CPU_Id" in e and "ProcessName" in e for e in errors)
 
     def test_valid_glob_pattern_passes(self):
         cfg = _valid_product_config()
