@@ -30,6 +30,18 @@ from backend.models import ParseResult
 from backend.pipeline import Pipeline
 
 
+def _has_fatal_errors(errors: list[str]) -> bool:
+    """Check whether any error originated from a fatal pipeline stage."""
+    fatal_markers = (
+        "[1/6] 解压",
+        "[2/6] 扫描",
+        "[4/6] 日志解析",
+    )
+    return any(
+        any(marker in err for marker in fatal_markers)
+        for err in errors
+    )
+
 
 def _print_summary(result: ParseResult, output_dir: Path) -> None:
     """打印解析结果摘要 + 落盘 result.json。"""
@@ -139,6 +151,9 @@ def parse(ctx, package_path, output, verbose, product, debug_expand_gz):
 
     # 输出摘要
     _print_summary(result, output_dir)
+
+    if _has_fatal_errors(result.errors):
+        raise click.exceptions.Exit(1)
 
 
 @cli.command()
