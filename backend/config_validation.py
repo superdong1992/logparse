@@ -13,6 +13,43 @@ class ConfigValidationError(ValueError):
     pass
 
 
+# ── 类型校验辅助函数 ──────────────────────────────────
+
+
+def _expect_type(
+    errors: list[str],
+    path: str,
+    value: object,
+    expected_type: type | tuple[type, ...],
+) -> bool:
+    if not isinstance(value, expected_type):
+        errors.append(f"{path} 类型错误，期望 {expected_type}，实际 {type(value).__name__}")
+        return False
+    return True
+
+
+def _expect_list_of_str(errors: list[str], path: str, value: object) -> bool:
+    if not isinstance(value, list):
+        errors.append(f"{path} 类型错误，期望 list[str]，实际 {type(value).__name__}")
+        return False
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            errors.append(f"{path}[{idx}] 类型错误，期望 str，实际 {type(item).__name__}")
+            return False
+    return True
+
+
+def _expect_dict_str_str(errors: list[str], path: str, value: object) -> bool:
+    if not isinstance(value, dict):
+        errors.append(f"{path} 类型错误，期望 dict[str, str]，实际 {type(value).__name__}")
+        return False
+    for key, val in value.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            errors.append(f"{path} 类型错误，期望 dict[str, str]")
+            return False
+    return True
+
+
 # ── 顶层入口 ──────────────────────────────────────────
 
 
@@ -241,39 +278,64 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
     """校验单个机制模块配置，返回错误列表（空表示通过）。"""
     errors: list[str] = []
 
+    prefix = f"mechanism_modules.{module_key}"
+
+    # ── Type checks (before semantic validation) ──
+    for field, checker in [
+        ("module_name", lambda v: _expect_type(errors, f"{prefix}.{field}", v, str)),
+        ("enabled", lambda v: _expect_type(errors, f"{prefix}.{field}", v, bool)),
+        ("diag_pattern", lambda v: _expect_type(errors, f"{prefix}.{field}", v, str)),
+        ("active_master_keyword", lambda v: _expect_type(errors, f"{prefix}.{field}", v, str)),
+        ("board_restart_indicator", lambda v: _expect_type(errors, f"{prefix}.{field}", v, str)),
+        ("board_restart_whitelist", lambda v: _expect_list_of_str(errors, f"{prefix}.{field}", v)),
+        ("process_name_mapping", lambda v: _expect_dict_str_str(errors, f"{prefix}.{field}", v)),
+    ]:
+        if field in cfg and cfg[field] is not None:
+            checker(cfg[field])
+
+    # Journal sub-config type checks
+    journal_cfg_raw = cfg.get("journal")
+    if journal_cfg_raw is not None:
+        if not isinstance(journal_cfg_raw, dict):
+            errors.append(f"{prefix}.journal 类型错误，期望对象")
+        else:
+            for jfield in ("line_pattern", "line_pattern2", "identifying_keyword"):
+                if jfield in journal_cfg_raw and journal_cfg_raw[jfield] is not None:
+                    _expect_type(errors, f"{prefix}.journal.{jfield}", journal_cfg_raw[jfield], str)
+
     module_name = cfg.get("module_name")
     if not module_name:
-        errors.append(f"mechanism_modules.{module_key}.module_name 不能为空")
+        errors.append(f"{prefix}.module_name 不能为空")
 
     diag_pattern = cfg.get("diag_pattern")
-    if diag_pattern:
+    if diag_pattern and isinstance(diag_pattern, str):
         try:
             diag_re = re.compile(diag_pattern)
         except re.error as e:
-            errors.append(f"mechanism_modules.{module_key}.diag_pattern 正则非法: {e}")
+            errors.append(f"{prefix}.diag_pattern 正则非法: {e}")
         else:
             required = {"Slot", "CPU_Id", "ProcessName", "Context"}
             missing = required - set(diag_re.groupindex)
             if missing:
                 errors.append(
-                    f"mechanism_modules.{module_key}.diag_pattern 缺少命名组: {sorted(missing)}"
+                    f"{prefix}.diag_pattern 缺少命名组: {sorted(missing)}"
                 )
 
     journal_cfg = cfg.get("journal", {})
     for field in ("line_pattern", "line_pattern2"):
         pattern = journal_cfg.get(field)
-        if pattern:
+        if pattern and isinstance(pattern, str):
             try:
                 compiled = re.compile(pattern)
             except re.error as e:
                 errors.append(
-                    f"mechanism_modules.{module_key}.journal.{field} 正则非法: {e}"
+                    f"{prefix}.journal.{field} 正则非法: {e}"
                 )
                 continue
 
             if compiled.groups < 4:
                 errors.append(
-                    f"mechanism_modules.{module_key}.journal.{field} 至少需要 4 个捕获组: "
+                    f"{prefix}.journal.{field} 至少需要 4 个捕获组: "
                     "process_name, pid, sequence, context"
                 )
 
@@ -283,15 +345,18 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
             re.compile(seq_pattern)
         except re.error as e:
             errors.append(
-                f"mechanism_modules.{module_key}.sequence_pattern 正则非法: {e}"
+                f"{prefix}.sequence_pattern 正则非法: {e}"
             )
 
     whitelist = cfg.get("board_restart_whitelist", [])
     name_map = cfg.get("process_name_mapping", {})
-    conflict = {w.lower() for w in whitelist} & {k.lower() for k in name_map}
+    if isinstance(whitelist, list) and all(isinstance(w, str) for w in whitelist):
+        conflict = {w.lower() for w in whitelist} & {k.lower() for k in name_map}
+    else:
+        conflict = set()
     if conflict:
         errors.append(
-            f"mechanism_modules.{module_key}: board_restart_whitelist "
+            f"{prefix}: board_restart_whitelist "
             f"不能同时出现在 process_name_mapping 中: {sorted(conflict)}"
         )
 

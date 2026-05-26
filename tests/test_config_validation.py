@@ -277,3 +277,84 @@ class TestPluginSubclassValidation:
         """使用实际插件类时应通过子类校验。"""
         errors = validate_config({"products": {"default": _valid_product_config()}})
         assert not any("子类" in e for e in errors)
+
+
+class TestConfigTypeValidation:
+    def test_rejects_non_bool_enabled(self):
+        cfg = {"module_name": "EXAMPLE", "enabled": "true"}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "类型错误" in errors[0]
+        assert "enabled" in errors[0]
+
+    def test_rejects_whitelist_string(self):
+        cfg = {"module_name": "EXAMPLE", "board_restart_whitelist": "svc_a"}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "board_restart_whitelist" in errors[0]
+
+    def test_rejects_process_name_mapping_list(self):
+        cfg = {"module_name": "EXAMPLE", "process_name_mapping": ["a", "b"]}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "process_name_mapping" in errors[0]
+
+    def test_rejects_non_string_journal_pattern(self):
+        cfg = {"module_name": "EXAMPLE", "journal": {"line_pattern": 123}}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "类型错误" in errors[0]
+
+    def test_rejects_whitelist_non_string_item(self):
+        cfg = {"module_name": "EXAMPLE", "board_restart_whitelist": ["svc_a", 42]}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "board_restart_whitelist" in errors[0]
+
+    def test_rejects_diag_pattern_non_string(self):
+        cfg = {"module_name": "EXAMPLE", "diag_pattern": ["bad"]}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "diag_pattern" in errors[0]
+
+    def test_rejects_module_name_non_string(self):
+        cfg = {"module_name": 123}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "module_name" in errors[0]
+
+    def test_rejects_active_master_keyword_non_string(self):
+        cfg = {"module_name": "EXAMPLE", "active_master_keyword": True}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "active_master_keyword" in errors[0]
+
+    def test_rejects_board_restart_indicator_non_string(self):
+        cfg = {"module_name": "EXAMPLE", "board_restart_indicator": ["bad"]}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "board_restart_indicator" in errors[0]
+
+    def test_rejects_identifying_keyword_non_string(self):
+        cfg = {"module_name": "EXAMPLE", "journal": {"identifying_keyword": 42}}
+        errors = validate_mechanism_module_config("mod1", cfg)
+        assert errors
+        assert "identifying_keyword" in errors[0]
+
+    def test_valid_types_pass(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "enabled": True,
+            "diag_pattern": r"Slot=(?P<Slot>\d+);CPU=(?P<CPU_Id>\d+);Proc=(?P<ProcessName>\w+);Ctx=(?P<Context>.+)",
+            "active_master_keyword": "MASTER",
+            "board_restart_indicator": "PROC1",
+            "board_restart_whitelist": ["PROC2"],
+            "process_name_mapping": {"A": "a"},
+            "journal": {
+                "line_pattern": r"(\S+)\s+No\[(\d+)\]\s+(\S+)\s+(.*)",
+                "identifying_keyword": "example",
+            },
+        }
+        errors = validate_mechanism_module_config("mod1", cfg)
+        type_errors = [e for e in errors if "类型错误" in e]
+        assert type_errors == []
