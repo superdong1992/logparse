@@ -108,8 +108,7 @@ class Pipeline:
 
         # Step 3: 内层解压
         if self.pipeline_config.get("inner_extraction", True):
-            _safe("[3/6] 解压诊断日志内容",
-                  lambda: self._extract_inner_contents(result, output_dir / task_id))
+            self._extract_inner_contents(result, output_dir / task_id)
 
         # Step 3.5: 调试用解压 .gz 文件（默认关闭）
         if self.pipeline_config.get("debug_expand_gz", False):
@@ -197,8 +196,10 @@ class Pipeline:
                 try:
                     self.decompressor.extract_all(src, dest, recursive=False)
                     entry.extracted_path = str(dest)
-                except Exception as e:
-                    logger.warning("内层解压失败 %s: %s", src, e)
+                except Exception as exc:
+                    message = f"[3/6] 内层解压失败 {src}: {exc}"
+                    logger.warning(message)
+                    result.errors.append(message)
 
     @staticmethod
     def _decompress_gz_in_dir(directory: Path) -> int:
