@@ -155,51 +155,31 @@ python cli.py parse compact_package_20260103.zip \
 
 # 普通 `.gz` 日志处理
 
-默认情况下，即未开启 `--debug-expand-gz` 且配置项 `debug_expand_gz: false` 时：
+默认情况下，普通 `.gz` 文件不会被预展开。解析器会在需要时直接流式读取 `.gz` 内容。
 
-- 普通 `.gz` 日志不会被额外展开成 `.gz_extracted/` 或同名无 `.gz` 文件
-- `extracted/` 目录会保留原始普通 `.gz` 文件
-- parser 会在需要时直接流式读取普通 `.gz` 内容
-- `.tar.gz` / `.tgz` 属于归档压缩包，不属于这里说的“普通 `.gz` 日志”，仍可能按递归解压规则处理
+如果启用调试展开：
 
-这里的“普通 `.gz`”指类似：
+```yaml
+pipeline:
+  debug_expand_gz: true
+```
+
+或命令行：
+
+```bash
+python cli.py parse xxx.zip --debug-expand-gz
+```
+
+工具会额外在同目录生成去掉 `.gz` 后缀的文件。例如：
 
 ```text
 journal.log.1.gz
-xxx.log.gz
+journal.log.1
 ```
 
-不包括：
+原始 `.gz` 文件会保留。如果目标文件已存在，工具会跳过展开并记录 warning。
 
-```text
-archive.tar.gz
-archive.tgz
-```
-
-如果需要人工查看普通 `.gz` 内容，可以显式开启：
-
-```bash
-python cli.py parse xxx.zip \
-  --output output \
-  --product default \
-  --debug-expand-gz
-```
-
-开启后，可能会额外生成：
-
-```text
-journal.log.1.gz_extracted/
-```
-
-或其他用于人工查看的展开文件。
-
-该功能仅建议用于：
-
-- 调试
-- 人工排查
-- 日志内容比对
-
-不建议在正式批量解析中长期打开。
+该功能仅建议用于调试、人工排查、日志内容比对，不建议在正式批量解析中长期打开。
 
 ---
 
@@ -299,9 +279,11 @@ python cli.py mech-logs diagnostic_information_20260103 \
 ```text
 output/
 └── diagnostic_information_20260103/
-    ├── extracted/
-    ├── result.json
-    └── mech_modules/
+    ├── extracted/         ← 外层诊断包解压结果
+    ├── contents/          ← 内层日志包解压结果
+    ├── result.json        ← 完整解析结果
+    ├── metadata.json      ← 轻量索引
+    └── mech_modules/      ← 机制模块输出
         └── EXAMPLE/
             └── slot_1/
                 └── 20260103T000100-20260103T000200/
@@ -312,9 +294,27 @@ output/
 
 | 路径 | 说明 |
 |---|---|
-| `extracted/` | 原始解压目录 |
-| `result.json` | 结构化解析结果 |
+| `extracted/` | 外层诊断包解压目录 |
+| `contents/` | 内层日志包解压目录 |
+| `result.json` | 完整结构化解析结果 |
+| `metadata.json` | 轻量索引文件 |
 | `mech_modules/` | 机制模块日志拆分结果 |
+
+---
+
+# 错误处理与退出码
+
+`parse` 命令会尽量保留部分可用结果。
+
+- 非致命错误（如某个内层日志包解压失败）写入 `result.errors`，流程继续
+- 致命错误（如外层包无法解压、目录扫描失败、核心解析失败）写入 `result.errors`，CLI 返回非 0 退出码
+- 所有错误都会打印到终端，并写入 `result.json`
+
+## `metadata.json` 与 `result.json`
+
+`metadata.json` 是轻量索引文件，适合快速查看解析到的 slot、时间范围、关键输出路径。
+
+`result.json` 是完整结果文件，包含更详细的解析结构、错误信息和机制模块输出信息。AI agent 或自动化系统建议优先读取 `result.json`。
 
 ---
 

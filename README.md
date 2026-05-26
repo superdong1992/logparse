@@ -14,12 +14,18 @@ python cli.py parse diagnostic_information_20260103.zip
 python cli.py check-config
 ```
 
+## 错误处理
+
+- `parse` 成功返回退出码 0
+- 致命错误（解压/扫描/解析失败）返回非 0 退出码
+- 错误同时写入终端和 `result.json`
+
 ## 命令参考
 
 ```bash
 # 解析
 python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product default|compact]
-python cli.py parse <package_path> --debug-expand-gz   # 调试用：就地展开 .gz
+python cli.py parse <package_path> --debug-expand-gz   # 调试用：同目录生成去掉 .gz 后缀的文件
 
 # 查询
 python cli.py info <task_id>
