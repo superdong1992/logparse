@@ -57,6 +57,7 @@ class ParserPlugin(LogParserPlugin):
         mechanism_plugins: list[MechanismModulePlugin] = []
         for module_key, module_entry in self._mech_modules.items():
             if not module_entry.get("enabled", True):
+                logger.info("[%s] 已禁用，跳过", module_key)
                 continue
 
             plugin = instantiate_plugin(
@@ -67,6 +68,7 @@ class ParserPlugin(LogParserPlugin):
                 ts_extractor=self._ts_extractor,
             )
             mechanism_plugins.append(plugin)
+            logger.info("[%s] 已加载 %s", module_key, module_entry["plugin"])
 
         for mechanism in mechanism_plugins:
             mech = mechanism.parse(result)
