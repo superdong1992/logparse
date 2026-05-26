@@ -112,7 +112,7 @@ class TestParseDiagProcName:
 
 class TestBuildProcesses:
     def test_single_process(self, sample_mech_entries):
-        procs = CycleDetector._build_processes(sample_mech_entries[:5])
+        procs = CycleDetector._build_processes(sample_mech_entries[:5], "sequence")
         assert len(procs) == 1
         assert procs[0].process_name == "dhcp"
         assert procs[0].pid == "100"
@@ -123,7 +123,7 @@ class TestBuildProcesses:
             MechLogEntry(process_name="svc", pid="1", sequence=i, raw=f"line{i}")
             for i in [1, 2, 4, 5, 8]
         ]
-        procs = CycleDetector._build_processes(entries)
+        procs = CycleDetector._build_processes(entries, "sequence")
         assert len(procs) == 1
         assert procs[0].missing_sequences == [3, 6, 7]
 
@@ -133,7 +133,7 @@ class TestBuildProcesses:
             MechLogEntry(process_name="svc", pid="2", sequence=1, raw="b"),
             MechLogEntry(process_name="other", pid="1", sequence=1, raw="c"),
         ]
-        procs = CycleDetector._build_processes(entries)
+        procs = CycleDetector._build_processes(entries, "sequence")
         assert len(procs) == 3
 
 

@@ -59,15 +59,7 @@ class MechJournalScanner:
                 if not m:
                     continue
 
-                raw_name = m.group(1)
-                raw_pid = m.group(2)
-                seq_str = m.group(3)
-                context = m.group(4)
-
-                try:
-                    seq = int(seq_str)
-                except ValueError:
-                    seq = 0
+                raw_name, raw_pid, seq, context = self._extract_positional_fields(m)
 
                 proc_name, pid = self._resolver.resolve_journal_process_name(
                     raw_name, raw_pid, self._indicator,
@@ -88,6 +80,23 @@ class MechJournalScanner:
                 ))
 
         return entries
+
+    @staticmethod
+    def _extract_positional_fields(m: re.Match) -> tuple[str, str | None, int, str]:
+        raw_name = m.group(1)
+        raw_pid = m.group(2) if m.re.groups >= 2 else None
+
+        if m.re.groups >= 4:
+            seq_str = m.group(3)
+            context = m.group(4)
+            try:
+                seq = int(seq_str)
+            except (TypeError, ValueError):
+                seq = 0
+            return raw_name, raw_pid, seq, context
+
+        context = m.group(3)
+        return raw_name, raw_pid, 0, context
 
     def _extract_first_ts(self, line: str) -> datetime | None:
         stamps = self._ts_extractor.extract_from_text(line)

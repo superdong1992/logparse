@@ -326,9 +326,16 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
                 )
                 continue
 
-            if compiled.groups < 4:
+            if compiled.groups not in (3, 4):
                 errors.append(
-                    f"mechanism_modules.{module_key}.journal.{field} 至少需要 4 个捕获组: "
+                    f"mechanism_modules.{module_key}.journal.{field} 需要 3 或 4 个捕获组: "
+                    "3组=process_name, pid, context；4组=process_name, pid, sequence, context"
+                )
+            elif compiled.groups == 3 and _looks_like_sequence_journal_pattern(
+                pattern, cfg.get("sequence_pattern")
+            ):
+                errors.append(
+                    f"mechanism_modules.{module_key}.journal.{field} 包含序号格式时需要 4 个捕获组: "
                     "process_name, pid, sequence, context"
                 )
 
@@ -351,3 +358,10 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
         )
 
     return errors
+
+
+def _looks_like_sequence_journal_pattern(pattern: str, seq_pattern: Any) -> bool:
+    """Return True when a 3-group journal regex appears to contain a sequence field."""
+    if "No\\[" in pattern or "No[" in pattern:
+        return True
+    return bool(isinstance(seq_pattern, str) and seq_pattern and seq_pattern in pattern)

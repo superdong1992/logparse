@@ -82,14 +82,14 @@ class TestValidateMechanismModuleConfig:
         errors = validate_mechanism_module_config("module1", cfg)
         assert len(errors) >= 2
 
-    def test_journal_pattern_requires_four_capture_groups(self):
+    def test_journal_pattern_requires_at_least_three_capture_groups(self):
         cfg = {
             "module_name": "EXAMPLE",
-            "journal": {"line_pattern": r"(proc) (pid) (context)"},
+            "journal": {"line_pattern": r"(proc) (context)"},
         }
         errors = validate_mechanism_module_config("module1", cfg)
         assert errors
-        assert "至少需要 4 个捕获组" in errors[0]
+        assert "需要 3 或 4 个捕获组" in errors[0]
 
     def test_journal_pattern_with_four_groups_passes(self):
         cfg = {
@@ -97,7 +97,34 @@ class TestValidateMechanismModuleConfig:
             "journal": {"line_pattern": r"(proc) (pid) (seq) (context)"},
         }
         errors = validate_mechanism_module_config("module1", cfg)
-        assert not any("至少需要 4 个捕获组" in e for e in errors)
+        assert not any("捕获组" in e for e in errors)
+
+    def test_journal_pattern_with_three_groups_passes_for_no_sequence(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "journal": {"line_pattern2": r"(\S+?)(?:-(\d+))?:\s+(.+)"},
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert not any("捕获组" in e for e in errors)
+
+    def test_journal_pattern_with_two_groups_fails(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "journal": {"line_pattern2": r"(\S+):\s+(.+)"},
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "journal.line_pattern2" in errors[0]
+
+    def test_journal_pattern_with_three_groups_and_sequence_fails(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "journal": {"line_pattern2": r"^(\S+):\s+No\[(\d+)\](.+)$"},
+            "sequence_pattern": r"No\[(\d+)\]",
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "包含序号格式时需要 4 个捕获组" in errors[0]
 
 
 # ── 使用实际插件路径的 fixture ──────────────────────
@@ -199,10 +226,10 @@ class TestValidateConfig:
     def test_journal_pattern_insufficient_groups(self):
         cfg = _valid_product_config()
         cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]["journal"] = {
-            "line_pattern": r"(a) (b) (c)",
+            "line_pattern": r"(a) (b)",
         }
         errors = validate_config({"products": {"default": cfg}})
-        assert any("至少需要 4 个捕获组" in e for e in errors)
+        assert any("捕获组" in e for e in errors)
 
     def test_diag_pattern_missing_named_groups(self):
         cfg = _valid_product_config()

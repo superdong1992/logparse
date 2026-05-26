@@ -32,6 +32,25 @@ def _entry(
     )
 
 
+def _entry_without_seq(
+    proc: str,
+    pid: str,
+    ts: datetime,
+    cpu_id: str = "",
+    source: str = "diagnostic",
+) -> MechLogEntry:
+    return MechLogEntry(
+        timestamp=ts,
+        source=source,
+        slot="1",
+        cpu_id=cpu_id,
+        process_name=proc,
+        pid=pid,
+        sequence=0,
+        raw=f"{proc}-{pid}-no-sequence",
+    )
+
+
 @pytest.fixture
 def detector():
     return CycleDetector(indicator="dhcp")
@@ -223,3 +242,71 @@ class TestSplitTrace:
         cycles = detector.detect(entries)
         assert len(cycles) == 1
         assert cycles[0].split_traces == []
+
+
+class TestSequenceModeSelection:
+    def test_cycle_without_sequences_orders_process_logs_by_timestamp(self):
+        det = CycleDetector(indicator=None)
+        entries = [
+            _entry_without_seq("svc", "100", _ts(1, 3, 0, 3)),
+            _entry_without_seq("svc", "100", _ts(1, 3, 0, 1)),
+            _entry_without_seq("svc", "100", _ts(1, 3, 0, 2), cpu_id="1"),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 1
+        proc = [p for p in cycles[0].processes if p.pid == "100" and p.logs[0].cpu_id == ""][0]
+        assert [log.timestamp for log in proc.logs] == [
+            _ts(1, 3, 0, 1),
+            _ts(1, 3, 0, 3),
+        ]
+        assert proc.missing_sequences == []
+
+    def test_cycle_with_sequences_orders_process_logs_by_sequence(self):
+        det = CycleDetector(indicator=None)
+        entries = [
+            _entry("svc", "100", 3, _ts(1, 3, 0, 1)),
+            _entry("svc", "100", 1, _ts(1, 3, 0, 3)),
+            _entry("svc", "100", 2, _ts(1, 3, 0, 2)),
+        ]
+
+        cycles = det.detect(entries)
+
+        proc = cycles[0].processes[0]
+        assert [log.sequence for log in proc.logs] == [1, 2, 3]
+        assert proc.missing_sequences == []
+
+    def test_mixed_sequence_availability_warns_and_uses_timestamp(self, caplog):
+        det = CycleDetector(indicator=None)
+        entries = [
+            _entry("svc", "100", 3, _ts(1, 3, 0, 1)),
+            _entry_without_seq("svc", "100", _ts(1, 3, 0, 2)),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="backend.parsing.cycle_detector"):
+            cycles = det.detect(entries)
+
+        proc = cycles[0].processes[0]
+        assert [log.timestamp for log in proc.logs] == [
+            _ts(1, 3, 0, 1),
+            _ts(1, 3, 0, 2),
+        ]
+        assert proc.missing_sequences == []
+        assert "mixed sequence availability" in caplog.text
+
+    def test_board_and_cpu_mixed_sequence_warns_for_slot_family(self, caplog):
+        det = CycleDetector(indicator=None)
+        entries = [
+            _entry("board_svc", "100", 2, _ts(1, 3, 0, 1)),
+            _entry("board_svc", "100", 1, _ts(1, 3, 0, 3)),
+            _entry_without_seq("cpu_svc", "200", _ts(1, 3, 0, 2), cpu_id="1"),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="backend.parsing.cycle_detector"):
+            cycles = det.detect(entries)
+
+        board_proc = [p for p in cycles[0].processes if p.process_name == "board_svc"][0]
+        assert [log.sequence for log in board_proc.logs] == [2, 1]
+        assert board_proc.missing_sequences == []
+        assert "mixed sequence availability" in caplog.text

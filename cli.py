@@ -368,8 +368,12 @@ def test_pattern(config, module, log_type, line):
         click.echo(f"  进程名: {m.group(1)}")
         if m.group(2):
             click.echo(f"  pid: {m.group(2)}")
-        click.echo(f"  序号: {m.group(3)}")
-        click.echo(f"  Context: {m.group(4)}")
+        if m.re.groups >= 4:
+            click.echo(f"  序号: {m.group(3)}")
+            click.echo(f"  Context: {m.group(4)}")
+        else:
+            click.echo("  序号: 无")
+            click.echo(f"  Context: {m.group(3)}")
         keyword = jnl.get("identifying_keyword", "")
         if keyword:
             click.echo(f"  识别关键字 '{keyword}': {'✓' if keyword in line.lower() else '✗ (Stage1 会被过滤)'}")

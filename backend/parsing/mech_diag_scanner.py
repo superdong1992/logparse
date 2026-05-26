@@ -50,13 +50,7 @@ class MechDiagScanner:
 
             proc_name, pid = self._resolver.parse_diag_process_name(raw_proc_name)
 
-            sm = self._seq_re.search(line)
-            if not sm:
-                continue
-            try:
-                seq = int(sm.group(1))
-            except ValueError:
-                continue
+            seq = self._extract_sequence(line)
 
             is_active = bool(self._master_keyword and self._master_keyword.search(context))
             ts = self._extract_first_ts(line)
@@ -72,6 +66,15 @@ class MechDiagScanner:
             ))
 
         return entries
+
+    def _extract_sequence(self, line: str) -> int:
+        sm = self._seq_re.search(line)
+        if not sm:
+            return 0
+        try:
+            return int(sm.group(1))
+        except (IndexError, ValueError):
+            return 0
 
     def _extract_first_ts(self, line: str) -> datetime | None:
         stamps = self._ts_extractor.extract_from_text(line)

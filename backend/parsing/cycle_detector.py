@@ -553,10 +553,28 @@ class CycleDetector:
         return segments
 
     @staticmethod
+    def _sequence_mode(entries: list[MechLogEntry]) -> str:
+        if not entries:
+            return "timestamp"
+        sequenced = sum(1 for e in entries if e.sequence > 0)
+        if sequenced == len(entries):
+            return "sequence"
+        if sequenced == 0:
+            return "timestamp"
+        logger.warning(
+            "module1 cycle has mixed sequence availability: %d/%d entries have sequence; "
+            "falling back to timestamp ordering",
+            sequenced,
+            len(entries),
+        )
+        return "timestamp"
+
+    @staticmethod
     def _make_cycles(entries: list[MechLogEntry]) -> list[MechBoardCycle]:
         if not entries:
             return []
-        procs = CycleDetector._build_processes(entries)
+        sequence_mode = CycleDetector._sequence_mode(entries)
+        procs = CycleDetector._build_processes(entries, sequence_mode)
         times = [e.timestamp for e in entries if e.timestamp]
         start = min(times) if times else None
         end = max(times) if times else None
@@ -567,8 +585,29 @@ class CycleDetector:
         )]
 
     @staticmethod
+    def _timestamp_sort_key(e: MechLogEntry) -> tuple[int, float, str, str]:
+        return (
+            0 if e.timestamp else 1,
+            e.timestamp.timestamp() if e.timestamp else 0,
+            e.source_file,
+            e.raw,
+        )
+
+    @staticmethod
+    def _sequence_sort_key(e: MechLogEntry) -> tuple[int, int, int, float, str, str]:
+        return (
+            0 if e.sequence > 0 else 1,
+            e.sequence if e.sequence > 0 else 0,
+            0 if e.timestamp else 1,
+            e.timestamp.timestamp() if e.timestamp else 0,
+            e.source_file,
+            e.raw,
+        )
+
+    @staticmethod
     def _build_processes(
         entries: list[MechLogEntry],
+        sequence_mode: str,
     ) -> list[MechProcessLifecycle]:
         # 分组键含 cpu_id，防止不同 CPU 同名同 PID 进程日志合并
         by_key: dict[tuple[str, str, str], list[MechLogEntry]] = defaultdict(list)
@@ -594,16 +633,16 @@ class CycleDetector:
 
         lifecycles: list[MechProcessLifecycle] = []
         for (proc_name, pid, _cpu_key), logs in sorted(by_key.items()):
-            logs.sort(key=lambda e: (
-                0 if e.timestamp else 1,
-                e.timestamp.timestamp() if e.timestamp else 0,
-                e.sequence,
-            ))
-            seqs = [l.sequence for l in logs if l.sequence > 0]
-            missing: list[int] = []
-            if len(seqs) >= 2:
-                full = set(range(min(seqs), max(seqs) + 1))
-                missing = sorted(full - set(seqs))
+            if sequence_mode == "sequence":
+                logs.sort(key=CycleDetector._sequence_sort_key)
+                seqs = [l.sequence for l in logs if l.sequence > 0]
+                missing: list[int] = []
+                if len(seqs) >= 2:
+                    full = set(range(min(seqs), max(seqs) + 1))
+                    missing = sorted(full - set(seqs))
+            else:
+                logs.sort(key=CycleDetector._timestamp_sort_key)
+                missing = []
             lifecycles.append(MechProcessLifecycle(
                 process_name=proc_name, pid=pid, logs=logs,
                 total_count=len(logs), missing_sequences=missing,
