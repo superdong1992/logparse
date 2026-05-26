@@ -122,48 +122,6 @@ def _validate_plugin_loadable(
         expected_methods=expected_methods,
     )
 
-    try:
-        module_path, class_name = plugin_path.rsplit(".", 1)
-    except ValueError:
-        return [f"products.{product_name}.{kind}.plugin={plugin_path!r} 格式无效（需要 module.Class）"]
-
-    try:
-        module = importlib.import_module(module_path)
-    except Exception as e:
-        return [
-            f"products.{product_name}.{kind}.plugin={plugin_path!r} "
-            f"无法导入模块 {module_path}: {type(e).__name__}: {e}"
-        ]
-
-    cls = getattr(module, class_name, None)
-    if cls is None:
-        return [
-            f"products.{product_name}.{kind}.plugin={plugin_path!r} "
-            f"模块 {module_path} 缺少类 {class_name}"
-        ]
-
-    errors: list[str] = []
-
-    try:
-        is_subclass = issubclass(cls, expected_base)
-    except TypeError:
-        is_subclass = False
-
-    if not is_subclass:
-        errors.append(
-            f"products.{product_name}.{kind}.plugin={plugin_path!r} "
-            f"不是 {expected_base.__name__} 的子类"
-        )
-
-    for method in expected_methods:
-        if not callable(getattr(cls, method, None)):
-            errors.append(
-                f"products.{product_name}.{kind}.plugin={plugin_path!r} "
-                f"缺少方法: {method}"
-            )
-
-    return errors
-
 
 # ── discovery config 校验 ──────────────────────────────────
 

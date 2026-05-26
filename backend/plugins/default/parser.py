@@ -62,10 +62,11 @@ class ParserPlugin(LogParserPlugin):
 
         # 3. 机制模块解析
         results: dict[str, MechResult] = {}
-        for module_key, cfg in self._mech_modules.items():
-            if not cfg.get("enabled", True):
+        for module_key, module_entry in self._mech_modules.items():
+            if not module_entry.get("enabled", True):
                 continue
 
+            cfg = module_entry.get("config", module_entry)
             errors = validate_mechanism_module_config(module_key, cfg)
             if errors:
                 result.errors.extend(errors)

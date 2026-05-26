@@ -48,6 +48,13 @@ class TestExtractContentTimestamps:
         assert plugin._ts_extractor.extract_from_text("no timestamp here") == []
 
 
+class TestNestedMechanismConfig:
+    def test_nested_sample_config_does_not_report_missing_module_name(self, sample_config):
+        result = ParserPlugin(sample_config).parse(ParseResult())
+
+        assert not any("module_name" in error for error in result.errors)
+
+
 class TestBuildActivePeriods:
     def test_single_period(self, plugin):
         slot = SlotInfo(slot_id="1", name="slot_1", path="/tmp")
