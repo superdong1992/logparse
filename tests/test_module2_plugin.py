@@ -304,3 +304,31 @@ def test_module2_logs_when_config_invalid(caplog):
 
     assert mech is None
     assert "配置校验失败" in caplog.text
+
+
+def test_module2_normalizes_naive_timestamps_to_match_aware_cycles(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00 xxx Slot=1/2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="no tz"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    cycle = mech.slots[0].board_cycles[0]
+    assert cycle.dir_name == "20260103T000000-20260103T010000"
+    assert cycle.processes[0].logs[0].timestamp is not None
+    assert cycle.processes[0].logs[0].timestamp.tzinfo is not None

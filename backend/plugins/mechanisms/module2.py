@@ -73,6 +73,8 @@ class Module2Plugin(MechanismModulePlugin):
                         len(result.diagnostic_slots))
             return None
 
+        self._normalize_timezones(entries, upstream)
+
         return self._build_result(entries, upstream)
 
     def _find_dependency(self, result: ParseResult) -> MechResult | None:
@@ -92,6 +94,29 @@ class Module2Plugin(MechanismModulePlugin):
                 entries.extend(self._scan_log_entry(log_entry, slot.slot_id, diag_re, keyword))
 
         return entries
+
+    def _normalize_timezones(self, entries: list[MechLogEntry], upstream: MechResult) -> None:
+        tz = next(
+            (e.timestamp.tzinfo for e in entries if e.timestamp and e.timestamp.tzinfo),
+            None,
+        )
+        if tz is None:
+            for slot in upstream.slots:
+                for cycle in slot.board_cycles:
+                    for t in (cycle.start_time, cycle.end_time):
+                        if t and t.tzinfo:
+                            tz = t.tzinfo
+                            break
+                    if tz:
+                        break
+                if tz:
+                    break
+        if tz:
+            for entry in entries:
+                if entry.timestamp and entry.timestamp.tzinfo is None:
+                    entry.timestamp = entry.timestamp.replace(tzinfo=tz)
+        else:
+            logger.warning("[%s] 无法检测时区，周期匹配可能失败", self.module_key)
 
     def _scan_log_entry(
         self,
