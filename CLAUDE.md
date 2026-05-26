@@ -46,6 +46,11 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 
 ## 架构
 
+### 回答规则
+
+- 回答问题必须基于代码事实，先读代码再回答，不能凭想当然
+- 给出调试建议前，必须先确认相关代码的实际行为
+
 ### 数据流
 
 ```

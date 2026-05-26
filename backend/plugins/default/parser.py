@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,19 @@ class ParserPlugin(LogParserPlugin):
             if mech:
                 result.mech_results.append(mech)
                 mechanism.apply_roles(result, mech)
+                logger.info(
+                    "[%s] 诊断:%d journal:%d slots:%d",
+                    mech.module_name or mechanism.module_key,
+                    mech.diag_entry_count,
+                    mech.journal_entry_count,
+                    len(mech.slots),
+                )
+            else:
+                logger.info(
+                    "[%s] 未产出结果 (errors: %d)",
+                    mechanism.module_key,
+                    len(result.errors),
+                )
 
         # 4. 兜底主控判定
         RoleIdentifier.fallback_roles(result)

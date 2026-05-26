@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -18,6 +19,8 @@ from backend.models import (
 )
 from backend.parsing.file_iter import iter_log_entry_lines
 from backend.plugins.mechanisms.base import MechanismModulePlugin
+
+logger = logging.getLogger(__name__)
 
 
 class Module2Plugin(MechanismModulePlugin):
@@ -50,17 +53,24 @@ class Module2Plugin(MechanismModulePlugin):
         errors = self.validate_config(self.module_key, self.config)
         if errors:
             result.errors.extend(errors)
+            logger.warning("[%s] 配置校验失败: %s", self.module_key, errors)
             return None
 
         upstream = self._find_dependency(result)
         if upstream is None:
-            result.errors.append(
+            msg = (
                 f"{self.module_key}: depends_on_module={self.config['depends_on_module']!r} result not found"
             )
+            result.errors.append(msg)
+            logger.warning("[%s] 依赖未找到: %s", self.module_key, msg)
             return None
 
         entries = self._scan_diagnostic_entries(result)
         if not entries:
+            logger.info("[%s] 未扫描到诊断日志条目 (keyword=%r, slots=%d)",
+                        self.module_key,
+                        self.config["identifying_keyword"],
+                        len(result.diagnostic_slots))
             return None
 
         return self._build_result(entries, upstream)

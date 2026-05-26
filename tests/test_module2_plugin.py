@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -245,3 +246,61 @@ def test_module2_extracts_slot_from_slash_format(tmp_path):
     assert proc.pid == "456"
     assert proc.logs[0].cpu_id == ""
     assert proc.logs[0].context == "slash slot"
+
+
+def test_module2_logs_when_no_diagnostic_entries_found(tmp_path, caplog):
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is None
+    assert "未扫描到诊断日志条目" in caplog.text
+    assert "xxx" in caplog.text
+
+
+def test_module2_logs_when_dependency_not_found(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="xxxxx"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(diagnostic_slots=[slot])
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is None
+    assert "依赖未找到" in caplog.text
+
+
+def test_module2_logs_when_config_invalid(caplog):
+    plugin = Module2Plugin(
+        {},
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+    result = ParseResult()
+
+    with caplog.at_level(logging.WARNING, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is None
+    assert "配置校验失败" in caplog.text
