@@ -98,7 +98,7 @@ class Module2Plugin(MechanismModulePlugin):
             if not m:
                 continue
 
-            slot = m.group("Slot")
+            slot = _extract_slot_id(m.group("Slot"))
             cpu_id = m.group("CPU_Id")
             if cpu_id == "0":
                 cpu_id = ""
@@ -151,6 +151,18 @@ def _parse_bracket_process_name(raw: str) -> tuple[str, str]:
     if not m:
         return raw, ""
     return m.group("name"), m.group("pid")
+
+
+def _extract_slot_id(raw: str) -> str:
+    """从 '框号/slot' 格式中提取 slot_id，纯数字则直接返回。
+
+    TODO 临时规避：当前只取 '/' 后面的 slot 号，丢弃了前面的框号。
+    正式方案应保留完整 '框号/slot' 语义，在周期匹配时按框号+slot
+    联合定位上游模块的 SlotOutput。
+    """
+    if "/" in raw:
+        return raw.rsplit("/", 1)[-1].strip()
+    return raw.strip()
 
 
 def _find_upstream_slot(upstream: MechResult, slot_id: str) -> MechSlotOutput | None:

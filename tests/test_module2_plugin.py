@@ -32,7 +32,7 @@ def _module2_config() -> dict:
         "identifying_keyword": "xxx",
         "depends_on_module": "module1",
         "diag_pattern": (
-            r"Slot=(?P<Slot>\d+),CPU-Id=(?P<CPU_Id>\d+),"
+            r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>\d+),"
             r"ProcessName=(?P<ProcessName>[^,]+),Context=\"(?P<Context>.*?)\""
         ),
     }
@@ -213,3 +213,35 @@ def test_module2_unknown_output_uses_existing_mech_layout(tmp_path):
     out_file = mech_dir / "slot_2" / "unknown" / "cpu_3" / "hellokitty-123.log"
     assert out_file.is_file()
     assert "outside cycle" in out_file.read_text(encoding="utf-8")
+
+
+def test_module2_extracts_slot_from_slash_format(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00+08:00 xxx Slot=1/2,CPU-Id=0,'
+        'ProcessName=hellocat[456],Context="slash slot"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert mech.slots[0].slot_id == "2"
+    cycle = mech.slots[0].board_cycles[0]
+    assert cycle.dir_name == "20260103T000000-20260103T010000"
+    proc = cycle.processes[0]
+    assert proc.process_name == "hellocat"
+    assert proc.pid == "456"
+    assert proc.logs[0].cpu_id == ""
+    assert proc.logs[0].context == "slash slot"

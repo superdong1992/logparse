@@ -115,7 +115,7 @@ products:
               module_name: "MODULE2"
               identifying_keyword: "xxx"
               depends_on_module: "module1"
-              diag_pattern: 'Slot=(?P<Slot>\d+),CPU-Id=(?P<CPU_Id>\d+),ProcessName=(?P<ProcessName>[^,]+),Context="(?P<Context>.*?)"'
+              diag_pattern: 'Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>\d+),ProcessName=(?P<ProcessName>[^,]+),Context="(?P<Context>.*?)"'
 
   # ── compact 产品示例 ──────────────────────────────────
   # 演示不同目录布局（boards/ + logs/）如何复用默认 ParserPlugin
