@@ -10,6 +10,7 @@ pipeline:
   inner_extraction: true       # [通常不改] 是否解压诊断日志内层 .zip
   generate_metadata: true      # [通常不改] 是否生成 metadata.json
   output_base_dir: "./output"  # [按需修改] 输出根目录
+  debug_expand_gz: false       # [通常不改] 调试用：解析过程中是否将 .gz 文件就地展开
 
 # ── 产品插件注册 ──────────────────────────────────────
 # 每个产品定义一对插件：

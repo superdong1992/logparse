@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import logging
 import os
+import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -49,13 +50,28 @@ class Decompressor:
     @staticmethod
     def _is_safe_path(member_name: str) -> bool:
         """检查压缩包内文件路径是否安全（无路径穿越）。"""
-        # 拒绝绝对路径（含跨平台）
+        if not member_name:
+            return False
+
+        # 拒绝 Unix 绝对路径
         if os.path.isabs(member_name):
             return False
+
+        # 拒绝 Windows 盘符绝对路径，例如 C:\Windows 或 C:/Windows
+        if re.match(r"^[a-zA-Z]:[\\/]", member_name):
+            return False
+
         normed = member_name.replace("\\", "/")
+
+        # 拒绝 Unix 风格绝对路径
         if normed.startswith("/"):
             return False
-        # 拒绝 .. 路径穿越
+
+        # 拒绝 UNC 路径，例如 \\server\share
+        if normed.startswith("//"):
+            return False
+
+        # 拒绝路径穿越
         return ".." not in normed.split("/")
 
     @staticmethod
@@ -72,10 +88,11 @@ class Decompressor:
             return False
         return True
 
-    def extract_all(self, source: Path, dest_dir: Path, recursive: bool = True) -> list[str]:
+    def extract_all(self, source: Path, dest_dir: Path, recursive: bool = True, expand_gz: bool = False) -> list[str]:
         """
         解压 source 到 dest_dir。
         recursive=False 时只解压一层，不递归处理内部压缩包。
+        expand_gz=False 时递归阶段跳过普通 .gz 文件（保留 .tar.gz / .tgz）。
         返回所有被解压过的文件路径列表。
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -96,6 +113,17 @@ class Decompressor:
             changed = False
             for root, dirs, files in os.walk(dest_dir):
                 for f in files:
+                    lower_name = f.lower()
+
+                    # 跳过普通 .gz 但保留 .tar.gz / .tgz
+                    is_plain_gz = (
+                        lower_name.endswith(".gz")
+                        and not lower_name.endswith(".tar.gz")
+                        and not lower_name.endswith(".tgz")
+                    )
+                    if is_plain_gz and not expand_gz:
+                        continue
+
                     if self.is_compressed(f):
                         file_path = Path(root) / f
                         relative_parent = Path(root).relative_to(dest_dir)
@@ -165,13 +193,21 @@ class Decompressor:
                 if not self._is_safe_path(info.name):
                     logger.warning("路径穿越风险，跳过: %s", info.name)
                     continue
-                if info.isdir():
+                if info.issym() or info.islnk():
+                    logger.warning("符号链接/硬链接风险，跳过: %s -> %s", info.name, info.linkname)
+                    continue
+                if not info.isfile():
                     continue
                 if info.size > MAX_UNCOMPRESSED_SIZE:
                     logger.warning("文件过大，跳过: %s (%d bytes)", info.name, info.size)
                     continue
                 safe_members.append(info)
-            tf.extractall(dest_dir, members=safe_members)
+            for member in safe_members:
+                try:
+                    tf.extract(member, dest_dir, filter="data")
+                except TypeError:
+                    # Python < 3.12 不支持 filter 参数
+                    tf.extract(member, dest_dir)
             extracted_files.extend(
                 str(dest_dir / m.name) for m in safe_members
             )

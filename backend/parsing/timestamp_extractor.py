@@ -30,10 +30,24 @@ class TimestampExtractor:
         return stamps
 
     def extract_from_file(self, file_path: Path) -> list[datetime]:
-        text = self._read_file(file_path)
-        if not text:
-            return []
-        return self.extract_from_text(text)
+        stamps: list[datetime] = []
+        try:
+            if file_path.suffix == ".gz":
+                with gzip.open(file_path, "rt", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        stamps.extend(self.extract_from_text(line))
+            else:
+                with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        stamps.extend(self.extract_from_text(line))
+        except Exception:
+            try:
+                with file_path.open("r", encoding="gbk", errors="replace") as fh:
+                    for line in fh:
+                        stamps.extend(self.extract_from_text(line))
+            except Exception:
+                logger.warning("无法读取文件 (UTF-8/GBK 均失败): %s", file_path)
+        return stamps
 
     def extract_from_entry(self, entry: LogEntry) -> list[datetime]:
         stamps: list[datetime] = []

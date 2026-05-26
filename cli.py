@@ -23,6 +23,8 @@ from pathlib import Path
 
 import click
 
+from backend.config_validation import validate_config
+from backend.query import ResultQueryService
 from backend.utils import glob_to_regex
 from backend.models import ParseResult
 from backend.pipeline import Pipeline
@@ -104,8 +106,9 @@ def cli(ctx, config):
 @click.option("--output", "-o", default="./output", help="输出目录")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
 @click.option("--product", "-p", default="default", help="产品名（default/compact）")
+@click.option("--debug-expand-gz", is_flag=True, default=False, help="调试用：解析过程中将 .gz 文件就地展开")
 @click.pass_context
-def parse(ctx, package_path, output, verbose, product):
+def parse(ctx, package_path, output, verbose, product, debug_expand_gz):
     """解析日志压缩包。"""
     if verbose:
         import logging
@@ -124,6 +127,9 @@ def parse(ctx, package_path, output, verbose, product):
     if Path(config_path).exists():
         import yaml
         raw_config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    if debug_expand_gz:
+        raw_config.setdefault("pipeline", {})
+        raw_config["pipeline"]["debug_expand_gz"] = True
     pipeline = Pipeline(raw_config)
     result = pipeline.run(source, output_dir, product=product, verbose=verbose)
     if result.errors:
@@ -140,11 +146,12 @@ def parse(ctx, package_path, output, verbose, product):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def info(task_id, output):
     """查看任务的元数据。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
+    svc = ResultQueryService(Path(output))
+    metadata = svc.read_metadata(task_id)
+    if not metadata:
         click.echo(f"任务 {task_id} 的元数据不存在", err=True)
         sys.exit(1)
-    click.echo(metadata_path.read_text(encoding="utf-8"))
+    click.echo(json.dumps(metadata, ensure_ascii=False, indent=2))
 
 
 @cli.command()
@@ -152,12 +159,14 @@ def info(task_id, output):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def list_slots(task_id, output):
     """列出任务中识别到的所有槽位。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
-        click.echo(f"任务 {task_id} 的元数据不存在", err=True)
-        sys.exit(1)
-    data = json.loads(metadata_path.read_text(encoding="utf-8"))
-    for slot in data.get("diagnostic_slots", []):
+    svc = ResultQueryService(Path(output))
+    slots = svc.list_slots(task_id)
+    if not slots:
+        metadata = svc.read_metadata(task_id)
+        if not metadata:
+            click.echo(f"任务 {task_id} 的元数据不存在", err=True)
+            sys.exit(1)
+    for slot in slots:
         diag_count = len(slot.get("diagnostic_logs", []))
         periods = slot.get("active_periods", [])
         period_str = ""
@@ -172,71 +181,70 @@ def list_slots(task_id, output):
 @click.option("--output", "-o", default="./output", help="输出目录")
 def query_diag(task_id, slot, output):
     """查询特定槽位的诊断日志列表。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
-        click.echo(f"任务 {task_id} 的元数据不存在", err=True)
-        sys.exit(1)
-    data = json.loads(metadata_path.read_text(encoding="utf-8"))
-
-    for s in data.get("diagnostic_slots", []):
-        if s["slot_id"] == slot:
-            click.echo(json.dumps(s, ensure_ascii=False, indent=2))
-            return
-
-    click.echo(f"未找到 slot_{slot}", err=True)
+    svc = ResultQueryService(Path(output))
+    result = svc.query_diag(task_id, slot)
+    if result is None:
+        metadata = svc.read_metadata(task_id)
+        if not metadata:
+            click.echo(f"任务 {task_id} 的元数据不存在", err=True)
+            sys.exit(1)
+        click.echo(f"未找到 slot_{slot}", err=True)
+        return
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 @cli.command()
 @click.argument("task_id")
+@click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认展示全部模块")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_slots(task_id, output):
+def mech_slots(task_id, module_name, output):
     """列出机制模块各 slot 概况。"""
-    metadata_path = Path(output) / task_id / "metadata.json"
-    if not metadata_path.exists():
-        click.echo(f"任务 {task_id} 的元数据不存在", err=True)
-        sys.exit(1)
-    # 直接从 result.json 读取完整结构
-    result_path = Path(output) / task_id / "result.json"
-    if not result_path.exists():
+    svc = ResultQueryService(Path(output))
+    result_data = svc.read_result(task_id)
+    if not result_data:
+        metadata = svc.read_metadata(task_id)
+        if not metadata:
+            click.echo(f"任务 {task_id} 的元数据不存在", err=True)
+            sys.exit(1)
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
-    data = json.loads(result_path.read_text(encoding="utf-8"))
-    mech = data.get("mech_results")
-    if not mech:
+    slots = svc.mech_slots(task_id, module_name=module_name)
+    if not slots:
         click.echo("无机制模块解析结果")
         return
-    mech = mech[0]  # 取第一个模块
-    for s in mech.get("slots", []):
+    for s in slots:
         total_logs = sum(cp["total_count"] for c in s["board_cycles"] for cp in c["processes"])
         total_procs = sum(len(c["processes"]) for c in s["board_cycles"])
-        click.echo(f"slot_{s['slot_id']}: {len(s['board_cycles'])} 周期, {total_procs} 进程, {total_logs} 条日志")
+        mod = s.get("_module_name", "")
+        click.echo(
+            f"[{mod}] slot_{s['slot_id']}: "
+            f"{len(s['board_cycles'])} 周期, {total_procs} 进程, {total_logs} 条日志"
+        )
 
 
 @cli.command()
 @click.argument("task_id")
 @click.option("--slot", "-s", required=True, help="槽位 ID")
+@click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认展示全部模块")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_lifecycles(task_id, slot, output):
+def mech_lifecycles(task_id, slot, module_name, output):
     """列出某 slot 的机制模块周期和进程。"""
-    result_path = Path(output) / task_id / "result.json"
-    if not result_path.exists():
+    svc = ResultQueryService(Path(output))
+    result_data = svc.read_result(task_id)
+    if not result_data:
         click.echo("result.json 不存在", err=True)
         sys.exit(1)
-    data = json.loads(result_path.read_text(encoding="utf-8"))
-    mech = data.get("mech_results")
-    if not mech:
-        click.echo("无机制模块解析结果")
+    groups = svc.mech_lifecycles(task_id, slot, module_name=module_name)
+    if not groups:
+        click.echo(f"未找到 slot_{slot}", err=True)
         return
-    mech = mech[0]
-    for s in mech.get("slots", []):
-        if s["slot_id"] == slot:
-            for c in s["board_cycles"]:
-                click.echo(f"{c['dir_name']}")
-                for p in c["processes"]:
-                    missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
-                    click.echo(f"  {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
-            return
-    click.echo(f"未找到 slot_{slot}", err=True)
+    for group in groups:
+        click.echo(f"[{group['module_name']}] slot_{slot}")
+        for c in group["board_cycles"]:
+            click.echo(f"  {c['dir_name']}")
+            for p in c["processes"]:
+                missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
+                click.echo(f"    {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
 
 
 @cli.command()
@@ -244,10 +252,18 @@ def mech_lifecycles(task_id, slot, output):
 @click.option("--slot", "-s", required=True, help="槽位 ID")
 @click.option("--cycle", "-c", required=True, help="周期目录名")
 @click.option("--proc", "-p", required=True, help="进程名-pid")
+@click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认取第一个")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_logs(task_id, slot, cycle, proc, output):
+def mech_logs(task_id, slot, cycle, proc, module_name, output):
     """查看指定进程批次的机制模块日志。"""
-    log_file = Path(output) / task_id / "mech_modules" / f"slot_{slot}" / cycle / f"{proc}.log"
+    svc = ResultQueryService(Path(output))
+    log_file = svc.mech_log_path(
+        task_id=task_id,
+        slot_id=slot,
+        cycle=cycle,
+        proc=proc,
+        module_name=module_name,
+    )
     if not log_file.exists():
         click.echo(f"文件不存在: {log_file}", err=True)
         sys.exit(1)
@@ -263,9 +279,6 @@ def check_config(config):
         click.echo(f"✗ 配置文件不存在: {config_path}")
         sys.exit(1)
 
-    errors: list[str] = []
-    warnings: list[str] = []
-
     try:
         import yaml
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -274,72 +287,7 @@ def check_config(config):
         click.echo(f"✗ 配置加载失败: {e}")
         sys.exit(1)
 
-    products = raw.get("products", {})
-    if not products:
-        errors.append("无产品配置 (products 段为空)")
-    else:
-        for prod_name, prod_cfg in products.items():
-            prefix = f"[{prod_name}]"
-
-            # Discovery config
-            disc = prod_cfg.get("discovery", {}).get("config", {})
-            for label, pattern in [
-                ("slot_dir_pattern", disc.get("slot_dir_pattern", "slot_*")),
-            ]:
-                try:
-                    glob_to_regex(pattern)
-                except Exception:
-                    errors.append(f"{prefix} {label}: glob 无效 - {pattern}")
-
-            for p in disc.get("diag_file_patterns", []):
-                try:
-                    glob_to_regex(p)
-                except Exception:
-                    errors.append(f"{prefix} diag_file_pattern: glob 无效 - {p}")
-
-            # Parser config
-            parser_cfg = prod_cfg.get("log_parser", {}).get("config", {})
-
-            ts_re = parser_cfg.get("timestamp_regex", "")
-            if ts_re:
-                try:
-                    re.compile(ts_re)
-                except re.error as e:
-                    errors.append(f"{prefix} timestamp_regex: 正则无效 - {e}")
-
-            for mod_key, mod_cfg in parser_cfg.get("mechanism_modules", {}).items():
-                mp = f"{prefix}[{mod_key}]"
-                if not mod_cfg.get("module_name"):
-                    warnings.append(f"{mp} module_name 为空")
-                if mod_cfg.get("diag_pattern"):
-                    try:
-                        r = re.compile(mod_cfg["diag_pattern"])
-                        required = {"Slot", "CPU_Id", "ProcessName", "Context"}
-                        if not required.issubset(r.groupindex):
-                            warnings.append(f"{mp} diag_pattern 缺少命名组: {required - set(r.groupindex)}")
-                    except re.error as e:
-                        errors.append(f"{mp} diag_pattern: 正则无效 - {e}")
-
-                jnl = mod_cfg.get("journal", {})
-                for pat_name in ("line_pattern", "line_pattern2"):
-                    val = jnl.get(pat_name, "")
-                    if val:
-                        try:
-                            re.compile(val)
-                        except re.error as e:
-                            errors.append(f"{mp} journal.{pat_name}: 正则无效 - {e}")
-
-                seq_pat = mod_cfg.get("sequence_pattern", "")
-                if seq_pat:
-                    try:
-                        re.compile(seq_pat)
-                    except re.error as e:
-                        errors.append(f"{mp} sequence_pattern: 正则无效 - {e}")
-
-    if warnings:
-        click.echo(f"\n⚠ {len(warnings)} 个警告:")
-        for w in warnings:
-            click.echo(f"  - {w}")
+    errors = validate_config(raw)
 
     if errors:
         click.echo(f"\n✗ {len(errors)} 个错误:")

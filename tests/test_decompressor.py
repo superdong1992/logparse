@@ -46,6 +46,15 @@ class TestSafePath:
     def test_absolute_windows(self):
         assert not Decompressor._is_safe_path("C:\\Windows\\system32")
 
+    def test_absolute_windows_forward_slash(self):
+        assert not Decompressor._is_safe_path("C:/Windows/system32")
+
+    def test_unc_path(self):
+        assert not Decompressor._is_safe_path("\\\\server\\share")
+
+    def test_empty_path(self):
+        assert not Decompressor._is_safe_path("")
+
     def test_nested_traversal(self):
         assert not Decompressor._is_safe_path("dir/../../etc/passwd")
 
@@ -147,3 +156,102 @@ class TestExtractAll:
         dest = tmp_path / "out"
         extracted = decompressor.extract_all(zip_path, dest)
         assert extracted == []
+
+
+class TestExtractTarSymlinks:
+    def test_tar_symlink_rejected(self, decompressor, tmp_path):
+        tar_path = tmp_path / "bad.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            info = tarfile.TarInfo("safe_link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/tmp/evil_target"
+            tf.addfile(info)
+
+        out = tmp_path / "out"
+        extracted = []
+        decompressor._extract_tar(tar_path, out, extracted)
+
+        assert not (out / "safe_link").exists()
+        assert not (out / "safe_link").is_symlink()
+        assert extracted == []
+
+    def test_tar_hardlink_rejected(self, decompressor, tmp_path):
+        # Need a real file to create a hardlink reference
+        tar_path = tmp_path / "bad_hardlink.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            # Add a regular file first
+            data = b"content"
+            regular = tarfile.TarInfo("regular.txt")
+            regular.size = len(data)
+            regular.type = tarfile.REGTYPE
+            tf.addfile(regular, __import__("io").BytesIO(data))
+
+            # Add a hardlink pointing to it
+            link = tarfile.TarInfo("hard_link")
+            link.type = tarfile.LNKTYPE
+            link.linkname = "regular.txt"
+            tf.addfile(link)
+
+        out = tmp_path / "out"
+        extracted = []
+        decompressor._extract_tar(tar_path, out, extracted)
+
+        # Regular file should be extracted, hardlink should be rejected
+        assert (out / "regular.txt").exists()
+        assert not (out / "hard_link").exists()
+        assert len(extracted) == 1
+
+
+class TestRecursiveGzGate:
+    def test_recursive_skips_plain_gz_by_default(self, decompressor, tmp_path):
+        gz_file = tmp_path / "journal.log.1.gz"
+        with gzip.open(gz_file, "wt", encoding="utf-8") as f:
+            f.write("hello\n")
+
+        zip_path = tmp_path / "pkg.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(gz_file, "journal.log.1.gz")
+
+        out = tmp_path / "out"
+        decompressor.extract_all(zip_path, out, recursive=True, expand_gz=False)
+
+        assert (out / "journal.log.1.gz").exists()
+        assert not (out / "journal.log.1.gz_extracted").exists()
+
+    def test_recursive_expands_plain_gz_when_enabled(self, decompressor, tmp_path):
+        gz_file = tmp_path / "journal.log.1.gz"
+        with gzip.open(gz_file, "wt", encoding="utf-8") as f:
+            f.write("hello\n")
+
+        zip_path = tmp_path / "pkg.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(gz_file, "journal.log.1.gz")
+
+        out = tmp_path / "out"
+        decompressor.extract_all(zip_path, out, recursive=True, expand_gz=True)
+
+        assert (out / "journal.log.1.gz").exists()
+        assert (out / "journal.log.1.gz_extracted").exists()
+
+
+class TestTarNoDeprecationWarning:
+    def test_extract_tar_no_deprecation_warning(self, decompressor, tmp_path):
+        import io
+        import warnings
+
+        tar_path = tmp_path / "test.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            data = b"hello world"
+            info = tarfile.TarInfo("test.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        out = tmp_path / "out"
+        extracted = []
+
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            decompressor._extract_tar(tar_path, out, extracted)
+
+        assert not any("Python 3.14" in str(w.message) for w in records)
+        assert (out / "test.txt").exists()

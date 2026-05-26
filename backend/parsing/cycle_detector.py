@@ -32,7 +32,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from backend.models import MechBoardCycle, MechLogEntry, MechProcessLifecycle
+from backend.models import MechBoardCycle, MechCycleSplitTrace, MechLogEntry, MechProcessLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +55,11 @@ class CycleDetector:
     ):
         self._indicator = indicator
         self._whitelist = [w.lower() for w in (whitelist or [])]
+        self._split_traces: list[MechCycleSplitTrace] = []
 
     def detect(self, entries: list[MechLogEntry]) -> list[MechBoardCycle]:
         """检测重启周期，返回按时间排列的周期列表。"""
+        self._split_traces = []
         logger.info(
             "CycleDetector.detect: 共 %d 条日志, indicator=%r, whitelist=%s",
             len(entries), self._indicator, self._whitelist,
@@ -134,6 +136,16 @@ class CycleDetector:
                 if seg:
                     cycles.extend(self._make_cycles(seg))
 
+        # 将 split traces 分配到对应周期
+        for trace in self._split_traces:
+            for cycle in cycles:
+                if cycle.start_time and trace.timestamp < cycle.start_time:
+                    continue
+                if cycle.end_time and trace.timestamp > cycle.end_time:
+                    continue
+                cycle.split_traces.append(trace)
+                break
+
         logger.info("最终切分结果: %d 个周期", len(cycles))
         for i, c in enumerate(cycles):
             logger.info("  周期[%d]: %s, %d 个进程组", i, c.dir_name, len(c.processes))
@@ -168,11 +180,11 @@ class CycleDetector:
 
         # Step 2 + 3: 对每个 PID 变化点，计算精确切分时间
         split_timestamps: list[datetime] = []
-        for idx, (old_pid, change_idx) in enumerate(indicator_splits):
+        for idx, (old_pid, new_pid, change_idx) in enumerate(indicator_splits):
             # 确定搜索范围：从上一个切分点到当前切分点之后
             search_start = 0
             if idx > 0:
-                prev_change_idx = indicator_splits[idx - 1][1]
+                prev_change_idx = indicator_splits[idx - 1][2]
                 # 搜索起点从上一次变化点开始（包含旧生命周期尾部）
                 search_start = prev_change_idx
 
@@ -181,6 +193,15 @@ class CycleDetector:
             )
             if split_ts:
                 split_timestamps.append(split_ts)
+                self._split_traces.append(MechCycleSplitTrace(
+                    timestamp=split_ts,
+                    reason="indicator_pid_changed",
+                    cpu_id=group[change_idx].cpu_id,
+                    indicator=self._indicator or "",
+                    old_pid=old_pid,
+                    new_pid=new_pid,
+                    detail=f"indicator pid changed from {old_pid} to {new_pid}",
+                ))
                 logger.info(
                     "PID 变化 #%d: indicator old_pid=%s → 切分时间=%s",
                     idx + 1, old_pid, split_ts.isoformat(),
@@ -190,14 +211,14 @@ class CycleDetector:
 
     def _find_indicator_pid_changes(
         self, group: list[MechLogEntry],
-    ) -> list[tuple[str, int]]:
+    ) -> list[tuple[str, str, int]]:
         """找到 indicator 进程的所有 PID 变化点。
 
         Returns:
-            列表，每项为 (旧PID, 变化发生的条目索引)。
+            列表，每项为 (旧PID, 新PID, 变化发生的条目索引)。
         """
         indicator_lower = self._indicator.lower()
-        changes: list[tuple[str, int]] = []
+        changes: list[tuple[str, str, int]] = []
         prev_pid: str | None = None
 
         for i, e in enumerate(group):
@@ -206,7 +227,7 @@ class CycleDetector:
             if not e.pid:
                 continue
             if prev_pid and e.pid != prev_pid:
-                changes.append((prev_pid, i))
+                changes.append((prev_pid, e.pid, i))
                 logger.info(
                     "indicator PID 变化: %s → %s at index=%d, ts=%s",
                     prev_pid, e.pid, i,

@@ -56,7 +56,7 @@ class TestBuildActivePeriods:
         entry.content_timestamps = [base + timedelta(minutes=i) for i in range(5)]
         slot.add_diagnostic_log(entry)
 
-        periods = plugin._build_active_periods(slot)
+        periods = plugin._active_period_builder.build(slot)
         assert len(periods) == 1
         assert periods[0].start == base
         assert periods[0].end == base + timedelta(minutes=4)
@@ -73,27 +73,34 @@ class TestBuildActivePeriods:
         ]
         slot.add_diagnostic_log(entry)
 
-        periods = plugin._build_active_periods(slot)
+        periods = plugin._active_period_builder.build(slot)
         assert len(periods) == 2
 
     def test_empty_slot(self, plugin):
         slot = SlotInfo(slot_id="1", name="slot_1", path="/tmp")
-        assert plugin._build_active_periods(slot) == []
+        assert plugin._active_period_builder.build(slot) == []
 
 
 class TestParseDiagProcName:
-    def test_simple_name_with_pid(self):
-        assert ParserPlugin._parse_diag_proc_name("SERVICE-12345", {}) == ("SERVICE", "12345")
+    def test_simple_name_with_pid(self, plugin):
+        from backend.parsing.process_name_resolver import ProcessNameResolver
+        resolver = ProcessNameResolver()
+        assert resolver.parse_diag_process_name("SERVICE-12345") == ("SERVICE", "12345")
 
-    def test_name_only(self):
-        assert ParserPlugin._parse_diag_proc_name("SERVICE", {}) == ("SERVICE", "")
+    def test_name_only(self, plugin):
+        from backend.parsing.process_name_resolver import ProcessNameResolver
+        resolver = ProcessNameResolver()
+        assert resolver.parse_diag_process_name("SERVICE") == ("SERVICE", "")
 
-    def test_name_mapping(self):
-        result = ParserPlugin._parse_diag_proc_name("DHCP-9881", {"DHCP": "dhcpd"})
-        assert result == ("DHCP", "9881")
+    def test_name_mapping(self, plugin):
+        from backend.parsing.process_name_resolver import ProcessNameResolver
+        resolver = ProcessNameResolver(name_map={"DHCP": "dhcpd"})
+        assert resolver.parse_diag_process_name("DHCP-9881") == ("DHCP", "9881")
 
-    def test_non_numeric_suffix(self):
-        assert ParserPlugin._parse_diag_proc_name("SERVICE-abc", {}) == ("SERVICE-abc", "")
+    def test_non_numeric_suffix(self, plugin):
+        from backend.parsing.process_name_resolver import ProcessNameResolver
+        resolver = ProcessNameResolver()
+        assert resolver.parse_diag_process_name("SERVICE-abc") == ("SERVICE-abc", "")
 
 
 class TestBuildProcesses:
