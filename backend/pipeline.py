@@ -86,9 +86,29 @@ class Pipeline:
               ))
         if verbose and extracted is not None:
             print(f"    解压文件数: {extracted}")
+        if extracted is None:
+            result = ParseResult(
+                task_id=task_id,
+                package_name=source.name,
+                extracted_root=str(extract_dir),
+                errors=errors,
+            )
+            return result
 
-        # Step 2: 目录发现
-        discovery, log_parser = self._load_plugins(product)
+        # Step 2: 加载插件 + 目录发现
+        loaded_plugins = _safe(
+            "[2/6] 加载产品插件",
+            lambda: self._load_plugins(product),
+        )
+        if loaded_plugins is None:
+            result = ParseResult(
+                task_id=task_id,
+                package_name=source.name,
+                extracted_root=str(extract_dir),
+                errors=errors,
+            )
+            return result
+        discovery, log_parser = loaded_plugins
         diag_slots, private_slots = _safe("[2/6] 扫描 diag/",
                                            lambda: discovery.discover(extract_dir)) or ([], [])
         if verbose:

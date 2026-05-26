@@ -45,3 +45,19 @@ class TestParseExitCode:
             f"Expected exit code 0 for valid package, got {result.exit_code}.\n"
             f"Output:\n{result.output}"
         )
+
+    def test_parse_unknown_product_exit_nonzero(self, tmp_path):
+        """Unknown product must produce non-zero exit without traceback."""
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "parse",
+            "tests/mock_data/diagnostic_information_20260103.zip",
+            "-o",
+            str(tmp_path / "out"),
+            "--product",
+            "nope",
+        ])
+
+        assert result.exit_code != 0
+        assert "未找到产品配置" in result.output
+        assert "Traceback" not in result.output

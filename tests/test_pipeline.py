@@ -69,3 +69,30 @@ class TestGzExpansionGate:
         count = pipeline._decompress_gz_in_dir(extract_dir)
         assert count == 1
         assert (extract_dir / "test.log").exists()
+
+
+class TestPipelineFatalHandling:
+    def test_stops_after_outer_extract_failure(self, tmp_path):
+        """Outer extraction failure should not proceed to discovery/parse."""
+        bad_zip = tmp_path / "bad.zip"
+        bad_zip.write_text("not zip", encoding="utf-8")
+
+        pipeline = Pipeline({})
+        result = pipeline.run(bad_zip, tmp_path / "out")
+
+        assert any("[1/6] 解压" in err for err in result.errors)
+        assert result.diagnostic_slots == []
+        assert result.private_slots == []
+
+    def test_stops_on_unknown_product(self, tmp_path):
+        """Unknown product should stop pipeline with plugin loading error."""
+        # Create a minimal valid zip for outer extraction to succeed
+        import zipfile
+        outer_zip = tmp_path / "test.zip"
+        with zipfile.ZipFile(outer_zip, "w") as zf:
+            zf.writestr("dummy.txt", "test")
+
+        pipeline = Pipeline({})
+        result = pipeline.run(outer_zip, tmp_path / "out", product="nonexistent")
+
+        assert any("未找到产品配置" in err for err in result.errors)

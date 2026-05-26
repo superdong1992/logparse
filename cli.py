@@ -34,6 +34,7 @@ def _has_fatal_errors(errors: list[str]) -> bool:
     """Check whether any error originated from a fatal pipeline stage."""
     fatal_markers = (
         "[1/6] 解压",
+        "[2/6] 加载产品插件",
         "[2/6] 扫描",
         "[4/6] 日志解析",
     )
