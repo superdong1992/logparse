@@ -40,11 +40,14 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 ```text
 外层压缩包
   → Decompressor 统一解压归档包（外层 + 内层 zip/tar/tgz/tar.gz）
-  → DirectoryDiscoveryPlugin 扫描已解压工作区，发现 slot、诊断日志和 varlog/journal
-  → LogParserPlugin 解析时间戳、ActivePeriod、机制模块日志和角色
+  → DirectoryDiscoveryPlugin 扫描已解压工作区
+  → LogParserPlugin 提取基础时间戳和 ActivePeriod，编排机制模块插件
+  → MechanismModulePlugin 解析特殊机制模块日志
   → MechOutputWriter 写出机制模块日志
   → MetadataGenerator 生成 metadata.json，CLI 写出 result.json
 ```
+
+机制模块通过 `MechanismModulePlugin` 扩展。`module1` 是机制模块插件，拥有自己的日志扫描、周期切分和主控角色信号；其他模块如果没有周期切分或主控判定需求，可以只实现自己的解析逻辑。
 
 解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用。
 
@@ -58,6 +61,7 @@ python -m pytest tests/ -v
 
 ## 变更记录
 
+- 2026-05-26：`module1` 机制模块插件化。`ParserPlugin` 只负责编排机制模块插件，module1 自己拥有特殊日志解析、周期切分和主控判定逻辑。
 - 2026-05-26：统一解压职责。`Decompressor` 负责外层和内层归档解压；Scanner 插件只扫描已解压工作区，不再自行解压 `varlog.zip` 或诊断日志内层包；普通 `.gz` 日志默认保留并由 parser 流式读取，调试时可通过 `--debug-expand-gz` 展开。
 
 ## Windows 终端编码
