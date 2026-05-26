@@ -69,7 +69,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 | 模块 | 职责 |
 |------|------|
 | `backend/decompressor.py` | .zip/.tar.gz/.gz 多层递归解压，含路径穿越、zip 炸弹、递归深度安全防护；普通 `.gz` 调试展开为同目录去掉后缀的文件（非 `_extracted/` 目录） |
-| `backend/pipeline.py` | Pipeline 类：产品无关的 6 步管道编排器，按产品名加载插件对；`_extract_inner_contents` 内层解压错误记录到 `result.errors` |
+| `backend/pipeline.py` | Pipeline 类：产品无关的 6 步管道编排器，按产品名加载插件对；外层解压或插件加载失败时提前返回；`_extract_inner_contents` 内层解压错误记录到 `result.errors` |
 | `backend/plugins/base.py` | 两个 ABC：`DirectoryDiscoveryPlugin`、`LogParserPlugin` |
 | `backend/plugins/loader.py` | 动态加载插件：`instantiate_plugin(class_path, base, config)` |
 | `backend/plugins/default/scanner.py` | ScannerPlugin：标准 diag/ + varlog/ 目录发现 |
@@ -89,7 +89,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 | `backend/metadata.py` | 生成 `metadata.json`（含 mech_results 键） |
 | `backend/models.py` | Pydantic 数据模型（SlotInfo、ParseResult、MechResult 等） |
 | `backend/utils.py` | 纯函数工具：glob_to_regex、时间戳提取、文件读取等 |
-| `cli.py` | Click CLI：parse/info/list-slots/query-diag/mech-slots/mech-lifecycles/mech-logs/check-config/test-pattern，mech 查询命令支持 `--module` 按模块过滤；致命错误返回非 0 退出码 |
+| `cli.py` | Click CLI：parse/info/list-slots/query-diag/mech-slots/mech-lifecycles/mech-logs/check-config/test-pattern，mech 查询命令支持 `--module` 按模块过滤；致命错误（解压/插件加载/扫描/解析）返回非 0 退出码 |
 
 ### 核心模型 (`backend/models.py`)
 
@@ -220,14 +220,14 @@ Source Archive
 
 ### 测试
 
-184 个单元测试，覆盖：
+187 个单元测试，覆盖：
 - `tests/test_utils.py` — utils 纯函数（glob、slot 提取、时间戳等）
 - `tests/test_decompressor.py` — 解压安全（路径穿越、Windows 绝对路径、UNC 路径、zip 炸弹）、提取逻辑、`.gz` 调试展开行为统一
-- `tests/test_cli.py` — CLI 退出码（致命错误非 0、正常解析 0）
+- `tests/test_cli.py` — CLI 退出码（致命错误非 0、正常解析 0、未知产品无 traceback）
 - `tests/test_config_validation.py` — 机制模块配置校验（字段类型、正则合法性、命名组、白名单冲突、`validate_config_or_raise`）
 - `tests/test_parser_plugin.py` — ParserPlugin 编排层（ActivePeriod、进程名解析）
 - `tests/test_plugin_loader.py` — 动态插件加载
-- `tests/test_pipeline.py` — Pipeline 管道编排（debug_expand_gz 配置透传、内层解压错误记录）
+- `tests/test_pipeline.py` — Pipeline 管道编排（debug_expand_gz 集成测试、内层解压错误记录、外层解压/插件加载失败提前返回）
 - `tests/test_scanner_plugin.py` — ScannerPlugin 目录发现
 - `tests/test_timestamp_extractor.py` — TimestampExtractor（文本/文件/gz/LogEntry）
 - `tests/test_cycle_detector.py` — CycleDetector（PID 变化切分、白名单安全切分、journal 序号前移、CPU 隔离、split trace）
@@ -240,7 +240,7 @@ Source Archive
 
 | 日期 | 变更 |
 |------|------|
-| 2026-05-26 | **v0.4.0**：CLI 致命错误返回非 0 退出码；内层解压失败写入 `result.errors`；`.gz` 调试展开统一为同目录去掉后缀文件；配置校验新增字段类型检查和 `validate_config_or_raise`；184 个单元测试 |
+| 2026-05-26 | **v0.4.0**：CLI 致命错误返回非 0 退出码；内层解压失败写入 `result.errors`；`.gz` 调试展开统一为同目录去掉后缀文件；配置校验新增字段类型检查和 `validate_config_or_raise`；外层解压和插件加载失败提前返回；`.gz` 展开集成测试；文档配置示例修正；187 个单元测试 |
 | 2026-05-24 | **v0.3.1**：`--module`/`-m` 参数支持按机制模块过滤查询结果；`--debug-expand-gz` 控制普通 `.gz` 展开；默认流式读取 `.gz`；`check-config` 新增插件类继承和方法校验；167 个单元测试 |
 | 2026-05-24 | **v0.2 演进完成**：9 步渐进式重构，123 个单元测试。修复解压安全路径 bug、配置校验前置化、CycleDetector split trace、ParserPlugin 拆为 5 组件、流式文件读取、保守角色判定、查询服务从 CLI 提取 |
 | 2026-05-18 | **P0-P3 重构完成**：93 个单元测试、新管道默认化、删除旧管道 5 模块 (-1123 行)、ParserPlugin 拆为 4 组件 |
