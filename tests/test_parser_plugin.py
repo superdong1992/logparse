@@ -48,6 +48,13 @@ class TestExtractContentTimestamps:
         assert plugin._ts_extractor.extract_from_text("no timestamp here") == []
 
 
+class TestNestedMechanismConfig:
+    def test_nested_sample_config_does_not_report_missing_module_name(self, sample_config):
+        result = ParserPlugin(sample_config).parse(ParseResult())
+
+        assert not any("module_name" in error for error in result.errors)
+
+
 class TestBuildActivePeriods:
     def test_single_period(self, plugin):
         slot = SlotInfo(slot_id="1", name="slot_1", path="/tmp")
@@ -243,6 +250,18 @@ class TestRoleIdentification:
         result.diagnostic_slots.append(slot)
         RoleIdentifier.fallback_roles(result)
         assert slot.role == BoardRole.UNKNOWN
+
+
+class TestMechanismPluginOrchestration:
+    def test_parser_loads_mechanism_plugin(self, sample_config, sample_parse_result):
+        plugin = ParserPlugin(sample_config)
+
+        result = plugin.parse(sample_parse_result)
+
+        assert result is sample_parse_result
+
+    def test_parser_no_longer_exposes_module_specific_parse_method(self, plugin):
+        assert not hasattr(plugin, "_parse_one_mech")
 
 
 class TestFmtDir:

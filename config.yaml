@@ -54,53 +54,55 @@ products:
 
         mechanism_modules:
           module1:   # [按需修改] 模块标识（可任意命名，如 module1、ctrl、aaa）
-            module_name: "EXAMPLE"  # [按需修改] 日志中实际出现的模块名（全大写），用于 Stage1 大小写敏感预过滤
-            enabled: true           # [按需修改] 是否启用此模块
+            plugin: "backend.plugins.mechanisms.module1.Module1Plugin"
+            enabled: true
+            config:
+              module_name: "EXAMPLE"  # [按需修改] 日志中实际出现的模块名（全大写），用于 Stage1 大小写敏感预过滤
 
-            # [按需修改] 诊断日志匹配正则
-            # 必须含命名组：Slot, CPU_Id, ProcessName, Context
-            # 可用 test-pattern 命令验证是否匹配
-            diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
+              # [按需修改] 诊断日志匹配正则
+              # 必须含命名组：Slot, CPU_Id, ProcessName, Context
+              # 可用 test-pattern 命令验证是否匹配
+              diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
 
-            # [按需修改] 主控判定关键字（正则），命中 Context 时该 Slot 判为 ACTIVE
-            # 留空则仅靠 ActivePeriod 兜底判定
-            active_master_keyword: ""
+              # [按需修改] 主控判定关键字（正则），命中 Context 时该 Slot 判为 ACTIVE
+              # 留空则仅靠 ActivePeriod 兜底判定
+              active_master_keyword: ""
 
-            # [按需修改] 板卡重启标识进程名（小写）
-            # 此进程 PID 变化时触发重启周期切分，一定是非独立重启进程
-            # 留空则不按 PID 切分
-            board_restart_indicator: ""
+              # [按需修改] 板卡重启标识进程名（小写）
+              # 此进程 PID 变化时触发重启周期切分，一定是非独立重启进程
+              # 留空则不按 PID 切分
+              board_restart_indicator: ""
 
-            # [按需修改] 切分计算白名单进程（小写列表）
-            # 白名单内的进程需满足：不重名、不支持独立重启
-            # 切分点计算仅参考白名单进程的 PID 和序号信息，避免同名/独立重启进程干扰
-            # 留空则退化为仅用 indicator 的时间戳作为切分点
-            board_restart_whitelist: []
-            # 示例:
-            # board_restart_whitelist:
-            #   - "svc_a"
-            #   - "svc_b"
+              # [按需修改] 切分计算白名单进程（小写列表）
+              # 白名单内的进程需满足：不重名、不支持独立重启
+              # 切分点计算仅参考白名单进程的 PID 和序号信息，避免同名/独立重启进程干扰
+              # 留空则退化为仅用 indicator 的时间戳作为切分点
+              board_restart_whitelist: []
+              # 示例:
+              # board_restart_whitelist:
+              #   - "svc_a"
+              #   - "svc_b"
 
-            # [按需修改] 进程名映射：诊断日志名 → journal 日志名
-            # 用于 journal 中 indicator 进程名与诊断日志不一致时的映射
-            # 示例：{"DHCP": "dhcpd", "AAA": "aaa_svc"}
-            process_name_mapping: {}
+              # [按需修改] 进程名映射：诊断日志名 → journal 日志名
+              # 用于 journal 中 indicator 进程名与诊断日志不一致时的映射
+              # 示例：{"DHCP": "dhcpd", "AAA": "aaa_svc"}
+              process_name_mapping: {}
 
-            journal:
-              # [按需修改] journal 格式1正则（完整元数据块）
-              # 4 个捕获组：进程名、PID、序号、上下文
-              line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
+              journal:
+                # [按需修改] journal 格式1正则（完整元数据块）
+                # 4 个捕获组：进程名、PID、序号、上下文
+                line_pattern: '^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$'
 
-              # [按需修改] journal 格式2正则（无元数据块，PID 可选，fallback）
-              # 4 个捕获组：进程名、PID（可选）、序号、上下文
-              line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
+                # [按需修改] journal 格式2正则（无元数据块，PID 可选，fallback）
+                # 4 个捕获组：进程名、PID（可选）、序号、上下文
+                line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
 
-              # [按需修改] journal Stage1 关键字预过滤（小写）
-              # journal 行必须包含此关键字才会进入正则匹配，加速过滤
-              identifying_keyword: "EXAMPLE"
+                # [按需修改] journal Stage1 关键字预过滤（小写）
+                # journal 行必须包含此关键字才会进入正则匹配，加速过滤
+                identifying_keyword: "EXAMPLE"
 
-            # [通常不改] 序号提取正则，用于丢号检测和重启序号回绕判定
-            sequence_pattern: 'No\[(\d+)\]'
+              # [通常不改] 序号提取正则，用于丢号检测和重启序号回绕判定
+              sequence_pattern: 'No\[(\d+)\]'
 
   # ── compact 产品示例 ──────────────────────────────────
   # 演示不同目录布局（boards/ + logs/）如何复用默认 ParserPlugin
@@ -126,14 +128,16 @@ products:
           active_period_gap_threshold: 7200
           mechanism_modules:
             ctrl:
-              module_name: "COMPACT"
+              plugin: "backend.plugins.mechanisms.module1.Module1Plugin"
               enabled: true
-              diag_pattern: 'COMPACT\s+(?P<Service>\S+).*?proc=(?P<ProcessName>\S+).*?slot\s+(?P<Slot>\d+).*?cpu\s+(?P<CPU_Id>\d+).*?\|(?P<Context>.+)'
-              active_master_keyword: ""
-              board_restart_indicator: ""
-              process_name_mapping: {}
-              journal:
-                line_pattern: ''
-                line_pattern2: '^\S+\s+\S+\s+(\S+)(?:-(\d+))?:\s+COMPACT\s+No\[(\d+)\](.+)$'
-                identifying_keyword: "COMPACT"
-              sequence_pattern: 'No\[(\d+)\]'
+              config:
+                module_name: "COMPACT"
+                diag_pattern: 'COMPACT\s+(?P<Service>\S+).*?proc=(?P<ProcessName>\S+).*?slot\s+(?P<Slot>\d+).*?cpu\s+(?P<CPU_Id>\d+).*?\|(?P<Context>.+)'
+                active_master_keyword: ""
+                board_restart_indicator: ""
+                process_name_mapping: {}
+                journal:
+                  line_pattern: ''
+                  line_pattern2: '^\S+\s+\S+\s+(\S+)(?:-(\d+))?:\s+COMPACT\s+No\[(\d+)\](.+)$'
+                  identifying_keyword: "COMPACT"
+                sequence_pattern: 'No\[(\d+)\]'

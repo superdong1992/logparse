@@ -30,6 +30,9 @@ from backend.models import ParseResult
 from backend.pipeline import Pipeline
 
 
+def _mechanism_config(module_entry: dict) -> dict:
+    return module_entry.get("config", module_entry)
+
 
 def _print_summary(result: ParseResult, output_dir: Path) -> None:
     """打印解析结果摘要 + 落盘 result.json。"""
@@ -315,7 +318,8 @@ def test_pattern(config, module, log_type, line):
         parser_cfg = prod_cfg.get("log_parser", {}).get("config", {})
         modules = parser_cfg.get("mechanism_modules", {})
         if module in modules:
-            mod_cfg = modules[module]
+            module_entry = modules[module]
+            mod_cfg = _mechanism_config(module_entry)
             break
 
     if mod_cfg is None:

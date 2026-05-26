@@ -21,8 +21,7 @@ class DirectoryDiscoveryPlugin(ABC):
       - 输入: extracted_root (Path) — 外层压缩包已完整解压后的根目录
       - 输出: (list[SlotInfo], list[PrivateSlotInfo])
       - 负责：找到 slot 目录、匹配诊断日志文件、提取私有/journal 日志文件
-      - 对于嵌套压缩包（如 varlog.zip），可用 self.decompressor 解压后再扫描
-      - 设置 LogEntry.compressed=True 和 LogEntry.path 供管道做内层解压
+      - 不负责：解压归档包；归档解压由 Decompressor 的统一解压阶段完成
     """
 
     def __init__(self, config: dict[str, Any], decompressor: Any = None):
@@ -44,8 +43,8 @@ class LogParserPlugin(ABC):
       - 输入: ParseResult（diagnostic_slots + private_slots 已填充，内层解压已完成）
       - 输出: ParseResult（原地修改：填充 content_timestamps、active_periods、
               mech_results、BoardRole）
-      - 负责：读取日志文件内容、提取时间戳、构建 ActivePeriod、
-              机制模块正则解析、构建重启周期、判定板卡角色
+      - 负责：读取日志文件内容、提取时间戳、构建 ActivePeriod、编排机制模块插件
+      - 机制模块自身负责特殊日志解析、周期切分和角色信号
     """
 
     def __init__(self, config: dict[str, Any]):

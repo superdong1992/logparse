@@ -47,3 +47,33 @@ class TestInstantiatePlugin:
                 DirectoryDiscoveryPlugin,
                 {},
             )
+
+
+def test_instantiate_mechanism_module_plugin():
+    from backend.plugins.loader import instantiate_plugin
+    from backend.plugins.mechanisms.base import MechanismModulePlugin
+
+    plugin = instantiate_plugin(
+        "backend.plugins.mechanisms.module1.Module1Plugin",
+        MechanismModulePlugin,
+        {"module_name": "EXAMPLE"},
+        module_key="module1",
+        ts_extractor=None,
+    )
+
+    assert plugin.module_key == "module1"
+    assert plugin.module_name == "EXAMPLE"
+
+
+def test_mechanism_plugin_base_rejects_wrong_class():
+    import pytest
+
+    from backend.plugins.loader import instantiate_plugin
+    from backend.plugins.mechanisms.base import MechanismModulePlugin
+
+    with pytest.raises(TypeError):
+        instantiate_plugin(
+            "backend.plugins.default.parser.ParserPlugin",
+            MechanismModulePlugin,
+            {},
+        )

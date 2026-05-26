@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from backend.plugins.base import DirectoryDiscoveryPlugin, LogParserPlugin
+from backend.plugins.mechanisms.base import MechanismModulePlugin
 
 
 class ConfigValidationError(ValueError):
@@ -114,23 +115,41 @@ def _validate_plugin_loadable(
     else:
         return [f"products.{product_name}.{kind}: 未知插件类型"]
 
+    return _validate_plugin_loadable_for_base(
+        path=f"products.{product_name}.{kind}",
+        plugin_path=plugin_path,
+        expected_base=expected_base,
+        expected_methods=expected_methods,
+    )
+
+
+# ── discovery config 校验 ──────────────────────────────────
+
+
+def _validate_plugin_loadable_for_base(
+    path: str,
+    plugin_path: str,
+    expected_base: type,
+    expected_methods: list[str],
+) -> list[str]:
+    """Validate a plugin class can be imported and matches the expected base."""
     try:
         module_path, class_name = plugin_path.rsplit(".", 1)
     except ValueError:
-        return [f"products.{product_name}.{kind}.plugin={plugin_path!r} 格式无效（需要 module.Class）"]
+        return [f"{path}.plugin={plugin_path!r} 格式无效（需要 module.Class）"]
 
     try:
         module = importlib.import_module(module_path)
     except Exception as e:
         return [
-            f"products.{product_name}.{kind}.plugin={plugin_path!r} "
+            f"{path}.plugin={plugin_path!r} "
             f"无法导入模块 {module_path}: {type(e).__name__}: {e}"
         ]
 
     cls = getattr(module, class_name, None)
     if cls is None:
         return [
-            f"products.{product_name}.{kind}.plugin={plugin_path!r} "
+            f"{path}.plugin={plugin_path!r} "
             f"模块 {module_path} 缺少类 {class_name}"
         ]
 
@@ -143,21 +162,18 @@ def _validate_plugin_loadable(
 
     if not is_subclass:
         errors.append(
-            f"products.{product_name}.{kind}.plugin={plugin_path!r} "
+            f"{path}.plugin={plugin_path!r} "
             f"不是 {expected_base.__name__} 的子类"
         )
 
     for method in expected_methods:
         if not callable(getattr(cls, method, None)):
             errors.append(
-                f"products.{product_name}.{kind}.plugin={plugin_path!r} "
+                f"{path}.plugin={plugin_path!r} "
                 f"缺少方法: {method}"
             )
 
     return errors
-
-
-# ── discovery config 校验 ──────────────────────────────────
 
 
 def _validate_discovery_config(
@@ -228,13 +244,52 @@ def _validate_log_parser_config(
         else:
             for module_key, module_cfg in modules.items():
                 errors.extend(
-                    validate_mechanism_module_config(module_key, module_cfg)
+                    _validate_mechanism_plugin_config(module_key, module_cfg)
                 )
 
     return errors
 
 
 # ── 机制模块配置校验 ──────────────────────────────────
+
+
+def _validate_mechanism_plugin_config(module_key: str, module_cfg: Any) -> list[str]:
+    path = f"mechanism_modules.{module_key}"
+    if not isinstance(module_cfg, dict):
+        return [f"{path} 必须是对象"]
+
+    if module_cfg.get("enabled", True) is False:
+        return []
+
+    plugin_path = module_cfg.get("plugin")
+    if not isinstance(plugin_path, str) or not plugin_path.strip():
+        return [f"{path}.plugin 必须是非空字符串"]
+
+    cfg = module_cfg.get("config", {})
+    if not isinstance(cfg, dict):
+        return [f"{path}.config 必须是对象"]
+
+    errors = _validate_plugin_loadable_for_base(
+        path=path,
+        plugin_path=plugin_path,
+        expected_base=MechanismModulePlugin,
+        expected_methods=["parse"],
+    )
+    if errors:
+        return errors
+
+    try:
+        module_path, class_name = plugin_path.rsplit(".", 1)
+        cls = getattr(importlib.import_module(module_path), class_name)
+        validator = getattr(cls, "validate_config", None)
+        if callable(validator):
+            errors.extend(validator(module_key, cfg))
+    except Exception as e:
+        errors.append(
+            f"{path}.plugin={plugin_path!r} 配置校验失败: {type(e).__name__}: {e}"
+        )
+
+    return errors
 
 
 def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> list[str]:
