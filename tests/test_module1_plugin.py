@@ -139,6 +139,44 @@ def test_module1_plugin_parses_diag_entries_without_no(tmp_path):
     assert mech.active_master_slots == ["1"]
 
 
+def test_module1_plugin_propagates_cycle_detector_errors(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        "\n".join([
+            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-100; Context=old)",
+            "2026-01-03T06:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-200; Context=new)",
+            "2026-01-03T05:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=other-500; Context=before split)",
+            "2026-01-03T07:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=other-500; Context=after split)",
+            "2026-01-03T08:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=late-900; Context=after adjusted split)",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(diagnostic_slots=[slot])
+    cfg = _module1_config()
+    cfg["board_restart_indicator"] = "dhcp"
+    plugin = Module1Plugin(
+        cfg,
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert any("unsafe cycle split adjusted_backward" in error for error in result.errors)
+    assert any("module=module1" in error and "slot=1" in error for error in result.errors)
+    assert any("same_pid_conflicts=other-500@board" in error for error in result.errors)
+    assert any("protected_boundaries=dhcp@board role=indicator" in error for error in result.errors)
+    assert any("protected_gap=" in error for error in result.errors)
+
+
 def _module1_journal_sequence_config() -> dict:
     cfg = _module1_config()
     cfg["diag_pattern"] = ""

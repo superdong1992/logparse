@@ -120,8 +120,13 @@ class Module1Plugin(MechanismModulePlugin):
         mech_result = MechResult(module_name=module_name, module_key=self.module_key)
         for slot_id, entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
-            detector = CycleDetector(indicator=indicator, whitelist=whitelist)
+            detector = CycleDetector(
+                indicator=indicator,
+                whitelist=whitelist,
+                module_key=self.module_key,
+            )
             slot_output.board_cycles = detector.detect(entries)
+            result.errors.extend(detector.errors)
             mech_result.slots.append(slot_output)
 
         active_slots = {entry.slot for entry in all_entries if entry.is_active_signal}

@@ -21,6 +21,10 @@ def _ts(month: int, day: int, hour: int, minute: int = 0, sec: int = 0) -> datet
     return datetime(2026, month, day, hour, minute, sec, tzinfo=tz)
 
 
+def _ts_us(month: int, day: int, hour: int, minute: int, sec: int, micro: int) -> datetime:
+    return _ts(month, day, hour, minute, sec).replace(microsecond=micro)
+
+
 def _entry(
     proc: str, pid: str, seq: int, ts: datetime,
     cpu_id: str = "", source: str = "diagnostic",
@@ -130,8 +134,30 @@ class TestWhitelistSafeSplit:
         new_svc_a = [p for p in cycles[1].processes if p.pid == "400"]
         assert len(new_svc_a) == 1
 
-    def test_non_whitelist_process_not_split(self):
-        """非白名单进程的同 PID 段可能被切分（被动分配）。"""
+    def test_no_sequence_overlap_keeps_indicator_pid_generation_boundary(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 6, 0)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 0)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 6, 8)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 6, 20)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 3
+        for cycle in cycles:
+            pids_by_name: dict[str, set[str]] = {}
+            for proc in cycle.processes:
+                if proc.process_name in {"dhcp", "svc_a"}:
+                    pids_by_name.setdefault(proc.process_name, set()).add(proc.pid)
+            assert len(pids_by_name.get("dhcp", set())) <= 1
+            assert len(pids_by_name.get("svc_a", set())) <= 1
+        assert any("forced protected pid split" in error for error in det.errors)
+
+    def test_non_whitelist_process_is_split_when_protected_pid_boundary_would_be_merged(self):
+        """Keep the protected PID boundary even if a non-whitelist PID is split."""
         det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
         entries = [
             _entry("dhcp", "100", 1, _ts(1, 3, 0, 0)),
@@ -139,12 +165,226 @@ class TestWhitelistSafeSplit:
             _entry("svc_a", "300", 1, _ts(1, 3, 0, 0)),
             _entry("svc_a", "300", 2, _ts(1, 3, 5, 59)),
             _entry("svc_a", "400", 1, _ts(1, 3, 6, 1)),
-            # 非白名单 other: PID 500 横跨切分点
+            _entry("other", "500", 1, _ts(1, 3, 5, 0)),
+            _entry("other", "500", 2, _ts(1, 3, 7, 0)),
+            _entry("late", "900", 1, _ts(1, 3, 7, 1)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 2
+        old_other = [p for p in cycles[0].processes if p.process_name == "other" and p.pid == "500"]
+        assert len(old_other) == 1
+        assert [log.timestamp for log in old_other[0].logs] == [_ts(1, 3, 5, 0)]
+        new_other = [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
+        assert len(new_other) == 1
+        assert [log.timestamp for log in new_other[0].logs] == [_ts(1, 3, 7, 0)]
+        assert any("unsafe cycle split kept" in error for error in det.errors)
+        assert any("same_pid_conflicts=other-500@board" in error for error in det.errors)
+        assert any("protected_boundaries=dhcp@board role=indicator" in error for error in det.errors)
+        assert any("svc_a@board role=whitelist" in error for error in det.errors)
+        all_traces: list[MechCycleSplitTrace] = []
+        for cycle in cycles:
+            all_traces.extend(cycle.split_traces)
+        assert len(all_traces) == 1
+        assert all_traces[0].old_pid == "100"
+        assert all_traces[0].new_pid == "200"
+
+    def test_adjusted_split_does_not_merge_indicator_or_whitelist_pid_generations(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        entries = [
+            _entry("dhcp", "100", 1, _ts(1, 3, 0, 0)),
+            _entry("dhcp", "200", 1, _ts(1, 3, 6, 0)),
+            _entry("svc_a", "300", 1, _ts(1, 3, 5, 59)),
+            _entry("svc_a", "400", 1, _ts(1, 3, 6, 1)),
             _entry("other", "500", 1, _ts(1, 3, 5, 0)),
             _entry("other", "500", 2, _ts(1, 3, 7, 0)),
         ]
+
         cycles = det.detect(entries)
+
         assert len(cycles) == 2
+        for cycle in cycles:
+            pids_by_name: dict[str, set[str]] = {}
+            for proc in cycle.processes:
+                if proc.process_name in {"dhcp", "svc_a"}:
+                    pids_by_name.setdefault(proc.process_name, set()).add(proc.pid)
+            assert pids_by_name.get("dhcp", set()) != {"100", "200"}
+            assert pids_by_name.get("svc_a", set()) != {"300", "400"}
+        assert any("unsafe cycle split kept" in error for error in det.errors)
+
+    def test_same_pid_in_protected_gap_moves_split_backward_without_sequence(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["aaa"])
+        entries = [
+            _entry_without_seq("dhcp", "10", _ts(1, 3, 12, 42, 28)),
+            _entry_without_seq("dhcp", "20", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 12, 42, 28)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 12, 59, 3)),
+            _entry_without_seq("aaa", "200", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("aaa", "200", _ts(1, 3, 13, 7, 16)),
+            _entry_without_seq("other", "500", _ts(1, 3, 13, 4, 12)),
+            _entry_without_seq("other", "500", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("other", "500", _ts(1, 3, 13, 4, 21)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 2
+        assert cycles[1].start_time == _ts(1, 3, 13, 4, 12)
+        assert not [p for p in cycles[0].processes if p.process_name == "other"]
+        new_other = [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
+        assert len(new_other) == 1
+        assert [log.timestamp for log in new_other[0].logs] == [
+            _ts(1, 3, 13, 4, 12),
+            _ts(1, 3, 13, 4, 18),
+            _ts(1, 3, 13, 4, 21),
+        ]
+        for cycle in cycles:
+            aaa_pids = {p.pid for p in cycle.processes if p.process_name == "aaa"}
+            assert aaa_pids != {"100", "200"}
+        assert any("unsafe cycle split adjusted_backward" in error for error in det.errors)
+        assert any("same_pid_conflicts=other-500@board" in error for error in det.errors)
+        assert any("protected_boundaries=dhcp@board role=indicator" in error for error in det.errors)
+        assert any("aaa@board role=whitelist" in error for error in det.errors)
+        assert any("protected_gap=(2026-01-03T12:59:03+08:00, 2026-01-03T13:04:18+08:00]" in error for error in det.errors)
+
+    def test_same_pid_before_protected_gap_keeps_split_with_clear_reason(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["aaa"])
+        entries = [
+            _entry_without_seq("dhcp", "10", _ts(1, 3, 12, 42, 28)),
+            _entry_without_seq("dhcp", "20", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 12, 42, 28)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 12, 59, 3)),
+            _entry_without_seq("aaa", "200", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("other", "500", _ts(1, 3, 12, 58, 0)),
+            _entry_without_seq("other", "500", _ts(1, 3, 13, 4, 18)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 2
+        assert [p for p in cycles[0].processes if p.process_name == "other" and p.pid == "500"]
+        assert [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
+        assert any("unsafe cycle split kept" in error for error in det.errors)
+        assert any("reason=no_safe_gap_candidate" in error for error in det.errors)
+
+    def test_backward_adjustment_expands_for_cascading_same_pid_conflicts(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["aaa"])
+        entries = [
+            _entry_without_seq("dhcp", "10", _ts(1, 3, 12, 42, 28)),
+            _entry_without_seq("dhcp", "20", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 12, 42, 28)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 12, 59, 3)),
+            _entry_without_seq("aaa", "200", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("other", "500", _ts(1, 3, 13, 4, 12)),
+            _entry_without_seq("other", "500", _ts(1, 3, 13, 4, 18)),
+            _entry_without_seq("chain", "700", _ts(1, 3, 13, 4, 10)),
+            _entry_without_seq("chain", "700", _ts(1, 3, 13, 4, 15)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 2
+        assert cycles[1].start_time == _ts(1, 3, 13, 4, 10)
+        assert not [p for p in cycles[0].processes if p.process_name in {"other", "chain"}]
+        assert any("unsafe cycle split adjusted_backward" in error for error in det.errors)
+
+    def test_protected_pid_changes_are_forced_split_boundaries_without_sequence(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 6, 0)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 5, 59)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 6, 1)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 7, 0)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) >= 3
+        for cycle in cycles:
+            pids_by_name: dict[str, set[str]] = {}
+            for proc in cycle.processes:
+                if proc.process_name in {"dhcp", "svc_a"}:
+                    pids_by_name.setdefault(proc.process_name, set()).add(proc.pid)
+            assert len(pids_by_name.get("dhcp", set())) <= 1
+            assert len(pids_by_name.get("svc_a", set())) <= 1
+        assert any("forced protected pid split" in error for error in det.errors)
+
+    def test_same_name_pid_on_different_cpus_does_not_block_split(self):
+        det = CycleDetector(indicator="dhcp")
+        entries = [
+            _entry("dhcp", "100", 1, _ts(1, 3, 0, 0)),
+            _entry("dhcp", "200", 1, _ts(1, 3, 6, 0)),
+            _entry("other", "500", 1, _ts(1, 3, 5, 0), cpu_id="1"),
+            _entry("other", "500", 1, _ts(1, 3, 7, 0), cpu_id="2"),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 2
+        assert det.errors == []
+        assert [p for p in cycles[0].processes if p.process_name == "other" and p.pid == "500"]
+        assert [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
+
+    def test_conflicting_split_moves_backward_when_protected_gap_is_safe(self):
+        det = CycleDetector(indicator="dhcp")
+        entries = [
+            _entry("dhcp", "100", 1, _ts(1, 3, 0, 0)),
+            _entry("dhcp", "200", 1, _ts(1, 3, 6, 0)),
+            _entry("dhcp", "300", 1, _ts(1, 3, 12, 0)),
+            _entry("blocker", "700", 1, _ts(1, 3, 5, 59, 59)),
+            _entry("blocker", "700", 2, _ts_us(1, 3, 11, 59, 59, 999999)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 3
+        assert any("unsafe cycle split adjusted_backward" in error for error in det.errors)
+        assert any("protected_boundaries=dhcp@board role=indicator" in error for error in det.errors)
+        all_traces: list[MechCycleSplitTrace] = []
+        for cycle in cycles:
+            all_traces.extend(cycle.split_traces)
+        assert [trace.old_pid for trace in all_traces] == ["100", "200"]
+
+    def test_pid_reuse_across_multiple_restarts_is_not_globally_protected(self):
+        det = CycleDetector(indicator="dhcp")
+        entries = [
+            _entry("dhcp", "100", 1, _ts(1, 3, 0, 0)),
+            _entry("dhcp", "200", 1, _ts(1, 3, 6, 0)),
+            _entry("dhcp", "300", 1, _ts(1, 3, 12, 0)),
+            _entry("dhcp", "400", 1, _ts(1, 3, 18, 0)),
+            _entry("blocker", "700", 1, _ts(1, 3, 5, 59, 59)),
+            _entry("blocker", "700", 2, _ts_us(1, 3, 11, 59, 59, 999999)),
+            _entry("reused", "500", 1, _ts(1, 3, 5, 0)),
+            _entry("reused", "500", 1, _ts(1, 3, 13, 0)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 4
+        assert sum(
+            1
+            for cycle in cycles
+            if any(p.process_name == "reused" and p.pid == "500" for p in cycle.processes)
+        ) == 2
+        assert len([error for error in det.errors if "unsafe cycle split adjusted_backward" in error]) == 1
+
+    def test_errors_do_not_leak_between_detect_calls(self):
+        det = CycleDetector(indicator="dhcp")
+        conflict_entries = [
+            _entry("dhcp", "100", 1, _ts(1, 3, 0, 0)),
+            _entry("dhcp", "200", 1, _ts(1, 3, 6, 0)),
+            _entry("other", "500", 1, _ts(1, 3, 5, 0)),
+            _entry("other", "500", 2, _ts(1, 3, 7, 0)),
+            _entry("late", "900", 1, _ts(1, 3, 8, 0)),
+        ]
+        det.detect(conflict_entries)
+        assert det.errors
+
+        det.detect([_entry("dhcp", "100", 1, _ts(1, 3, 0, 0))])
+
+        assert det.errors == []
 
 
 class TestJournalForwardAdjust:

@@ -1,10 +1,13 @@
 """Tests for cli.py."""
 from __future__ import annotations
 
+import importlib
+
 from click.testing import CliRunner
 import yaml
 
 from cli import cli
+from backend.models import ParseResult
 
 
 def test_test_pattern_reads_nested_mechanism_config(sample_config, tmp_path):
@@ -47,6 +50,65 @@ def test_test_pattern_reads_nested_mechanism_config(sample_config, tmp_path):
     assert result.exit_code == 0, result.output
     assert "Slot: 1" in result.output
     assert "CPU_Id: 0" in result.output
+
+
+def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "products": {
+                    "default": {
+                        "discovery": {"plugin": "unused", "config": {}},
+                        "log_parser": {"plugin": "unused", "config": {}},
+                    },
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, _config):
+            pass
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            return ParseResult(
+                task_id="task",
+                package_name=source.name,
+                errors=[
+                    "unsafe cycle split adjusted_backward: module=module1 slot=1 split=2026-01-03T06:00:00 "
+                    "same_pid_conflicts=other-500@board "
+                    "protected_boundaries=dhcp@board role=indicator old_pids=100 new_pid=200",
+                    "unsafe cycle split kept: module=module1 slot=1 split=2026-01-03T06:00:00 "
+                    "same_pid_conflicts=other-500@board reason=no_safe_gap_candidate",
+                ],
+            )
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "-c",
+            str(config_path),
+            "parse",
+            str(package_path),
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "unsafe cycle split adjusted_backward" in result.output
+    assert "unsafe cycle split kept" in result.output
+    assert "same_pid_conflicts=other-500@board" in result.output
+    assert "protected_boundaries=dhcp@board role=indicator" in result.output
+    assert "reason=no_safe_gap_candidate" in result.output
 
 
 def test_test_pattern_journal_without_sequence(sample_config, tmp_path):

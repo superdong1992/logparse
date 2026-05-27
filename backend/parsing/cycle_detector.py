@@ -52,14 +52,18 @@ class CycleDetector:
         self,
         indicator: str | None = None,
         whitelist: list[str] | None = None,
+        module_key: str | None = None,
     ):
         self._indicator = indicator
         self._whitelist = [w.lower() for w in (whitelist or [])]
+        self._module_key = module_key or ""
         self._split_traces: list[MechCycleSplitTrace] = []
+        self.errors: list[str] = []
 
     def detect(self, entries: list[MechLogEntry]) -> list[MechBoardCycle]:
         """检测重启周期，返回按时间排列的周期列表。"""
         self._split_traces = []
+        self.errors = []
         logger.info(
             "CycleDetector.detect: 共 %d 条日志, indicator=%r, whitelist=%s",
             len(entries), self._indicator, self._whitelist,
@@ -116,6 +120,8 @@ class CycleDetector:
                 )
 
         # 去重排序，形成统一切分时间线
+        cycles: list[MechBoardCycle] = []
+        all_entries = [e for group in by_cpu.values() for e in group]
         unique_splits = sorted(set(ts for ts in all_split_timestamps if ts is not None))
         logger.info(
             "统一切分时间点(%d): %s",
@@ -123,28 +129,21 @@ class CycleDetector:
             [ts.isoformat() for ts in unique_splits],
         )
 
-        cycles: list[MechBoardCycle] = []
+        if unique_splits:
+            unique_splits = self._refine_split_timestamps(all_entries, unique_splits)
+            unique_splits = self._enforce_protected_pid_boundaries(all_entries, unique_splits)
 
         if not unique_splits:
-            all_entries = [e for group in by_cpu.values() for e in group]
             if all_entries:
                 cycles = self._make_cycles(all_entries)
         else:
-            all_entries = [e for group in by_cpu.values() for e in group]
             segments = self._segment_by_timestamps(all_entries, unique_splits)
             for seg in segments:
                 if seg:
                     cycles.extend(self._make_cycles(seg))
 
         # 将 split traces 分配到对应周期
-        for trace in self._split_traces:
-            for cycle in cycles:
-                if cycle.start_time and trace.timestamp < cycle.start_time:
-                    continue
-                if cycle.end_time and trace.timestamp > cycle.end_time:
-                    continue
-                cycle.split_traces.append(trace)
-                break
+        self._assign_split_traces(cycles)
 
         logger.info("最终切分结果: %d 个周期", len(cycles))
         for i, c in enumerate(cycles):
@@ -334,7 +333,7 @@ class CycleDetector:
         lower_bound = old_pid_end
 
         candidates: list[datetime] = []
-        if new_pid_start:
+        if new_pid_start and (not lower_bound or new_pid_start > lower_bound):
             candidates.append(new_pid_start)
         if journal_earliest and (not lower_bound or journal_earliest > lower_bound):
             candidates.append(journal_earliest)
@@ -508,6 +507,420 @@ class CycleDetector:
         return max_seq
 
     # ── 分段与构建 ──────────────────────────────────────────
+
+    def _refine_split_timestamps(
+        self,
+        entries: list[MechLogEntry],
+        raw_splits: list[datetime],
+    ) -> list[datetime]:
+        """Move or drop raw splits that would split a same-process PID segment."""
+        refined: list[datetime] = []
+        trace_updates: dict[datetime, datetime | None] = {}
+
+        for i, raw_split in enumerate(raw_splits):
+            window_start = raw_splits[i - 1] if i > 0 else None
+            window_end = raw_splits[i + 1] if i + 1 < len(raw_splits) else None
+            current_split = raw_split
+            protected_blockers = self._protected_new_pid_blockers(
+                entries,
+                raw_split,
+                window_start,
+                window_end,
+            )
+            hard_upper_bound = (
+                min(blocker[-1] for blocker in protected_blockers)
+                if protected_blockers
+                else None
+            )
+            seen_conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]] = []
+            dropped = False
+            recorded_conflict = False
+
+            while True:
+                conflicts = self._find_split_conflicts(
+                    entries,
+                    current_split,
+                    window_start,
+                    window_end,
+                )
+                if not conflicts:
+                    break
+
+                seen_conflicts.extend(conflicts)
+                current_split = max(
+                    last_ts + timedelta(microseconds=1)
+                    for *_prefix, last_ts in conflicts
+                )
+                if hard_upper_bound is not None and current_split > hard_upper_bound:
+                    backward_adjustment = self._find_backward_split_adjustment(
+                        entries,
+                        raw_split,
+                        window_start,
+                        window_end,
+                        seen_conflicts,
+                        protected_blockers,
+                    )
+                    if backward_adjustment:
+                        current_split, gap_start, gap_end = backward_adjustment
+                        self._record_unsafe_split(
+                            "adjusted_backward",
+                            raw_split,
+                            current_split,
+                            window_start,
+                            window_end,
+                            seen_conflicts,
+                            protected_blockers,
+                            protected_gap=(gap_start, gap_end),
+                        )
+                    else:
+                        self._record_unsafe_split(
+                            "kept",
+                            raw_split,
+                            current_split,
+                            window_start,
+                            window_end,
+                            seen_conflicts,
+                            protected_blockers,
+                            reason="no_safe_gap_candidate",
+                        )
+                        current_split = raw_split
+                    recorded_conflict = True
+                    break
+                if window_end is not None and current_split >= window_end:
+                    self._record_unsafe_split(
+                        "dropped",
+                        raw_split,
+                        current_split,
+                        window_start,
+                        window_end,
+                        seen_conflicts,
+                        [],
+                    )
+                    trace_updates[raw_split] = None
+                    dropped = True
+                    break
+
+            if dropped:
+                continue
+
+            if seen_conflicts and not recorded_conflict:
+                self._record_unsafe_split(
+                    "adjusted",
+                    raw_split,
+                    current_split,
+                    window_start,
+                    window_end,
+                    seen_conflicts,
+                    [],
+                )
+            refined.append(current_split)
+            trace_updates[raw_split] = current_split
+
+        self._apply_split_trace_updates(trace_updates)
+        return sorted(set(refined))
+
+    def _find_backward_split_adjustment(
+        self,
+        entries: list[MechLogEntry],
+        raw_split: datetime,
+        window_start: datetime | None,
+        window_end: datetime | None,
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]],
+        protected_boundaries: list[tuple[str, str, str, tuple[str, ...], str, datetime, datetime]],
+    ) -> tuple[datetime, datetime, datetime] | None:
+        if not protected_boundaries:
+            return None
+
+        gap_start = max(boundary[-2] for boundary in protected_boundaries)
+        gap_end = min(boundary[-1] for boundary in protected_boundaries)
+        if gap_start >= gap_end:
+            return None
+
+        candidate = self._earliest_conflict_timestamp_in_gap(
+            entries,
+            conflicts,
+            gap_start,
+            raw_split,
+            window_start,
+            window_end,
+        )
+        if candidate is None or candidate <= gap_start or candidate >= raw_split:
+            return None
+
+        while True:
+            next_conflicts = self._find_split_conflicts(
+                entries,
+                candidate,
+                window_start,
+                window_end,
+            )
+            if not next_conflicts:
+                return candidate, gap_start, gap_end
+
+            next_candidate = self._earliest_conflict_timestamp_in_gap(
+                entries,
+                next_conflicts,
+                gap_start,
+                candidate,
+                window_start,
+                window_end,
+            )
+            if next_candidate is None or next_candidate <= gap_start or next_candidate >= candidate:
+                return None
+            candidate = next_candidate
+
+    @staticmethod
+    def _earliest_conflict_timestamp_in_gap(
+        entries: list[MechLogEntry],
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]],
+        gap_start: datetime,
+        upper_exclusive: datetime,
+        window_start: datetime | None,
+        window_end: datetime | None,
+    ) -> datetime | None:
+        conflict_keys = {
+            (slot, proc, pid, cpu)
+            for slot, proc, pid, cpu, *_times in conflicts
+        }
+        candidates: list[datetime] = []
+        for e in entries:
+            if not e.timestamp or not e.pid:
+                continue
+            if window_start is not None and e.timestamp < window_start:
+                continue
+            if window_end is not None and e.timestamp >= window_end:
+                continue
+            key = (e.slot, e.process_name.lower(), e.pid, e.cpu_id or "")
+            if key not in conflict_keys:
+                continue
+            if gap_start < e.timestamp < upper_exclusive:
+                candidates.append(e.timestamp)
+
+        return min(candidates) if candidates else None
+
+    def _enforce_protected_pid_boundaries(
+        self,
+        entries: list[MechLogEntry],
+        split_timestamps: list[datetime],
+    ) -> list[datetime]:
+        refined = sorted(set(split_timestamps))
+        while True:
+            forced: list[datetime] = []
+            for segment in self._segment_by_timestamps(entries, refined):
+                forced.extend(self._protected_pid_change_timestamps(segment))
+
+            new_splits = sorted({ts for ts in forced if ts not in refined})
+            if not new_splits:
+                return refined
+
+            refined = self._refine_split_timestamps(entries, sorted(set(refined + new_splits)))
+
+    def _protected_pid_change_timestamps(self, entries: list[MechLogEntry]) -> list[datetime]:
+        protected_names = set(self._whitelist)
+        if self._indicator:
+            protected_names.add(self._indicator.lower())
+        if not protected_names:
+            return []
+
+        by_key: dict[tuple[str, str, str], list[MechLogEntry]] = defaultdict(list)
+        for e in entries:
+            if not e.timestamp or not e.pid:
+                continue
+            proc_name = e.process_name.lower()
+            if proc_name not in protected_names:
+                continue
+            by_key[(e.slot, e.cpu_id or "", proc_name)].append(e)
+
+        splits: list[datetime] = []
+        for (_slot, _cpu, proc_name), logs in by_key.items():
+            logs.sort(key=self._timestamp_sort_key)
+            prev_pid: str | None = None
+            for e in logs:
+                if prev_pid and e.pid != prev_pid:
+                    splits.append(e.timestamp)
+                    message = (
+                        "forced protected pid split: "
+                        f"module={self._module_key or '-'} "
+                        f"slot={e.slot or '-'} "
+                        f"process={proc_name} "
+                        f"cpu={e.cpu_id or 'board'} "
+                        f"old_pid={prev_pid} new_pid={e.pid} "
+                        f"split={e.timestamp.isoformat()}"
+                    )
+                    self.errors.append(message)
+                    logger.error(message)
+                prev_pid = e.pid
+
+        return splits
+
+    def _protected_new_pid_blockers(
+        self,
+        entries: list[MechLogEntry],
+        split: datetime,
+        window_start: datetime | None,
+        window_end: datetime | None,
+    ) -> list[tuple[str, str, str, tuple[str, ...], str, datetime, datetime]]:
+        protected_names = set(self._whitelist)
+        if self._indicator:
+            protected_names.add(self._indicator.lower())
+        if not protected_names:
+            return []
+
+        by_name: dict[tuple[str, str], list[MechLogEntry]] = defaultdict(list)
+        for e in entries:
+            if not e.timestamp or not e.pid:
+                continue
+            if window_start is not None and e.timestamp < window_start:
+                continue
+            if window_end is not None and e.timestamp >= window_end:
+                continue
+            proc_name = e.process_name.lower()
+            if proc_name not in protected_names:
+                continue
+            by_name[(proc_name, e.cpu_id or "")].append(e)
+
+        blockers: list[tuple[str, str, str, tuple[str, ...], str, datetime, datetime]] = []
+        for (proc_name, cpu_key), logs in by_name.items():
+            ordered_logs = sorted(logs, key=self._timestamp_sort_key)
+            before = [e for e in ordered_logs if e.timestamp and e.timestamp < split]
+            after = [e for e in ordered_logs if e.timestamp and e.timestamp >= split]
+            if not before or not after:
+                continue
+            previous_pid = before[-1].pid
+            previous_ts = before[-1].timestamp
+            first_after = after[0]
+            if first_after.pid == previous_pid:
+                continue
+            role = "indicator" if proc_name == (self._indicator or "").lower() else "whitelist"
+            blockers.append((
+                proc_name,
+                first_after.pid,
+                cpu_key,
+                (previous_pid,),
+                role,
+                previous_ts,
+                first_after.timestamp,
+            ))
+
+        return blockers
+
+    @staticmethod
+    def _find_split_conflicts(
+        entries: list[MechLogEntry],
+        split: datetime,
+        window_start: datetime | None,
+        window_end: datetime | None,
+    ) -> list[tuple[str, str, str, str, datetime, datetime, datetime]]:
+        by_key: dict[tuple[str, str, str, str], list[MechLogEntry]] = defaultdict(list)
+        for e in entries:
+            if not e.timestamp or not e.pid:
+                continue
+            if window_start is not None and e.timestamp < window_start:
+                continue
+            if window_end is not None and e.timestamp >= window_end:
+                continue
+            by_key[(e.slot, e.process_name.lower(), e.pid, e.cpu_id or "")].append(e)
+
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]] = []
+        for (slot, proc_name, pid, cpu_key), logs in by_key.items():
+            before = [e.timestamp for e in logs if e.timestamp and e.timestamp < split]
+            after = [e.timestamp for e in logs if e.timestamp and e.timestamp >= split]
+            if before and after:
+                all_times = before + after
+                conflicts.append((
+                    slot,
+                    proc_name,
+                    pid,
+                    cpu_key,
+                    max(before),
+                    min(after),
+                    max(all_times),
+                ))
+        return conflicts
+
+    def _record_unsafe_split(
+        self,
+        action: str,
+        raw_split: datetime,
+        adjusted_split: datetime,
+        window_start: datetime | None,
+        window_end: datetime | None,
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]],
+        protected_blockers: list[tuple[str, str, str, tuple[str, ...], str, datetime, datetime]] | None = None,
+        reason: str | None = None,
+        protected_gap: tuple[datetime, datetime] | None = None,
+    ) -> None:
+        slots = sorted({slot or "-" for slot, *_rest in conflicts})
+        conflict_text = "; ".join(
+            f"{proc}-{pid}@{cpu or 'board'} before={before.isoformat()} "
+            f"after={after.isoformat()} last={last.isoformat()}"
+            for _slot, proc, pid, cpu, before, after, last in conflicts
+        )
+        blocker_text = "; ".join(
+            f"{proc}@{cpu or 'board'} role={role} old_pids={','.join(old_pids)} "
+            f"old_end={old_end.isoformat()} new_pid={new_pid} new_start={new_start.isoformat()}"
+            for proc, new_pid, cpu, old_pids, role, old_end, new_start in (protected_blockers or [])
+        )
+        message = (
+            f"unsafe cycle split {action}: "
+            f"module={self._module_key or '-'} "
+            f"slot={','.join(slots) if slots else '-'} "
+            f"split={raw_split.isoformat()} "
+            f"adjusted={adjusted_split.isoformat()} "
+            f"window=[{self._fmt_optional_ts(window_start)}, {self._fmt_optional_ts(window_end)}) "
+            f"same_pid_conflicts={conflict_text}"
+        )
+        if protected_gap:
+            message += (
+                f" protected_gap=({protected_gap[0].isoformat()}, "
+                f"{protected_gap[1].isoformat()}]"
+            )
+        if blocker_text:
+            message += f" protected_boundaries={blocker_text}"
+        if reason:
+            message += f" reason={reason}"
+        self.errors.append(message)
+        logger.error(message)
+
+    def _apply_split_trace_updates(
+        self,
+        trace_updates: dict[datetime, datetime | None],
+    ) -> None:
+        if not trace_updates:
+            return
+
+        updated_traces: list[MechCycleSplitTrace] = []
+        for trace in self._split_traces:
+            if trace.timestamp in trace_updates:
+                new_timestamp = trace_updates[trace.timestamp]
+                if new_timestamp is None:
+                    continue
+                trace.timestamp = new_timestamp
+            updated_traces.append(trace)
+        self._split_traces = updated_traces
+
+    def _assign_split_traces(self, cycles: list[MechBoardCycle]) -> None:
+        if not cycles:
+            return
+
+        ordered_cycles = sorted(cycles, key=lambda c: (
+            0 if c.start_time else 1,
+            c.start_time.timestamp() if c.start_time else 0,
+            c.dir_name,
+        ))
+        for trace in self._split_traces:
+            target = ordered_cycles[-1]
+            for cycle in ordered_cycles:
+                if cycle.start_time and trace.timestamp < cycle.start_time:
+                    target = cycle
+                    break
+                if cycle.start_time and trace.timestamp >= cycle.start_time:
+                    target = cycle
+            target.split_traces.append(trace)
+
+    @staticmethod
+    def _fmt_optional_ts(ts: datetime | None) -> str:
+        return ts.isoformat() if ts else "-"
 
     @staticmethod
     def _segment_by_timestamps(
