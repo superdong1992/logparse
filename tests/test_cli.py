@@ -84,6 +84,9 @@ def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
                     "unsafe cycle split adjusted_backward: module=module1 slot=1 split=2026-01-03T06:00:00 "
                     "same_pid_conflicts=other-500@board "
                     "protected_boundaries=dhcp@board role=indicator old_pids=100 new_pid=200",
+                    "cycle split diagnostic: same_pid_adjusted_backward "
+                    "m=module1 s=1 scope=board sp=2026-01-03T06:00:00 "
+                    "ad=2026-01-03T05:00:00 reason=adjusted_backward",
                     "unsafe cycle split kept: module=module1 slot=1 split=2026-01-03T06:00:00 "
                     "same_pid_conflicts=other-500@board reason=no_safe_gap_candidate",
                 ],
@@ -105,6 +108,7 @@ def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "unsafe cycle split adjusted_backward" in result.output
+    assert "cycle split diagnostic: same_pid_adjusted_backward" in result.output
     assert "unsafe cycle split kept" in result.output
     assert "same_pid_conflicts=other-500@board" in result.output
     assert "protected_boundaries=dhcp@board role=indicator" in result.output
