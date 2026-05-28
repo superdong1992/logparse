@@ -124,6 +124,34 @@ class MechCycleSplitTrace(BaseModel):
     detail: str = ""
 
 
+class MechBoundaryIssue(BaseModel):
+    """Structured lifecycle boundary diagnostic."""
+    kind: str
+    scope: str = "board"
+    slot: str = ""
+    split_time: datetime | None = None
+    adjusted_time: datetime | None = None
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+    old_pid_end: datetime | None = None
+    new_pid_start: datetime | None = None
+    process_name: str = ""
+    pid: str = ""
+    direction: str = ""
+    log_count: int = 0
+    detail: str = ""
+
+
+class MechCpuCycle(BaseModel):
+    """CPU-local lifecycle nested inside a board lifecycle."""
+    cpu_id: str = ""
+    dir_name: str = ""
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    split_traces: list[MechCycleSplitTrace] = Field(default_factory=list)
+    processes: list[MechProcessLifecycle] = Field(default_factory=list)
+
+
 class MechBoardCycle(BaseModel):
     """一次整板重启周期。"""
     dir_name: str = ""              # "{启动时间}-{恢复时间}"
@@ -131,12 +159,15 @@ class MechBoardCycle(BaseModel):
     end_time: datetime | None = None
     split_traces: list[MechCycleSplitTrace] = Field(default_factory=list)
     processes: list[MechProcessLifecycle] = Field(default_factory=list)
+    cpu_cycles: list[MechCpuCycle] = Field(default_factory=list)
 
 
 class MechSlotOutput(BaseModel):
     """单个槽位的机制模块日志输出。"""
     slot_id: str
     board_cycles: list[MechBoardCycle] = Field(default_factory=list)
+    lifecycle_reliable: bool = True
+    boundary_issues: list[MechBoundaryIssue] = Field(default_factory=list)
 
 
 class MechResult(BaseModel):

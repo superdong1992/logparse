@@ -52,6 +52,21 @@ class TestMechLogPath:
         path = svc.mech_log_path("task1", "2", "cycle1", "PROC-456", module_name="OTHER")
         assert path == tmp_path / "task1" / "mech_modules" / "OTHER" / "slot_2" / "cycle1" / "PROC-456.log"
 
+    def test_cpu_cycle_path(self, svc, tmp_path):
+        path = svc.mech_log_path(
+            "task1",
+            "2",
+            "board-cycle",
+            "PROC-456",
+            module_name="OTHER",
+            cpu_id="3",
+            cpu_cycle="cpu-cycle",
+        )
+        assert path == (
+            tmp_path / "task1" / "mech_modules" / "OTHER" / "slot_2"
+            / "board-cycle" / "cpu_3" / "cpu-cycle" / "PROC-456.log"
+        )
+
     def test_fallback_without_module_name(self, svc, tmp_path):
         # No result.json → module_name is None → fallback path
         path = svc.mech_log_path("task1", "1", "cycle1", "PROC-123")

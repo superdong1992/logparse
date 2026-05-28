@@ -99,11 +99,16 @@ class ResultQueryService:
         cycle: str,
         proc: str,
         module_name: str | None = None,
+        cpu_id: str | None = None,
+        cpu_cycle: str | None = None,
     ) -> Path:
         """获取指定进程日志的文件路径。"""
         if module_name is None:
             module_name = self.first_module_name(task_id)
         base = self._output_dir / task_id / "mech_modules"
         if module_name:
-            return base / module_name / f"slot_{slot_id}" / cycle / f"{proc}.log"
-        return base / f"slot_{slot_id}" / cycle / f"{proc}.log"
+            base = base / module_name
+        target = base / f"slot_{slot_id}" / cycle
+        if cpu_id:
+            target = target / f"cpu_{cpu_id}" / (cpu_cycle or "unknown")
+        return target / f"{proc}.log"

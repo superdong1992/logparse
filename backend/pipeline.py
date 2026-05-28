@@ -126,7 +126,19 @@ class Pipeline:
             _safe(f"[5/6] 落盘 {mech_result.module_name}",
                   lambda mr=mech_result: log_parser.write_output(mr, output_dir / task_id))
             if verbose:
-                total = sum(cp.total_count for s in mech_result.slots for c in s.board_cycles for cp in c.processes)
+                total = sum(
+                    cp.total_count
+                    for s in mech_result.slots
+                    for c in s.board_cycles
+                    for cp in (
+                        list(c.processes)
+                        + [
+                            cpu_proc
+                            for cpu_cycle in c.cpu_cycles
+                            for cpu_proc in cpu_cycle.processes
+                        ]
+                    )
+                )
                 diag = mech_result.diag_entry_count
                 journal_count = mech_result.journal_entry_count
                 match_mark = "" if diag + journal_count == total else " [!条数不一致]"

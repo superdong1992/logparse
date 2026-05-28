@@ -11,6 +11,7 @@ from typing import Any
 from backend.models import (
     LogEntry,
     MechBoardCycle,
+    MechCpuCycle,
     MechLogEntry,
     MechProcessLifecycle,
     MechResult,
@@ -171,10 +172,7 @@ class Module2Plugin(MechanismModulePlugin):
             slot_output = MechSlotOutput(slot_id=slot_id)
             upstream_slot = _find_upstream_slot(upstream, slot_id)
             grouped = _assign_entries_to_cycles(slot_entries, upstream_slot)
-            slot_output.board_cycles = [
-                _build_cycle(cycle_template, cycle_entries)
-                for cycle_template, cycle_entries in grouped
-            ]
+            slot_output.board_cycles = _build_cycles(grouped)
             mech_result.slots.append(slot_output)
 
         mech_result.diag_entry_count = len(entries)
@@ -210,18 +208,32 @@ def _find_upstream_slot(upstream: MechResult, slot_id: str) -> MechSlotOutput | 
 def _assign_entries_to_cycles(
     entries: list[MechLogEntry],
     upstream_slot: MechSlotOutput | None,
-) -> list[tuple[MechBoardCycle, list[MechLogEntry]]]:
-    buckets: list[tuple[MechBoardCycle, list[MechLogEntry]]] = []
+) -> list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]]:
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]] = []
     unknown = MechBoardCycle(dir_name="unknown")
 
     for entry in entries:
-        cycle = _find_matching_cycle(entry, upstream_slot) or unknown
-        for existing_cycle, existing_entries in buckets:
-            if existing_cycle.dir_name == cycle.dir_name:
+        board_cycle, cpu_cycle = _find_matching_cycle(entry, upstream_slot)
+        if board_cycle is None:
+            board_cycle = unknown
+        if entry.cpu_id and cpu_cycle is None:
+            cpu_cycle = MechCpuCycle(
+                cpu_id=entry.cpu_id,
+                dir_name="unknown",
+                start_time=board_cycle.start_time,
+                end_time=board_cycle.end_time,
+            )
+
+        for existing_board, existing_cpu, existing_entries in buckets:
+            if (
+                existing_board.dir_name == board_cycle.dir_name
+                and (existing_cpu.dir_name if existing_cpu else "") == (cpu_cycle.dir_name if cpu_cycle else "")
+                and (existing_cpu.cpu_id if existing_cpu else "") == (cpu_cycle.cpu_id if cpu_cycle else "")
+            ):
                 existing_entries.append(entry)
                 break
         else:
-            buckets.append((cycle, [entry]))
+            buckets.append((board_cycle, cpu_cycle, [entry]))
 
     return buckets
 
@@ -229,27 +241,62 @@ def _assign_entries_to_cycles(
 def _find_matching_cycle(
     entry: MechLogEntry,
     upstream_slot: MechSlotOutput | None,
-) -> MechBoardCycle | None:
+) -> tuple[MechBoardCycle | None, MechCpuCycle | None]:
     if upstream_slot is None or entry.timestamp is None:
-        return None
+        return None, None
     for cycle in upstream_slot.board_cycles:
         if cycle.start_time is None or cycle.end_time is None:
             continue
         if cycle.start_time <= entry.timestamp <= cycle.end_time:
-            return cycle
-    return None
+            if entry.cpu_id:
+                for cpu_cycle in cycle.cpu_cycles:
+                    if cpu_cycle.cpu_id != entry.cpu_id:
+                        continue
+                    if cpu_cycle.start_time is None or cpu_cycle.end_time is None:
+                        continue
+                    if cpu_cycle.start_time <= entry.timestamp <= cpu_cycle.end_time:
+                        return cycle, cpu_cycle
+            return cycle, None
+    return None, None
 
 
-def _build_cycle(
-    cycle_template: MechBoardCycle,
-    entries: list[MechLogEntry],
-) -> MechBoardCycle:
-    return MechBoardCycle(
-        dir_name=cycle_template.dir_name,
-        start_time=cycle_template.start_time,
-        end_time=cycle_template.end_time,
-        processes=_build_processes(entries),
-    )
+def _build_cycles(
+    grouped: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+) -> list[MechBoardCycle]:
+    cycles: list[MechBoardCycle] = []
+
+    for board_template, cpu_template, entries in grouped:
+        board_cycle = next((c for c in cycles if c.dir_name == board_template.dir_name), None)
+        if board_cycle is None:
+            board_cycle = MechBoardCycle(
+                dir_name=board_template.dir_name,
+                start_time=board_template.start_time,
+                end_time=board_template.end_time,
+            )
+            cycles.append(board_cycle)
+
+        if cpu_template is None:
+            board_cycle.processes.extend(_build_processes(entries))
+            continue
+
+        cpu_cycle = next(
+            (
+                c for c in board_cycle.cpu_cycles
+                if c.cpu_id == cpu_template.cpu_id and c.dir_name == cpu_template.dir_name
+            ),
+            None,
+        )
+        if cpu_cycle is None:
+            cpu_cycle = MechCpuCycle(
+                cpu_id=cpu_template.cpu_id,
+                dir_name=cpu_template.dir_name,
+                start_time=cpu_template.start_time,
+                end_time=cpu_template.end_time,
+            )
+            board_cycle.cpu_cycles.append(cpu_cycle)
+        cpu_cycle.processes.extend(_build_processes(entries))
+
+    return cycles
 
 
 def _build_processes(entries: list[MechLogEntry]) -> list[MechProcessLifecycle]:

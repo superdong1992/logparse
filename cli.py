@@ -11,7 +11,7 @@
   python cli.py query-diag <task_id> --slot <slot_id>
   python cli.py mech-slots <task_id>
   python cli.py mech-lifecycles <task_id> -s <slot_id>
-  python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc>
+  python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc> [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
 """
 
 from __future__ import annotations
@@ -33,6 +33,20 @@ from backend.pipeline import Pipeline
 
 def _mechanism_config(module_entry: dict) -> dict:
     return module_entry.get("config", module_entry)
+
+
+def _cycle_process_total(cycle) -> tuple[int, int]:
+    processes = list(cycle.processes)
+    for cpu_cycle in cycle.cpu_cycles:
+        processes.extend(cpu_cycle.processes)
+    return len(processes), sum(process.total_count for process in processes)
+
+
+def _cycle_process_total_dict(cycle: dict) -> tuple[int, int]:
+    processes = list(cycle.get("processes", []))
+    for cpu_cycle in cycle.get("cpu_cycles", []):
+        processes.extend(cpu_cycle.get("processes", []))
+    return len(processes), sum(process.get("total_count", 0) for process in processes)
 
 
 def _print_summary(result: ParseResult, output_dir: Path) -> None:
@@ -74,14 +88,21 @@ def _print_summary(result: ParseResult, output_dir: Path) -> None:
             click.echo(f"\n--- 机制模块 [{mech_result.module_name}] 日志 ---")
             click.echo(f"  主控信号槽位: {mech_result.active_master_slots}")
             for s in mech_result.slots:
-                total_logs = sum(cp.total_count for c in s.board_cycles for cp in c.processes)
-                total_procs = sum(len(c.processes) for c in s.board_cycles)
+                totals = [_cycle_process_total(c) for c in s.board_cycles]
+                total_procs = sum(proc_count for proc_count, _log_count in totals)
+                total_logs = sum(log_count for _proc_count, log_count in totals)
                 click.echo(f"  slot_{s.slot_id}: {len(s.board_cycles)} 个周期, {total_procs} 进程, {total_logs} 条日志")
                 for c in s.board_cycles:
                     click.echo(f"    {c.dir_name}")
                     for p in c.processes:
                         missing = f" 丢号:{p.missing_sequences}" if p.missing_sequences else ""
                         click.echo(f"      {p.process_name}-{p.pid}: {p.total_count} 条{missing}")
+
+                    for cpu_cycle in c.cpu_cycles:
+                        click.echo(f"      cpu_{cpu_cycle.cpu_id}/{cpu_cycle.dir_name}")
+                        for p in cpu_cycle.processes:
+                            missing = f" 丢号:{p.missing_sequences}" if p.missing_sequences else ""
+                            click.echo(f"        {p.process_name}-{p.pid}: {p.total_count} 条{missing}")
 
     json_output = output_dir / result.task_id / "result.json"
     json_output.parent.mkdir(parents=True, exist_ok=True)
@@ -103,8 +124,6 @@ def cli(ctx, config):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
 @cli.command()
 @click.argument("package_path", type=click.Path(exists=True))
 @click.option("--output", "-o", default="./output", help="输出目录")
@@ -217,8 +236,9 @@ def mech_slots(task_id, module_name, output):
         click.echo("无机制模块解析结果")
         return
     for s in slots:
-        total_logs = sum(cp["total_count"] for c in s["board_cycles"] for cp in c["processes"])
-        total_procs = sum(len(c["processes"]) for c in s["board_cycles"])
+        totals = [_cycle_process_total_dict(c) for c in s["board_cycles"]]
+        total_procs = sum(proc_count for proc_count, _log_count in totals)
+        total_logs = sum(log_count for _proc_count, log_count in totals)
         mod = s.get("_module_name", "")
         click.echo(
             f"[{mod}] slot_{s['slot_id']}: "
@@ -249,6 +269,11 @@ def mech_lifecycles(task_id, slot, module_name, output):
             for p in c["processes"]:
                 missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
                 click.echo(f"    {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
+            for cpu_cycle in c.get("cpu_cycles", []):
+                click.echo(f"    cpu_{cpu_cycle['cpu_id']}/{cpu_cycle['dir_name']}")
+                for p in cpu_cycle.get("processes", []):
+                    missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
+                    click.echo(f"      {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
 
 
 @cli.command()
@@ -257,8 +282,10 @@ def mech_lifecycles(task_id, slot, module_name, output):
 @click.option("--cycle", "-c", required=True, help="周期目录名")
 @click.option("--proc", "-p", required=True, help="进程名-pid")
 @click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认取第一个")
+@click.option("--cpu", "cpu_id", default=None, help="CPU ID")
+@click.option("--cpu-cycle", default=None, help="CPU cycle directory")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_logs(task_id, slot, cycle, proc, module_name, output):
+def mech_logs(task_id, slot, cycle, proc, module_name, cpu_id, cpu_cycle, output):
     """查看指定进程批次的机制模块日志。"""
     svc = ResultQueryService(Path(output))
     log_file = svc.mech_log_path(
@@ -267,6 +294,8 @@ def mech_logs(task_id, slot, cycle, proc, module_name, output):
         cycle=cycle,
         proc=proc,
         module_name=module_name,
+        cpu_id=cpu_id,
+        cpu_cycle=cpu_cycle,
     )
     if not log_file.exists():
         click.echo(f"文件不存在: {log_file}", err=True)

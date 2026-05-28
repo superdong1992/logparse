@@ -126,6 +126,8 @@ class Module1Plugin(MechanismModulePlugin):
                 module_key=self.module_key,
             )
             slot_output.board_cycles = detector.detect(entries)
+            slot_output.lifecycle_reliable = detector.lifecycle_reliable
+            slot_output.boundary_issues = detector.boundary_issues
             result.errors.extend(detector.errors)
             mech_result.slots.append(slot_output)
 

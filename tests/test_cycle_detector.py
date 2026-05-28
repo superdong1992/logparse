@@ -414,8 +414,18 @@ class TestWhitelistSafeSplit:
 
         assert len(cycles) == 2
         assert det.errors == []
-        assert [p for p in cycles[0].processes if p.process_name == "other" and p.pid == "500"]
-        assert [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
+        assert [
+            p
+            for cpu_cycle in cycles[0].cpu_cycles
+            for p in cpu_cycle.processes
+            if p.process_name == "other" and p.pid == "500" and cpu_cycle.cpu_id == "1"
+        ]
+        assert [
+            p
+            for cpu_cycle in cycles[1].cpu_cycles
+            for p in cpu_cycle.processes
+            if p.process_name == "other" and p.pid == "500" and cpu_cycle.cpu_id == "2"
+        ]
 
     def test_conflicting_split_moves_backward_when_protected_gap_is_safe(self):
         det = CycleDetector(indicator="dhcp")
@@ -476,6 +486,69 @@ class TestWhitelistSafeSplit:
         det.detect([_entry("dhcp", "100", 1, _ts(1, 3, 0, 0))])
 
         assert det.errors == []
+
+    def test_non_whitelist_crossing_candidate_adjusts_in_safe_gap(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 10)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 1)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 6)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 11)),
+            _entry_without_seq("other", "500", _ts(1, 3, 0, 9)),
+            _entry_without_seq("other", "500", _ts(1, 3, 0, 12)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 2
+        assert cycles[1].start_time == _ts(1, 3, 0, 9)
+        assert not [p for p in cycles[0].processes if p.process_name == "other"]
+        other = [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
+        assert len(other) == 1
+        assert [log.timestamp for log in other[0].logs] == [
+            _ts(1, 3, 0, 9),
+            _ts(1, 3, 0, 12),
+        ]
+        assert det.lifecycle_reliable is True
+        assert any(issue.kind == "same_pid_adjusted_backward" for issue in det.boundary_issues)
+
+    def test_unavoidable_same_pid_conflict_marks_lifecycle_unreliable(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 10)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 1)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 6)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 11)),
+            _entry_without_seq("other", "500", _ts(1, 3, 0, 5)),
+            _entry_without_seq("other", "500", _ts(1, 3, 0, 12)),
+        ]
+
+        cycles = det.detect(entries)
+
+        assert len(cycles) == 2
+        assert [p for p in cycles[0].processes if p.process_name == "other" and p.pid == "500"]
+        assert [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
+        assert det.lifecycle_reliable is False
+        assert any(issue.kind == "unsafe_cycle_split" for issue in det.boundary_issues)
+        assert any("unsafe cycle split kept" in error for error in det.errors)
+
+    def test_overlap_records_boundary_issue_and_marks_unreliable(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 9)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 1)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 10)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 11)),
+        ]
+
+        det.detect(entries)
+
+        assert det.lifecycle_reliable is False
+        assert any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
+        assert any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
 
 
 class TestJournalForwardAdjust:
@@ -560,7 +633,7 @@ class TestCpuSubcardIsolation:
         ]
         cycles = detector.detect(board + cpu)
 
-        assert len(cycles) == 3
+        assert len(cycles) == 1
         board_cycles = [
             cycle
             for cycle in cycles
@@ -569,9 +642,42 @@ class TestCpuSubcardIsolation:
         assert len(board_cycles) == 1
         board_proc = [p for p in board_cycles[0].processes if p.process_name == "svc" and p.pid == "100"][0]
         assert [log.timestamp for log in board_proc.logs] == [entry.timestamp for entry in board]
-        assert any(p.process_name == "dhcp" and p.pid == "50" for cycle in cycles for p in cycle.processes)
-        assert any(p.process_name == "dhcp" and p.pid == "60" for cycle in cycles for p in cycle.processes)
+        assert any(
+            p.process_name == "dhcp" and p.pid == "50"
+            for cpu_cycle in cycles[0].cpu_cycles
+            for p in cpu_cycle.processes
+        )
+        assert any(
+            p.process_name == "dhcp" and p.pid == "60"
+            for cpu_cycle in cycles[0].cpu_cycles
+            for p in cpu_cycle.processes
+        )
         assert any("cycle split diagnostic: scoped_cpu_split" in error for error in detector.errors)
+
+    def test_cpu_local_restarts_are_nested_under_board_cycle(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc"])
+        board = [
+            _entry_without_seq("svc", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("svc", "100", _ts(1, 3, 0, 10)),
+        ]
+        cpu = [
+            _entry_without_seq("dhcp", "10", _ts(1, 3, 0, 1), cpu_id="1"),
+            _entry_without_seq("dhcp", "20", _ts(1, 3, 0, 5), cpu_id="1"),
+            _entry_without_seq("cpu_svc", "300", _ts(1, 3, 0, 6), cpu_id="1"),
+        ]
+
+        cycles = det.detect(board + cpu)
+
+        assert len(cycles) == 1
+        board_cycle = cycles[0]
+        assert [p.process_name for p in board_cycle.processes] == ["svc"]
+        assert len(board_cycle.cpu_cycles) == 2
+        assert [cpu_cycle.cpu_id for cpu_cycle in board_cycle.cpu_cycles] == ["1", "1"]
+        assert [
+            [p.pid for p in cpu_cycle.processes if p.process_name == "dhcp"]
+            for cpu_cycle in board_cycle.cpu_cycles
+        ] == [["10"], ["20"]]
+        assert any("cycle split diagnostic: scoped_cpu_split" in error for error in det.errors)
 
 
 class TestSplitTrace:

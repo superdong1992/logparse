@@ -14,25 +14,28 @@ class MechOutputWriter:
         for slot in mech_result.slots:
             for cycle in slot.board_cycles:
                 cycle_dir = mech_dir / f"slot_{slot.slot_id}" / cycle.dir_name
-                cpu_procs: dict[str, list] = {}
                 for proc in cycle.processes:
                     cpu_id = proc.logs[0].cpu_id if proc.logs else None
-                    key = cpu_id or ""
-                    cpu_procs.setdefault(key, []).append(proc)
-
-                for cpu_key, procs in cpu_procs.items():
                     out_dir = cycle_dir
-                    if cpu_key:
-                        out_dir = cycle_dir / f"cpu_{cpu_key}"
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    for proc in procs:
-                        fname = f"{proc.process_name}-{proc.pid}.log" if proc.pid else f"{proc.process_name}.log"
-                        out_path = out_dir / fname
-                        with open(out_path, "w", encoding="utf-8") as fh:
-                            for log in proc.logs:
-                                seq = f"[{log.sequence:04d}]" if log.sequence else "[....]"
-                                fh.write(
-                                    f"{seq} [{log.source}|{log.source_file}] {log.raw}\n"
-                                )
+                    if cpu_id:
+                        out_dir = cycle_dir / f"cpu_{cpu_id}"
+                    self._write_process(out_dir, proc)
+
+                for cpu_cycle in cycle.cpu_cycles:
+                    cpu_dir = cycle_dir / f"cpu_{cpu_cycle.cpu_id}" / cpu_cycle.dir_name
+                    for proc in cpu_cycle.processes:
+                        self._write_process(cpu_dir, proc)
 
         return mech_dir
+
+    @staticmethod
+    def _write_process(out_dir: Path, proc) -> None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"{proc.process_name}-{proc.pid}.log" if proc.pid else f"{proc.process_name}.log"
+        out_path = out_dir / fname
+        with open(out_path, "w", encoding="utf-8") as fh:
+            for log in proc.logs:
+                seq = f"[{log.sequence:04d}]" if log.sequence else "[....]"
+                fh.write(
+                    f"{seq} [{log.source}|{log.source_file}] {log.raw}\n"
+                )

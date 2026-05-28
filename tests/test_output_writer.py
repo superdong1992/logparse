@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 from backend.models import (
-    MechBoardCycle, MechLogEntry, MechProcessLifecycle,
+    MechBoardCycle, MechCpuCycle, MechLogEntry, MechProcessLifecycle,
     MechResult, MechSlotOutput,
 )
 from backend.parsing.output_writer import MechOutputWriter
@@ -99,6 +99,48 @@ class TestMechOutputWriter:
         expected = (
             tmp_path / "mech_modules" / "EXAMPLE" / "slot_1"
             / "20260103T000100-20260103T000200" / "cpu_1" / "svc-100.log"
+        )
+        assert expected.exists()
+
+    def test_nested_cpu_cycle_subdirectory(self, writer, tmp_path):
+        tz = timezone(timedelta(hours=8))
+        result = MechResult(module_name="EXAMPLE")
+        slot = MechSlotOutput(slot_id="1")
+        slot.board_cycles.append(MechBoardCycle(
+            dir_name="20260103T000000-20260103T001000",
+            start_time=datetime(2026, 1, 3, 0, 0, 0, tzinfo=tz),
+            end_time=datetime(2026, 1, 3, 0, 10, 0, tzinfo=tz),
+            cpu_cycles=[
+                MechCpuCycle(
+                    cpu_id="1",
+                    dir_name="20260103T000100-20260103T000200",
+                    start_time=datetime(2026, 1, 3, 0, 1, 0, tzinfo=tz),
+                    end_time=datetime(2026, 1, 3, 0, 2, 0, tzinfo=tz),
+                    processes=[
+                        MechProcessLifecycle(
+                            process_name="svc", pid="100",
+                            logs=[
+                                MechLogEntry(
+                                    source="journal", source_file="s/j.log",
+                                    slot="1", cpu_id="1",
+                                    process_name="svc", pid="100",
+                                    sequence=1, raw="cpu line",
+                                ),
+                            ],
+                            total_count=1,
+                        ),
+                    ],
+                )
+            ],
+        ))
+        result.slots.append(slot)
+
+        writer.write(result, tmp_path)
+
+        expected = (
+            tmp_path / "mech_modules" / "EXAMPLE" / "slot_1"
+            / "20260103T000000-20260103T001000" / "cpu_1"
+            / "20260103T000100-20260103T000200" / "svc-100.log"
         )
         assert expected.exists()
 
