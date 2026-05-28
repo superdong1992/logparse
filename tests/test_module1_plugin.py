@@ -171,6 +171,8 @@ def test_module1_plugin_propagates_cycle_detector_errors(tmp_path):
 
     assert mech is not None
     assert any("unsafe cycle split adjusted_backward" in error for error in result.errors)
+    assert any("cycle split diagnostic: same_pid_adjusted_backward" in error for error in result.errors)
+    assert any("m=module1" in error and "s=1" in error for error in result.errors)
     assert any("module=module1" in error and "slot=1" in error for error in result.errors)
     assert any("same_pid_conflicts=other-500@board" in error for error in result.errors)
     assert any("protected_boundaries=dhcp@board role=indicator" in error for error in result.errors)

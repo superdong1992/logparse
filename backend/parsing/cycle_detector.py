@@ -59,11 +59,13 @@ class CycleDetector:
         self._module_key = module_key or ""
         self._split_traces: list[MechCycleSplitTrace] = []
         self.errors: list[str] = []
+        self._diagnostics_seen: set[str] = set()
 
     def detect(self, entries: list[MechLogEntry]) -> list[MechBoardCycle]:
         """检测重启周期，返回按时间排列的周期列表。"""
         self._split_traces = []
         self.errors = []
+        self._diagnostics_seen = set()
         logger.info(
             "CycleDetector.detect: 共 %d 条日志, indicator=%r, whitelist=%s",
             len(entries), self._indicator, self._whitelist,
@@ -96,53 +98,79 @@ class CycleDetector:
             all_entries = [e for group in by_cpu.values() for e in group]
             return self._make_cycles(all_entries) if all_entries else []
 
-        # 收集所有 cpu_key 的切分时间点
-        all_split_timestamps: list[datetime] = []
+        segments_by_bounds: dict[tuple[datetime | None, datetime | None], list[MechLogEntry]] = defaultdict(list)
 
-        # 板卡级（cpu_key=""）的切分时间点
+        # 板卡级（cpu_key=""）的切分时间点会作用于所有 CPU。
         board_splits: list[datetime] = []
         if "" in by_cpu:
             board_splits = self._detect_splits_for_group(by_cpu[""])
 
         for cpu_key in sorted(by_cpu.keys()):
             if cpu_key == "":
-                all_split_timestamps.extend(board_splits)
+                group_splits = board_splits
+            else:
+                # 子卡：板卡级切分 + 自身 PID 变化切分。子卡自身切分不应反向切碎板卡日志或其他 CPU。
+                cpu_splits = self._detect_splits_for_group(by_cpu[cpu_key])
+                group_splits = board_splits + cpu_splits
+                if cpu_splits:
+                    diag_slot = by_cpu[cpu_key][0].slot if by_cpu[cpu_key] else "-"
+                    for split_ts in cpu_splits:
+                        self._record_split_diagnostic(
+                            "scoped_cpu_split",
+                            slot=diag_slot,
+                            scope=f"cpu:{cpu_key}",
+                            split=split_ts,
+                            reason="cpu_local_split",
+                        )
+                if cpu_splits:
+                    logger.info(
+                        "cpu_key=%r 切分时间点(%d): %s",
+                        cpu_key, len(cpu_splits),
+                        [ts.isoformat() for ts in cpu_splits],
+                    )
+
+            unique_splits = sorted(set(ts for ts in group_splits if ts is not None))
+            logger.info(
+                "cpu_key=%r 作用域切分时间点(%d): %s",
+                cpu_key, len(unique_splits),
+                [ts.isoformat() for ts in unique_splits],
+            )
+
+            group_entries = by_cpu[cpu_key]
+            if unique_splits:
+                unique_splits = self._refine_split_timestamps(group_entries, unique_splits)
+                unique_splits = self._enforce_protected_pid_boundaries(group_entries, unique_splits)
+
+            if not unique_splits:
+                if group_entries:
+                    segments_by_bounds[(None, None)].extend(group_entries)
                 continue
-            # 子卡：板卡级切分 + 自身 PID 变化切分
-            all_split_timestamps.extend(board_splits)
-            cpu_splits = self._detect_splits_for_group(by_cpu[cpu_key])
-            all_split_timestamps.extend(cpu_splits)
-            if cpu_splits:
-                logger.info(
-                    "cpu_key=%r 切分时间点(%d): %s",
-                    cpu_key, len(cpu_splits),
-                    [ts.isoformat() for ts in cpu_splits],
-                )
 
-        # 去重排序，形成统一切分时间线
-        cycles: list[MechBoardCycle] = []
-        all_entries = [e for group in by_cpu.values() for e in group]
-        unique_splits = sorted(set(ts for ts in all_split_timestamps if ts is not None))
-        logger.info(
-            "统一切分时间点(%d): %s",
-            len(unique_splits),
-            [ts.isoformat() for ts in unique_splits],
-        )
-
-        if unique_splits:
-            unique_splits = self._refine_split_timestamps(all_entries, unique_splits)
-            unique_splits = self._enforce_protected_pid_boundaries(all_entries, unique_splits)
-
-        if not unique_splits:
-            if all_entries:
-                cycles = self._make_cycles(all_entries)
-        else:
-            segments = self._segment_by_timestamps(all_entries, unique_splits)
-            for seg in segments:
+            segments = self._segment_by_timestamps_with_bounds(group_entries, unique_splits)
+            for lower_bound, upper_bound, seg in segments:
                 if seg:
-                    cycles.extend(self._make_cycles(seg))
+                    segments_by_bounds[(lower_bound, upper_bound)].extend(seg)
+
+        cycles: list[MechBoardCycle] = []
+        for _bounds, segment_entries in sorted(
+            segments_by_bounds.items(),
+            key=lambda item: (
+                0 if item[0][0] is None else 1,
+                item[0][0].timestamp() if item[0][0] else 0,
+                0 if item[0][1] is None else 1,
+                item[0][1].timestamp() if item[0][1] else 0,
+            ),
+        ):
+            cycles.extend(self._make_cycles(segment_entries))
+
+        cycles.sort(key=lambda c: (
+            0 if c.start_time else 1,
+            c.start_time.timestamp() if c.start_time else 0,
+            c.dir_name,
+        ))
 
         # 将 split traces 分配到对应周期
+        self._record_over_split_diagnostics(cycles)
         self._assign_split_traces(cycles)
 
         logger.info("最终切分结果: %d 个周期", len(cycles))
@@ -219,6 +247,7 @@ class CycleDetector:
         indicator_lower = self._indicator.lower()
         changes: list[tuple[str, str, int]] = []
         prev_pid: str | None = None
+        pid_states: list[str] = []
 
         for i, e in enumerate(group):
             if e.process_name.lower() != indicator_lower:
@@ -227,11 +256,26 @@ class CycleDetector:
                 continue
             if prev_pid and e.pid != prev_pid:
                 changes.append((prev_pid, e.pid, i))
+                pid_states.append(e.pid)
+                if len(pid_states) >= 3:
+                    a, b, c = pid_states[-3:]
+                    if a == c and a != b:
+                        self._record_split_diagnostic(
+                            "suspect_pid_bounce",
+                            slot=e.slot,
+                            scope=f"cpu:{e.cpu_id}" if e.cpu_id else "board",
+                            split=e.timestamp,
+                            reason="indicator_pid_bounce",
+                            proc=indicator_lower,
+                            pids=f"{a}>{b}>{c}",
+                        )
                 logger.info(
                     "indicator PID 变化: %s → %s at index=%d, ts=%s",
                     prev_pid, e.pid, i,
                     e.timestamp.isoformat() if e.timestamp else None,
                 )
+            elif prev_pid is None:
+                pid_states.append(e.pid)
             prev_pid = e.pid
 
         return changes
@@ -705,6 +749,11 @@ class CycleDetector:
     ) -> list[datetime]:
         refined = sorted(set(split_timestamps))
         while True:
+            pruned = self._prune_redundant_splits(entries, refined)
+            if pruned != refined:
+                refined = pruned
+                continue
+
             forced: list[datetime] = []
             for segment in self._segment_by_timestamps(entries, refined):
                 forced.extend(self._protected_pid_change_timestamps(segment))
@@ -714,6 +763,114 @@ class CycleDetector:
                 return refined
 
             refined = self._refine_split_timestamps(entries, sorted(set(refined + new_splits)))
+
+    def _prune_redundant_splits(
+        self,
+        entries: list[MechLogEntry],
+        split_timestamps: list[datetime],
+    ) -> list[datetime]:
+        protected_names = set(self._whitelist)
+        if self._indicator:
+            protected_names.add(self._indicator.lower())
+        if not protected_names:
+            return sorted(set(split_timestamps))
+
+        refined = sorted(set(split_timestamps))
+        removed: dict[datetime, datetime | None] = {}
+
+        changed = True
+        while changed:
+            changed = False
+            for idx, split in enumerate(list(refined)):
+                window_start = refined[idx - 1] if idx > 0 else None
+                window_end = refined[idx + 1] if idx + 1 < len(refined) else None
+                if not self._can_remove_redundant_split(
+                    entries,
+                    split,
+                    window_start,
+                    window_end,
+                    protected_names,
+                ):
+                    continue
+
+                refined.remove(split)
+                removed[split] = None
+                self._record_split_diagnostic(
+                    "suspect_over_split",
+                    slot=self._split_window_slot(entries, window_start, window_end),
+                    scope=self._split_window_scope(entries, window_start, window_end),
+                    split=split,
+                    reason="pruned_redundant_split",
+                )
+                changed = True
+                break
+
+        self._apply_split_trace_updates(removed)
+        return refined
+
+    def _can_remove_redundant_split(
+        self,
+        entries: list[MechLogEntry],
+        split: datetime,
+        window_start: datetime | None,
+        window_end: datetime | None,
+        protected_names: set[str],
+    ) -> bool:
+        protected_pids: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+        has_before = False
+        has_after = False
+
+        for e in entries:
+            if not e.timestamp or not e.pid:
+                continue
+            if window_start is not None and e.timestamp < window_start:
+                continue
+            if window_end is not None and e.timestamp >= window_end:
+                continue
+            proc_name = e.process_name.lower()
+            if proc_name not in protected_names:
+                continue
+            protected_pids[(e.slot, e.cpu_id or "", proc_name)].add(e.pid)
+            if e.timestamp < split:
+                has_before = True
+            else:
+                has_after = True
+
+        if not has_before or not has_after:
+            return False
+        return all(len(pids) <= 1 for pids in protected_pids.values())
+
+    @staticmethod
+    def _split_window_slot(
+        entries: list[MechLogEntry],
+        window_start: datetime | None,
+        window_end: datetime | None,
+    ) -> str:
+        slots = sorted({
+            e.slot or "-"
+            for e in entries
+            if e.timestamp
+            and (window_start is None or e.timestamp >= window_start)
+            and (window_end is None or e.timestamp < window_end)
+        })
+        return ",".join(slots) if slots else "-"
+
+    @staticmethod
+    def _split_window_scope(
+        entries: list[MechLogEntry],
+        window_start: datetime | None,
+        window_end: datetime | None,
+    ) -> str:
+        scopes = sorted({
+            e.cpu_id or ""
+            for e in entries
+            if e.timestamp
+            and (window_start is None or e.timestamp >= window_start)
+            and (window_end is None or e.timestamp < window_end)
+        })
+        if len(scopes) == 1:
+            return f"cpu:{scopes[0]}" if scopes[0] else "board"
+        return "mixed" if scopes else "board"
 
     def _protected_pid_change_timestamps(self, entries: list[MechLogEntry]) -> list[datetime]:
         protected_names = set(self._whitelist)
@@ -749,6 +906,15 @@ class CycleDetector:
                     )
                     self.errors.append(message)
                     logger.error(message)
+                    self._record_split_diagnostic(
+                        "protected_forced_split",
+                        slot=e.slot,
+                        scope=f"cpu:{e.cpu_id}" if e.cpu_id else "board",
+                        split=e.timestamp,
+                        reason="protected_pid_change",
+                        proc=proc_name,
+                        pids=f"{prev_pid}>{e.pid}",
+                    )
                 prev_pid = e.pid
 
         return splits
@@ -881,6 +1047,26 @@ class CycleDetector:
             message += f" reason={reason}"
         self.errors.append(message)
         logger.error(message)
+        diagnostic_kind = {
+            "adjusted": "same_pid_adjusted",
+            "adjusted_backward": "same_pid_adjusted_backward",
+            "kept": "same_pid_kept",
+            "dropped": "same_pid_dropped",
+        }.get(action)
+        if diagnostic_kind:
+            cpu_keys = sorted({cpu for _slot, _proc, _pid, cpu, *_rest in conflicts})
+            if len(cpu_keys) == 1:
+                scope = f"cpu:{cpu_keys[0]}" if cpu_keys[0] else "board"
+            else:
+                scope = "mixed"
+            self._record_split_diagnostic(
+                diagnostic_kind,
+                slot=",".join(slots) if slots else "-",
+                scope=scope,
+                split=raw_split,
+                adjusted=adjusted_split,
+                reason=reason or action,
+            )
 
     def _apply_split_trace_updates(
         self,
@@ -898,6 +1084,54 @@ class CycleDetector:
                 trace.timestamp = new_timestamp
             updated_traces.append(trace)
         self._split_traces = updated_traces
+
+    def _record_over_split_diagnostics(self, cycles: list[MechBoardCycle]) -> None:
+        protected_names = set(self._whitelist)
+        if self._indicator:
+            protected_names.add(self._indicator.lower())
+        if not protected_names or len(cycles) < 2:
+            return
+
+        for left, right in zip(cycles, cycles[1:]):
+            protected_by_key: dict[tuple[str, str], set[str]] = defaultdict(set)
+            slots: set[str] = set()
+            scopes: set[str] = set()
+            left_has_protected = False
+            right_has_protected = False
+
+            for cycle, side in ((left, "left"), (right, "right")):
+                for proc in cycle.processes:
+                    proc_name = proc.process_name.lower()
+                    if proc_name not in protected_names:
+                        continue
+                    for log in proc.logs:
+                        if not log.pid:
+                            continue
+                        protected_by_key[(proc_name, log.cpu_id or "")].add(log.pid)
+                        slots.add(log.slot or "-")
+                        scopes.add(log.cpu_id or "")
+                        if side == "left":
+                            left_has_protected = True
+                        else:
+                            right_has_protected = True
+
+            if not left_has_protected or not right_has_protected:
+                continue
+            if any(len(pids) > 1 for pids in protected_by_key.values()):
+                continue
+
+            if len(scopes) == 1:
+                only_scope = next(iter(scopes))
+                scope = f"cpu:{only_scope}" if only_scope else "board"
+            else:
+                scope = "mixed"
+            self._record_split_diagnostic(
+                "suspect_over_split",
+                slot=",".join(sorted(slots)) if slots else "-",
+                scope=scope,
+                split=right.start_time,
+                reason="protected_merge_has_no_pid_conflict",
+            )
 
     def _assign_split_traces(self, cycles: list[MechBoardCycle]) -> None:
         if not cycles:
@@ -918,6 +1152,37 @@ class CycleDetector:
                     target = cycle
             target.split_traces.append(trace)
 
+    def _record_split_diagnostic(
+        self,
+        kind: str,
+        *,
+        slot: str | None = None,
+        scope: str | None = None,
+        split: datetime | None = None,
+        adjusted: datetime | None = None,
+        reason: str | None = None,
+        **fields: str,
+    ) -> None:
+        parts = [
+            f"cycle split diagnostic: {kind}",
+            f"m={self._module_key or '-'}",
+            f"s={slot or '-'}",
+            f"scope={scope or 'board'}",
+            f"sp={self._fmt_optional_ts(split)}",
+        ]
+        if adjusted is not None:
+            parts.append(f"ad={self._fmt_optional_ts(adjusted)}")
+        parts.append(f"reason={reason or '-'}")
+        for key, value in fields.items():
+            parts.append(f"{key}={value}")
+
+        message = " ".join(parts)
+        if message in self._diagnostics_seen:
+            return
+        self._diagnostics_seen.add(message)
+        self.errors.append(message)
+        logger.error(message)
+
     @staticmethod
     def _fmt_optional_ts(ts: datetime | None) -> str:
         return ts.isoformat() if ts else "-"
@@ -926,6 +1191,16 @@ class CycleDetector:
     def _segment_by_timestamps(
         entries: list[MechLogEntry], split_timestamps: list[datetime],
     ) -> list[list[MechLogEntry]]:
+        return [
+            segment
+            for _lower_bound, _upper_bound, segment
+            in CycleDetector._segment_by_timestamps_with_bounds(entries, split_timestamps)
+        ]
+
+    @staticmethod
+    def _segment_by_timestamps_with_bounds(
+        entries: list[MechLogEntry], split_timestamps: list[datetime],
+    ) -> list[tuple[datetime | None, datetime | None, list[MechLogEntry]]]:
         """按统一切分时间线对所有条目分段。
 
         使用 ``>=`` 比较：条目 >= 切分点 → 新周期。
@@ -938,9 +1213,10 @@ class CycleDetector:
             e.sequence,
         ))
 
-        segments: list[list[MechLogEntry]] = []
+        segments: list[tuple[datetime | None, datetime | None, list[MechLogEntry]]] = []
         current: list[MechLogEntry] = []
         split_idx = 0
+        lower_bound: datetime | None = None
 
         # 先收集无时间戳条目，延迟到有时间戳条目触发切分时一起分配
         pending_no_ts: list[MechLogEntry] = []
@@ -954,14 +1230,17 @@ class CycleDetector:
                 # 切分时，无时间戳条目归入前一段（当前段结束）
                 current.extend(pending_no_ts)
                 pending_no_ts = []
-                segments.append(current)
+                split_ts = split_timestamps[split_idx]
+                segments.append((lower_bound, split_ts, current))
                 current = []
+                lower_bound = split_ts
                 split_idx += 1
             current.append(e)
 
         if current or pending_no_ts:
             current.extend(pending_no_ts)
-            segments.append(current)
+            upper_bound = split_timestamps[split_idx] if split_idx < len(split_timestamps) else None
+            segments.append((lower_bound, upper_bound, current))
 
         return segments
 

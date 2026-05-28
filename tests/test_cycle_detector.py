@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from backend.models import MechLogEntry, MechCycleSplitTrace
+from backend.models import MechBoardCycle, MechLogEntry, MechCycleSplitTrace, MechProcessLifecycle
 from backend.parsing.cycle_detector import CycleDetector
 
 
@@ -85,6 +85,58 @@ class TestBasicDetection:
         cycles = detector.detect(entries)
         assert len(cycles) == 2
 
+    def test_indicator_pid_bounce_emits_diagnostic(self):
+        det = CycleDetector(indicator="dhcp", module_key="m1")
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 1)),
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 2)),
+        ]
+
+        det.detect(entries)
+
+        assert any("cycle split diagnostic: suspect_pid_bounce" in error for error in det.errors)
+        assert any("m=m1" in error and "proc=dhcp" in error for error in det.errors)
+        assert any("pids=100>200>100" in error for error in det.errors)
+
+    def test_adjacent_cycles_without_protected_pid_conflict_emit_over_split_diagnostic(self):
+        det = CycleDetector(indicator="dhcp", module_key="m1")
+        left_log = _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0))
+        right_log = _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 1))
+        cycles = [
+            MechBoardCycle(
+                dir_name="left",
+                start_time=left_log.timestamp,
+                end_time=left_log.timestamp,
+                processes=[
+                    MechProcessLifecycle(
+                        process_name="dhcp",
+                        pid="100",
+                        logs=[left_log],
+                        total_count=1,
+                    ),
+                ],
+            ),
+            MechBoardCycle(
+                dir_name="right",
+                start_time=right_log.timestamp,
+                end_time=right_log.timestamp,
+                processes=[
+                    MechProcessLifecycle(
+                        process_name="dhcp",
+                        pid="100",
+                        logs=[right_log],
+                        total_count=1,
+                    ),
+                ],
+            ),
+        ]
+
+        det._record_over_split_diagnostics(cycles)
+
+        assert any("cycle split diagnostic: suspect_over_split" in error for error in det.errors)
+        assert any("reason=protected_merge_has_no_pid_conflict" in error for error in det.errors)
+
     def test_no_indicator(self):
         """无 indicator → 不切分。"""
         detector = CycleDetector(indicator=None)
@@ -155,6 +207,7 @@ class TestWhitelistSafeSplit:
             assert len(pids_by_name.get("dhcp", set())) <= 1
             assert len(pids_by_name.get("svc_a", set())) <= 1
         assert any("forced protected pid split" in error for error in det.errors)
+        assert any("cycle split diagnostic: protected_forced_split" in error for error in det.errors)
 
     def test_non_whitelist_process_is_split_when_protected_pid_boundary_would_be_merged(self):
         """Keep the protected PID boundary even if a non-whitelist PID is split."""
@@ -180,6 +233,7 @@ class TestWhitelistSafeSplit:
         assert len(new_other) == 1
         assert [log.timestamp for log in new_other[0].logs] == [_ts(1, 3, 7, 0)]
         assert any("unsafe cycle split kept" in error for error in det.errors)
+        assert any("cycle split diagnostic: same_pid_kept" in error for error in det.errors)
         assert any("same_pid_conflicts=other-500@board" in error for error in det.errors)
         assert any("protected_boundaries=dhcp@board role=indicator" in error for error in det.errors)
         assert any("svc_a@board role=whitelist" in error for error in det.errors)
@@ -243,6 +297,7 @@ class TestWhitelistSafeSplit:
             aaa_pids = {p.pid for p in cycle.processes if p.process_name == "aaa"}
             assert aaa_pids != {"100", "200"}
         assert any("unsafe cycle split adjusted_backward" in error for error in det.errors)
+        assert any("cycle split diagnostic: same_pid_adjusted_backward" in error for error in det.errors)
         assert any("same_pid_conflicts=other-500@board" in error for error in det.errors)
         assert any("protected_boundaries=dhcp@board role=indicator" in error for error in det.errors)
         assert any("aaa@board role=whitelist" in error for error in det.errors)
@@ -266,6 +321,7 @@ class TestWhitelistSafeSplit:
         assert [p for p in cycles[0].processes if p.process_name == "other" and p.pid == "500"]
         assert [p for p in cycles[1].processes if p.process_name == "other" and p.pid == "500"]
         assert any("unsafe cycle split kept" in error for error in det.errors)
+        assert any("cycle split diagnostic: same_pid_kept" in error for error in det.errors)
         assert any("reason=no_safe_gap_candidate" in error for error in det.errors)
 
     def test_backward_adjustment_expands_for_cascading_same_pid_conflicts(self):
@@ -310,6 +366,40 @@ class TestWhitelistSafeSplit:
             assert len(pids_by_name.get("dhcp", set())) <= 1
             assert len(pids_by_name.get("svc_a", set())) <= 1
         assert any("forced protected pid split" in error for error in det.errors)
+        assert any("cycle split diagnostic: protected_forced_split" in error for error in det.errors)
+
+    def test_redundant_split_between_same_protected_generation_is_pruned(self):
+        det = CycleDetector(indicator="dhcp")
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 6, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 7, 0)),
+            _entry_without_seq("dhcp", "300", _ts(1, 3, 12, 0)),
+        ]
+
+        refined = det._prune_redundant_splits(
+            entries,
+            [_ts(1, 3, 6, 0), _ts(1, 3, 7, 0), _ts(1, 3, 12, 0)],
+        )
+
+        assert refined == [_ts(1, 3, 6, 0), _ts(1, 3, 12, 0)]
+        assert any("cycle split diagnostic: suspect_over_split" in error for error in det.errors)
+        assert any("reason=pruned_redundant_split" in error for error in det.errors)
+
+    def test_split_that_would_merge_protected_pid_generations_is_not_pruned(self):
+        det = CycleDetector(indicator="dhcp")
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 6, 0)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 7, 0)),
+        ]
+
+        refined = det._prune_redundant_splits(
+            entries,
+            [_ts(1, 3, 6, 0)],
+        )
+
+        assert refined == [_ts(1, 3, 6, 0)]
 
     def test_same_name_pid_on_different_cpus_does_not_block_split(self):
         det = CycleDetector(indicator="dhcp")
@@ -341,6 +431,7 @@ class TestWhitelistSafeSplit:
 
         assert len(cycles) == 3
         assert any("unsafe cycle split adjusted_backward" in error for error in det.errors)
+        assert any("cycle split diagnostic: same_pid_adjusted_backward" in error for error in det.errors)
         assert any("protected_boundaries=dhcp@board role=indicator" in error for error in det.errors)
         all_traces: list[MechCycleSplitTrace] = []
         for cycle in cycles:
@@ -429,6 +520,35 @@ class TestJournalForwardAdjust:
 class TestCpuSubcardIsolation:
     """CPU 子卡切分隔离。"""
 
+    def test_cpu_local_restarts_do_not_fragment_board_process_without_pid_change(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["aaa"])
+        board = [
+            _entry_without_seq("aaa", "100", _ts(1, 3, 0, 0, 30)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 0, 1, 30)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 0, 2, 30)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 0, 3, 30)),
+            _entry_without_seq("aaa", "100", _ts(1, 3, 0, 4, 30)),
+        ]
+        cpu = [
+            _entry_without_seq("dhcp", "10", _ts(1, 3, 0, 0, 0), cpu_id="1"),
+            _entry_without_seq("dhcp", "20", _ts(1, 3, 0, 1, 0), cpu_id="1"),
+            _entry_without_seq("dhcp", "30", _ts(1, 3, 0, 2, 0), cpu_id="1"),
+            _entry_without_seq("dhcp", "40", _ts(1, 3, 0, 3, 0), cpu_id="1"),
+            _entry_without_seq("dhcp", "50", _ts(1, 3, 0, 4, 0), cpu_id="1"),
+        ]
+
+        cycles = det.detect(board + cpu)
+
+        aaa_cycles = [
+            cycle
+            for cycle in cycles
+            if any(p.process_name == "aaa" and p.pid == "100" for p in cycle.processes)
+        ]
+        assert len(aaa_cycles) == 1
+        aaa = [p for p in aaa_cycles[0].processes if p.process_name == "aaa" and p.pid == "100"][0]
+        assert [log.timestamp for log in aaa.logs] == [entry.timestamp for entry in board]
+        assert any("cycle split diagnostic: scoped_cpu_split" in error for error in det.errors)
+
     def test_cpu_subcard_isolation(self, detector):
         board = [
             _entry("svc", "100", i, _ts(1, 3, 0, i)) for i in range(1, 6)
@@ -439,16 +559,19 @@ class TestCpuSubcardIsolation:
             _entry("dhcp", "60", i, _ts(1, 3, 1, i), cpu_id="1") for i in range(1, 4)
         ]
         cycles = detector.detect(board + cpu)
-        # CPU-1 的 PID 变化产生切分点
-        assert len(cycles) == 2
-        # 周期1: 板卡进程 + CPU-1 重启前
-        board_procs = [p for p in cycles[0].processes if p.pid == "100"]
-        cpu_procs = [p for p in cycles[0].processes if p.pid == "50"]
-        assert len(board_procs) == 1
-        assert len(cpu_procs) == 1
-        # 周期2: CPU-1 重启后
-        cpu_procs_after = [p for p in cycles[1].processes if p.pid == "60"]
-        assert len(cpu_procs_after) == 1
+
+        assert len(cycles) == 3
+        board_cycles = [
+            cycle
+            for cycle in cycles
+            if any(p.process_name == "svc" and p.pid == "100" for p in cycle.processes)
+        ]
+        assert len(board_cycles) == 1
+        board_proc = [p for p in board_cycles[0].processes if p.process_name == "svc" and p.pid == "100"][0]
+        assert [log.timestamp for log in board_proc.logs] == [entry.timestamp for entry in board]
+        assert any(p.process_name == "dhcp" and p.pid == "50" for cycle in cycles for p in cycle.processes)
+        assert any(p.process_name == "dhcp" and p.pid == "60" for cycle in cycles for p in cycle.processes)
+        assert any("cycle split diagnostic: scoped_cpu_split" in error for error in detector.errors)
 
 
 class TestSplitTrace:
