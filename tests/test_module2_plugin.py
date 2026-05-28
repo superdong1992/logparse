@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from backend.models import (
     LogEntry,
     MechBoardCycle,
+    MechCpuCycle,
+    MechProcessLifecycle,
     MechResult,
     MechSlotOutput,
     ParseResult,
@@ -69,6 +71,40 @@ def _module1_result() -> MechResult:
     )
 
 
+def _module1_nested_result() -> MechResult:
+    return MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[
+            MechSlotOutput(
+                slot_id="2",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="20260103T000000-20260103T001000",
+                        start_time=_ts(0),
+                        end_time=_ts(0, 10),
+                        cpu_cycles=[
+                            MechCpuCycle(
+                                cpu_id="3",
+                                dir_name="20260103T000500-20260103T000700",
+                                start_time=_ts(0, 5),
+                                end_time=_ts(0, 7),
+                                processes=[
+                                    MechProcessLifecycle(
+                                        process_name="upstream",
+                                        pid="1",
+                                        total_count=0,
+                                    )
+                                ],
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+
 def test_module2_scans_diag_logs_and_parses_bracket_pid(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -96,7 +132,11 @@ def test_module2_scans_diag_logs_and_parses_bracket_pid(tmp_path):
     assert mech.diag_entry_count == 1
     cycle = mech.slots[0].board_cycles[0]
     assert cycle.dir_name == "20260103T000000-20260103T010000"
-    proc = cycle.processes[0]
+    assert cycle.processes == []
+    cpu_cycle = cycle.cpu_cycles[0]
+    assert cpu_cycle.cpu_id == "3"
+    assert cpu_cycle.dir_name == "unknown"
+    proc = cpu_cycle.processes[0]
     assert proc.process_name == "hellokitty"
     assert proc.pid == "123"
     assert proc.logs[0].cpu_id == "3"
@@ -129,7 +169,42 @@ def test_module2_logs_outside_module1_cycle_go_to_unknown(tmp_path):
     assert cycle.dir_name == "unknown"
     assert cycle.start_time is None
     assert cycle.end_time is None
-    assert cycle.processes[0].logs[0].context == "outside cycle"
+    assert cycle.processes == []
+    assert cycle.cpu_cycles[0].cpu_id == "3"
+    assert cycle.cpu_cycles[0].dir_name == "unknown"
+    assert cycle.cpu_cycles[0].processes[0].logs[0].context == "outside cycle"
+
+
+def test_module2_cpu_entry_matches_nested_cpu_cycle_before_board_cycle(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:06:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="nested cpu cycle"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_nested_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    board_cycle = mech.slots[0].board_cycles[0]
+    assert board_cycle.dir_name == "20260103T000000-20260103T001000"
+    assert board_cycle.processes == []
+    assert len(board_cycle.cpu_cycles) == 1
+    cpu_cycle = board_cycle.cpu_cycles[0]
+    assert cpu_cycle.cpu_id == "3"
+    assert cpu_cycle.dir_name == "20260103T000500-20260103T000700"
+    assert cpu_cycle.processes[0].logs[0].context == "nested cpu cycle"
 
 
 def test_module2_missing_dependency_records_error(tmp_path):
@@ -182,6 +257,7 @@ def test_module2_output_uses_existing_mech_layout(tmp_path):
         / "slot_2"
         / "20260103T000000-20260103T010000"
         / "cpu_3"
+        / "unknown"
         / "hellokitty-123.log"
     )
     assert out_file.is_file()
@@ -211,7 +287,7 @@ def test_module2_unknown_output_uses_existing_mech_layout(tmp_path):
     assert mech is not None
     mech_dir = MechOutputWriter().write(mech, tmp_path / "output")
 
-    out_file = mech_dir / "slot_2" / "unknown" / "cpu_3" / "hellokitty-123.log"
+    out_file = mech_dir / "slot_2" / "unknown" / "cpu_3" / "unknown" / "hellokitty-123.log"
     assert out_file.is_file()
     assert "outside cycle" in out_file.read_text(encoding="utf-8")
 

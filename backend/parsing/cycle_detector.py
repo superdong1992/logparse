@@ -32,7 +32,14 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from backend.models import MechBoardCycle, MechCycleSplitTrace, MechLogEntry, MechProcessLifecycle
+from backend.models import (
+    MechBoardCycle,
+    MechBoundaryIssue,
+    MechCpuCycle,
+    MechCycleSplitTrace,
+    MechLogEntry,
+    MechProcessLifecycle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +67,16 @@ class CycleDetector:
         self._split_traces: list[MechCycleSplitTrace] = []
         self.errors: list[str] = []
         self._diagnostics_seen: set[str] = set()
+        self.lifecycle_reliable: bool = True
+        self.boundary_issues: list[MechBoundaryIssue] = []
 
     def detect(self, entries: list[MechLogEntry]) -> list[MechBoardCycle]:
         """检测重启周期，返回按时间排列的周期列表。"""
         self._split_traces = []
         self.errors = []
         self._diagnostics_seen = set()
+        self.lifecycle_reliable = True
+        self.boundary_issues = []
         logger.info(
             "CycleDetector.detect: 共 %d 条日志, indicator=%r, whitelist=%s",
             len(entries), self._indicator, self._whitelist,
@@ -96,7 +107,8 @@ class CycleDetector:
         if not self._indicator:
             logger.warning("indicator 为空，不做 PID 切分，整体作为一个周期")
             all_entries = [e for group in by_cpu.values() for e in group]
-            return self._make_cycles(all_entries) if all_entries else []
+            flat_cycles = self._make_cycles(all_entries) if all_entries else []
+            return self._nest_cpu_cycles(flat_cycles, all_entries)
 
         segments_by_bounds: dict[tuple[datetime | None, datetime | None], list[MechLogEntry]] = defaultdict(list)
 
@@ -168,6 +180,7 @@ class CycleDetector:
             c.start_time.timestamp() if c.start_time else 0,
             c.dir_name,
         ))
+        cycles = self._nest_cpu_cycles(cycles, entries)
 
         # 将 split traces 分配到对应周期
         self._record_over_split_diagnostics(cycles)
@@ -180,6 +193,140 @@ class CycleDetector:
         return cycles
 
     # ── 单组切分检测（核心算法）───────────────────────────────
+
+    def _nest_cpu_cycles(
+        self,
+        flat_cycles: list[MechBoardCycle],
+        all_entries: list[MechLogEntry],
+    ) -> list[MechBoardCycle]:
+        board_cycles: list[MechBoardCycle] = []
+        pending_cpu_cycles: list[MechCpuCycle] = []
+
+        for cycle in flat_cycles:
+            board_processes: list[MechProcessLifecycle] = []
+            cpu_processes: dict[str, list[MechProcessLifecycle]] = defaultdict(list)
+            for process in cycle.processes:
+                cpu_id = self._process_cpu_id(process)
+                if cpu_id:
+                    cpu_processes[cpu_id].append(process)
+                else:
+                    board_processes.append(process)
+
+            if board_processes:
+                board_cycle = cycle.model_copy(update={
+                    "processes": board_processes,
+                    "cpu_cycles": [],
+                })
+                board_cycles.append(board_cycle)
+                for cpu_id, processes in sorted(cpu_processes.items()):
+                    board_cycle.cpu_cycles.append(
+                        self._make_cpu_cycle_from_processes(cpu_id, cycle, processes)
+                    )
+            else:
+                for cpu_id, processes in sorted(cpu_processes.items()):
+                    pending_cpu_cycles.append(
+                        self._make_cpu_cycle_from_processes(cpu_id, cycle, processes)
+                    )
+
+        if not board_cycles and all_entries:
+            board_entries = [entry for entry in all_entries if not entry.cpu_id]
+            times = [entry.timestamp for entry in all_entries if entry.timestamp]
+            start = min(times) if times else None
+            end = max(times) if times else None
+            sequence_mode = self._sequence_mode(board_entries)
+            board_cycles = [
+                MechBoardCycle(
+                    dir_name=self._fmt_dir(start, end),
+                    start_time=start,
+                    end_time=end,
+                    processes=self._build_processes(board_entries, sequence_mode) if board_entries else [],
+                )
+            ]
+
+        for cpu_cycle in pending_cpu_cycles:
+            parent = self._select_parent_board_cycle(board_cycles, cpu_cycle)
+            if parent is None:
+                board_cycles.append(MechBoardCycle(
+                    dir_name=cpu_cycle.dir_name,
+                    start_time=cpu_cycle.start_time,
+                    end_time=cpu_cycle.end_time,
+                    cpu_cycles=[cpu_cycle],
+                ))
+            else:
+                parent.cpu_cycles.append(cpu_cycle)
+
+        for cycle in board_cycles:
+            cycle.cpu_cycles.sort(key=lambda c: (
+                c.cpu_id,
+                0 if c.start_time else 1,
+                c.start_time.timestamp() if c.start_time else 0,
+                c.dir_name,
+            ))
+
+        board_cycles.sort(key=lambda c: (
+            0 if c.start_time else 1,
+            c.start_time.timestamp() if c.start_time else 0,
+            c.dir_name,
+        ))
+        return board_cycles
+
+    @staticmethod
+    def _process_cpu_id(process: MechProcessLifecycle) -> str:
+        for log in process.logs:
+            if log.cpu_id:
+                return log.cpu_id
+        return ""
+
+    @staticmethod
+    def _make_cpu_cycle_from_processes(
+        cpu_id: str,
+        source_cycle: MechBoardCycle,
+        processes: list[MechProcessLifecycle],
+    ) -> MechCpuCycle:
+        return MechCpuCycle(
+            cpu_id=cpu_id,
+            dir_name=source_cycle.dir_name,
+            start_time=source_cycle.start_time,
+            end_time=source_cycle.end_time,
+            processes=processes,
+        )
+
+    @staticmethod
+    def _select_parent_board_cycle(
+        board_cycles: list[MechBoardCycle],
+        cpu_cycle: MechCpuCycle,
+    ) -> MechBoardCycle | None:
+        if not board_cycles:
+            return None
+        ref = cpu_cycle.start_time or cpu_cycle.end_time
+        if ref is None:
+            return board_cycles[0]
+
+        for board_cycle in board_cycles:
+            if board_cycle.start_time and board_cycle.end_time:
+                if board_cycle.start_time <= ref <= board_cycle.end_time:
+                    return board_cycle
+
+        best_cycle: MechBoardCycle | None = None
+        best_overlap = timedelta.min
+        if cpu_cycle.start_time and cpu_cycle.end_time:
+            for board_cycle in board_cycles:
+                if not board_cycle.start_time or not board_cycle.end_time:
+                    continue
+                overlap_start = max(cpu_cycle.start_time, board_cycle.start_time)
+                overlap_end = min(cpu_cycle.end_time, board_cycle.end_time)
+                overlap = overlap_end - overlap_start
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_cycle = board_cycle
+            if best_cycle is not None and best_overlap >= timedelta(0):
+                return best_cycle
+
+        return max(
+            (cycle for cycle in board_cycles if cycle.start_time and cycle.start_time <= ref),
+            key=lambda cycle: cycle.start_time,
+            default=board_cycles[0],
+        )
 
     def _detect_splits_for_group(
         self, group: list[MechLogEntry],
@@ -351,6 +498,18 @@ class CycleDetector:
         )
 
         # 初始切分点：优先取 old_pid_end（保证旧 PID 完整性）
+        if old_pid_end and new_pid_start and new_pid_start <= old_pid_end:
+            scope = f"cpu:{group[change_idx].cpu_id}" if group[change_idx].cpu_id else "board"
+            self._record_split_diagnostic(
+                "restart_boundary_overlap",
+                slot=group[change_idx].slot,
+                scope=scope,
+                split=old_pid_end + timedelta(microseconds=1),
+                reason="new_pid_start_le_old_pid_end",
+                old_pid_end=old_pid_end.isoformat(),
+                new_pid_start=new_pid_start.isoformat(),
+            )
+
         if old_pid_end:
             initial_split = old_pid_end
         elif new_pid_start:
@@ -1004,6 +1163,15 @@ class CycleDetector:
                 ))
         return conflicts
 
+    @staticmethod
+    def _conflict_scope(
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]],
+    ) -> str:
+        cpu_keys = sorted({cpu for _slot, _proc, _pid, cpu, *_rest in conflicts})
+        if len(cpu_keys) == 1:
+            return f"cpu:{cpu_keys[0]}" if cpu_keys[0] else "board"
+        return "mixed" if cpu_keys else "board"
+
     def _record_unsafe_split(
         self,
         action: str,
@@ -1046,6 +1214,18 @@ class CycleDetector:
         if reason:
             message += f" reason={reason}"
         self.errors.append(message)
+        if action == "kept":
+            self.lifecycle_reliable = False
+            self._append_boundary_issue(
+                "unsafe_cycle_split",
+                slot=",".join(slots) if slots else "-",
+                scope=self._conflict_scope(conflicts),
+                split=raw_split,
+                adjusted=adjusted_split,
+                window_start=window_start,
+                window_end=window_end,
+                detail=message,
+            )
         logger.error(message)
         diagnostic_kind = {
             "adjusted": "same_pid_adjusted",
@@ -1143,6 +1323,12 @@ class CycleDetector:
             c.dir_name,
         ))
         for trace in self._split_traces:
+            if trace.cpu_id:
+                target_cpu = self._find_trace_cpu_cycle(ordered_cycles, trace)
+                if target_cpu is not None:
+                    target_cpu.split_traces.append(trace)
+                    continue
+
             target = ordered_cycles[-1]
             for cycle in ordered_cycles:
                 if cycle.start_time and trace.timestamp < cycle.start_time:
@@ -1151,6 +1337,67 @@ class CycleDetector:
                 if cycle.start_time and trace.timestamp >= cycle.start_time:
                     target = cycle
             target.split_traces.append(trace)
+
+    @staticmethod
+    def _find_trace_cpu_cycle(
+        cycles: list[MechBoardCycle],
+        trace: MechCycleSplitTrace,
+    ) -> MechCpuCycle | None:
+        candidates = [
+            cpu_cycle
+            for cycle in cycles
+            for cpu_cycle in cycle.cpu_cycles
+            if cpu_cycle.cpu_id == trace.cpu_id
+        ]
+        if not candidates:
+            return None
+        target = candidates[-1]
+        for cpu_cycle in sorted(candidates, key=lambda c: (
+            0 if c.start_time else 1,
+            c.start_time.timestamp() if c.start_time else 0,
+            c.dir_name,
+        )):
+            if cpu_cycle.start_time and trace.timestamp < cpu_cycle.start_time:
+                target = cpu_cycle
+                break
+            if cpu_cycle.start_time and trace.timestamp >= cpu_cycle.start_time:
+                target = cpu_cycle
+        return target
+
+    def _append_boundary_issue(
+        self,
+        kind: str,
+        *,
+        slot: str | None = None,
+        scope: str | None = None,
+        split: datetime | None = None,
+        adjusted: datetime | None = None,
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
+        old_pid_end: datetime | None = None,
+        new_pid_start: datetime | None = None,
+        process_name: str = "",
+        pid: str = "",
+        direction: str = "",
+        log_count: int = 0,
+        detail: str = "",
+    ) -> None:
+        self.boundary_issues.append(MechBoundaryIssue(
+            kind=kind,
+            slot=slot or "",
+            scope=scope or "board",
+            split_time=split,
+            adjusted_time=adjusted,
+            window_start=window_start,
+            window_end=window_end,
+            old_pid_end=old_pid_end,
+            new_pid_start=new_pid_start,
+            process_name=process_name,
+            pid=pid,
+            direction=direction,
+            log_count=log_count,
+            detail=detail,
+        ))
 
     def _record_split_diagnostic(
         self,
@@ -1181,6 +1428,16 @@ class CycleDetector:
             return
         self._diagnostics_seen.add(message)
         self.errors.append(message)
+        if kind in {"restart_boundary_overlap", "same_pid_kept"}:
+            self.lifecycle_reliable = False
+        self._append_boundary_issue(
+            kind,
+            slot=slot,
+            scope=scope,
+            split=split,
+            adjusted=adjusted,
+            detail=" ".join(f"{key}={value}" for key, value in fields.items()),
+        )
         logger.error(message)
 
     @staticmethod

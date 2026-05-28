@@ -89,6 +89,11 @@ class MetadataGenerator:
             "slots": [
                 {
                     "slot_id": s.slot_id,
+                    "lifecycle_reliable": s.lifecycle_reliable,
+                    "boundary_issues": [
+                        issue.model_dump(mode="json")
+                        for issue in s.boundary_issues
+                    ],
                     "board_cycles": [
                         {
                             "dir_name": c.dir_name,
@@ -102,6 +107,30 @@ class MetadataGenerator:
                                     "missing_count": len(p.missing_sequences),
                                 }
                                 for p in c.processes
+                            ],
+                            "cpu_cycles": [
+                                {
+                                    "cpu_id": cpu_cycle.cpu_id,
+                                    "dir_name": cpu_cycle.dir_name,
+                                    "start_time": (
+                                        cpu_cycle.start_time.isoformat()
+                                        if cpu_cycle.start_time else None
+                                    ),
+                                    "end_time": (
+                                        cpu_cycle.end_time.isoformat()
+                                        if cpu_cycle.end_time else None
+                                    ),
+                                    "processes": [
+                                        {
+                                            "process_name": p.process_name,
+                                            "pid": p.pid,
+                                            "total_count": p.total_count,
+                                            "missing_count": len(p.missing_sequences),
+                                        }
+                                        for p in cpu_cycle.processes
+                                    ],
+                                }
+                                for cpu_cycle in c.cpu_cycles
                             ],
                         }
                         for c in s.board_cycles

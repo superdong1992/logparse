@@ -207,11 +207,15 @@ class TestBuildCycles:
         board_cycles = [c for c in cycles if any(
             p.pid == "100" for p in c.processes
         )]
-        cpu_cycles = [c for c in cycles if any(
-            p.pid in ("50", "60") for p in c.processes
-        )]
         assert len(board_cycles) == 1
+        cpu_cycles = board_cycles[0].cpu_cycles
         assert len(cpu_cycles) == 2
+        assert {
+            p.pid
+            for cpu_cycle in cpu_cycles
+            for p in cpu_cycle.processes
+            if p.process_name == "dhcp"
+        } == {"50", "60"}
 
 
 class TestRoleIdentification:
