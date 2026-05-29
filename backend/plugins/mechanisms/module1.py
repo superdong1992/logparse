@@ -124,6 +124,7 @@ class Module1Plugin(MechanismModulePlugin):
                 indicator=indicator,
                 whitelist=whitelist,
                 module_key=self.module_key,
+                module_name=module_name,
             )
             slot_output.board_cycles = detector.detect(entries)
             slot_output.lifecycle_reliable = detector.lifecycle_reliable

@@ -514,7 +514,7 @@ class TestWhitelistSafeSplit:
         assert any(issue.kind == "same_pid_adjusted_backward" for issue in det.boundary_issues)
 
     def test_unavoidable_same_pid_conflict_marks_lifecycle_unreliable(self):
-        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
         entries = [
             _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
             _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 10)),
@@ -533,6 +533,23 @@ class TestWhitelistSafeSplit:
         assert det.lifecycle_reliable is False
         assert any(issue.kind == "unsafe_cycle_split" for issue in det.boundary_issues)
         assert any("unsafe cycle split kept" in error for error in det.errors)
+
+        issue = next(issue for issue in det.boundary_issues if issue.kind == "unsafe_cycle_split")
+        assert issue.severity == "error"
+        assert issue.action == "kept"
+        assert issue.module_key == "m1"
+        assert issue.reason == "no_safe_gap_candidate"
+        assert issue.conflicts[0]["process_name"] == "other"
+        assert issue.conflicts[0]["pid"] == "500"
+        assert issue.conflicts[0]["before_log"]["raw_excerpt"] == "other-500-no-sequence"
+        assert issue.conflicts[0]["after_log"]["raw_excerpt"] == "other-500-no-sequence"
+        assert issue.protected_boundaries[0]["process_name"] == "dhcp"
+        assert issue.protected_boundaries[0]["role"] == "indicator"
+        assert issue.evidence[0]["source"] == "diagnostic"
+        assert issue.suggested_commands == [
+            "python cli.py mech-lifecycles <task_id> -s 1 -m m1 --show-boundaries",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p other-500 -m m1",
+        ]
 
     def test_overlap_records_boundary_issue_and_marks_unreliable(self):
         det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])

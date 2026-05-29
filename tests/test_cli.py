@@ -307,3 +307,91 @@ def test_test_pattern_journal_with_sequence(sample_config, tmp_path):
     assert "12345" in result.output
     assert "序号: 7" in result.output
     assert "EXAMPLE with sequence" in result.output
+
+
+def test_mech_lifecycles_show_boundaries(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "unsafe_cycle_split",
+                                        "severity": "error",
+                                        "action": "kept",
+                                        "reason": "no_safe_gap_candidate",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10+08:00",
+                                        "adjusted_time": "2026-01-03T00:00:12+08:00",
+                                        "conflicts": [
+                                            {
+                                                "process_name": "other",
+                                                "pid": "500",
+                                                "cpu_id": "",
+                                                "before_time": "2026-01-03T00:00:05+08:00",
+                                                "after_time": "2026-01-03T00:00:12+08:00",
+                                                "before_log": {
+                                                    "source": "diagnostic",
+                                                    "source_file": "slot_1/diag.log",
+                                                    "sequence": 0,
+                                                    "raw_excerpt": "before raw",
+                                                },
+                                            },
+                                        ],
+                                        "suggested_commands": [
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p other-500 -m EXAMPLE",
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [
+                                    {
+                                        "dir_name": "c1",
+                                        "processes": [
+                                            {
+                                                "process_name": "other",
+                                                "pid": "500",
+                                                "total_count": 1,
+                                                "missing_sequences": [],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "生命周期可靠性: false" in result.output
+    assert "[ERROR] unsafe_cycle_split action=kept reason=no_safe_gap_candidate" in result.output
+    assert "conflict other-500@board before=2026-01-03T00:00:05+08:00 after=2026-01-03T00:00:12+08:00" in result.output
+    assert "evidence diagnostic|slot_1/diag.log seq=0 raw=before raw" in result.output
+    assert "python cli.py mech-logs task -s 1 -c <board_cycle> -p other-500 -m EXAMPLE" in result.output

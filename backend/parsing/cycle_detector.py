@@ -60,10 +60,12 @@ class CycleDetector:
         indicator: str | None = None,
         whitelist: list[str] | None = None,
         module_key: str | None = None,
+        module_name: str | None = None,
     ):
         self._indicator = indicator
         self._whitelist = [w.lower() for w in (whitelist or [])]
         self._module_key = module_key or ""
+        self._module_name = module_name or ""
         self._split_traces: list[MechCycleSplitTrace] = []
         self.errors: list[str] = []
         self._diagnostics_seen: set[str] = set()
@@ -774,6 +776,7 @@ class CycleDetector:
                             seen_conflicts,
                             protected_blockers,
                             protected_gap=(gap_start, gap_end),
+                            entries=entries,
                         )
                     else:
                         self._record_unsafe_split(
@@ -785,6 +788,7 @@ class CycleDetector:
                             seen_conflicts,
                             protected_blockers,
                             reason="no_safe_gap_candidate",
+                            entries=entries,
                         )
                         current_split = raw_split
                     recorded_conflict = True
@@ -798,6 +802,7 @@ class CycleDetector:
                         window_end,
                         seen_conflicts,
                         [],
+                        entries=entries,
                     )
                     trace_updates[raw_split] = None
                     dropped = True
@@ -815,6 +820,7 @@ class CycleDetector:
                     window_end,
                     seen_conflicts,
                     [],
+                    entries=entries,
                 )
             refined.append(current_split)
             trace_updates[raw_split] = current_split
@@ -1172,6 +1178,195 @@ class CycleDetector:
             return f"cpu:{cpu_keys[0]}" if cpu_keys[0] else "board"
         return "mixed" if cpu_keys else "board"
 
+    @staticmethod
+    def _raw_excerpt(raw: str, limit: int = 240) -> str:
+        compact = " ".join((raw or "").replace("\r", " ").replace("\n", " ").split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3] + "..."
+
+    def _entry_summary(self, entry: MechLogEntry | None, role: str) -> dict:
+        if entry is None:
+            return {}
+        return {
+            "role": role,
+            "timestamp": self._fmt_optional_ts(entry.timestamp),
+            "source": entry.source,
+            "source_file": entry.source_file,
+            "slot": entry.slot,
+            "cpu_id": entry.cpu_id or "",
+            "process_name": entry.process_name,
+            "pid": entry.pid,
+            "sequence": entry.sequence,
+            "raw_excerpt": self._raw_excerpt(entry.raw or entry.context),
+        }
+
+    @staticmethod
+    def _find_evidence_entry(
+        entries: list[MechLogEntry],
+        *,
+        slot: str | None = None,
+        process_name: str,
+        pid: str,
+        cpu_id: str,
+        timestamp: datetime,
+    ) -> MechLogEntry | None:
+        proc_lower = process_name.lower()
+        for entry in entries:
+            if entry.timestamp != timestamp:
+                continue
+            if slot is not None and entry.slot != slot:
+                continue
+            if entry.process_name.lower() != proc_lower:
+                continue
+            if entry.pid != pid:
+                continue
+            if (entry.cpu_id or "") != cpu_id:
+                continue
+            return entry
+        return None
+
+    def _conflict_summaries(
+        self,
+        entries: list[MechLogEntry],
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]],
+    ) -> list[dict]:
+        summaries: list[dict] = []
+        for slot, proc, pid, cpu, before, after, last in conflicts:
+            before_log = self._find_evidence_entry(
+                entries,
+                slot=slot,
+                process_name=proc,
+                pid=pid,
+                cpu_id=cpu,
+                timestamp=before,
+            )
+            after_log = self._find_evidence_entry(
+                entries,
+                slot=slot,
+                process_name=proc,
+                pid=pid,
+                cpu_id=cpu,
+                timestamp=after,
+            )
+            last_log = self._find_evidence_entry(
+                entries,
+                slot=slot,
+                process_name=proc,
+                pid=pid,
+                cpu_id=cpu,
+                timestamp=last,
+            )
+            summaries.append({
+                "slot": slot,
+                "process_name": proc,
+                "pid": pid,
+                "cpu_id": cpu,
+                "before_time": before.isoformat(),
+                "after_time": after.isoformat(),
+                "last_time": last.isoformat(),
+                "before_log": self._entry_summary(before_log, "conflict_before"),
+                "after_log": self._entry_summary(after_log, "conflict_after"),
+                "last_log": self._entry_summary(last_log, "conflict_last"),
+            })
+        return summaries
+
+    def _protected_boundary_summaries(
+        self,
+        entries: list[MechLogEntry],
+        protected_boundaries: list[tuple[str, str, str, tuple[str, ...], str, datetime, datetime]],
+    ) -> list[dict]:
+        summaries: list[dict] = []
+        for proc, new_pid, cpu, old_pids, role, old_end, new_start in protected_boundaries:
+            old_log: MechLogEntry | None = None
+            for old_pid in old_pids:
+                old_log = self._find_evidence_entry(
+                    entries,
+                    process_name=proc,
+                    pid=old_pid,
+                    cpu_id=cpu,
+                    timestamp=old_end,
+                )
+                if old_log is not None:
+                    break
+            new_log = self._find_evidence_entry(
+                entries,
+                process_name=proc,
+                pid=new_pid,
+                cpu_id=cpu,
+                timestamp=new_start,
+            )
+            summaries.append({
+                "slot": (old_log or new_log).slot if (old_log or new_log) else "",
+                "process_name": proc,
+                "cpu_id": cpu,
+                "role": role,
+                "old_pids": list(old_pids),
+                "old_end": old_end.isoformat(),
+                "new_pid": new_pid,
+                "new_start": new_start.isoformat(),
+                "old_log": self._entry_summary(old_log, "protected_old"),
+                "new_log": self._entry_summary(new_log, "protected_new"),
+            })
+        return summaries
+
+    @staticmethod
+    def _issue_evidence(conflicts: list[dict], protected_boundaries: list[dict]) -> list[dict]:
+        evidence: list[dict] = []
+        seen: set[tuple[str, str, str, str, str, int]] = set()
+
+        def add(item: dict) -> None:
+            if not item:
+                return
+            key = (
+                item.get("timestamp", ""),
+                item.get("process_name", ""),
+                item.get("pid", ""),
+                item.get("cpu_id", ""),
+                item.get("source_file", ""),
+                item.get("sequence", 0),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            evidence.append(item)
+
+        for conflict in conflicts:
+            add(conflict.get("before_log", {}))
+            add(conflict.get("after_log", {}))
+            add(conflict.get("last_log", {}))
+        for boundary in protected_boundaries:
+            add(boundary.get("old_log", {}))
+            add(boundary.get("new_log", {}))
+        return evidence
+
+    def _suggested_commands(
+        self,
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]],
+    ) -> list[str]:
+        if not conflicts:
+            return []
+        module_name = self._module_name or self._module_key or "<module>"
+        slots = sorted({slot or "-" for slot, *_rest in conflicts})
+        commands = [
+            f"python cli.py mech-lifecycles <task_id> -s {slots[0]} -m {module_name} --show-boundaries"
+        ]
+        seen_proc: set[tuple[str, str, str, str]] = set()
+        for slot, proc, pid, cpu, *_rest in conflicts:
+            key = (slot, proc, pid, cpu)
+            if key in seen_proc:
+                continue
+            seen_proc.add(key)
+            proc_arg = f"{proc}-{pid}" if pid else proc
+            cmd = (
+                f"python cli.py mech-logs <task_id> -s {slot or '-'} "
+                f"-c <board_cycle> -p {proc_arg} -m {module_name}"
+            )
+            if cpu:
+                cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"
+            commands.append(cmd)
+        return commands
+
     def _record_unsafe_split(
         self,
         action: str,
@@ -1183,8 +1378,14 @@ class CycleDetector:
         protected_blockers: list[tuple[str, str, str, tuple[str, ...], str, datetime, datetime]] | None = None,
         reason: str | None = None,
         protected_gap: tuple[datetime, datetime] | None = None,
+        entries: list[MechLogEntry] | None = None,
     ) -> None:
         slots = sorted({slot or "-" for slot, *_rest in conflicts})
+        conflict_payload = self._conflict_summaries(entries or [], conflicts)
+        protected_payload = self._protected_boundary_summaries(entries or [], protected_blockers or [])
+        evidence_payload = self._issue_evidence(conflict_payload, protected_payload)
+        suggested_commands = self._suggested_commands(conflicts)
+        severity = "error" if action == "kept" else "warning"
         conflict_text = "; ".join(
             f"{proc}-{pid}@{cpu or 'board'} before={before.isoformat()} "
             f"after={after.isoformat()} last={last.isoformat()}"
@@ -1224,7 +1425,15 @@ class CycleDetector:
                 adjusted=adjusted_split,
                 window_start=window_start,
                 window_end=window_end,
+                action=action,
+                reason=reason or action,
+                module_key=self._module_key,
                 detail=message,
+                conflicts=conflict_payload,
+                protected_boundaries=protected_payload,
+                evidence=evidence_payload,
+                suggested_commands=suggested_commands,
+                severity=severity,
             )
         logger.error(message)
         diagnostic_kind = {
@@ -1246,6 +1455,12 @@ class CycleDetector:
                 split=raw_split,
                 adjusted=adjusted_split,
                 reason=reason or action,
+                action=action,
+                severity=severity,
+                conflicts=conflict_payload,
+                protected_boundaries=protected_payload,
+                evidence=evidence_payload,
+                suggested_commands=suggested_commands,
             )
 
     def _apply_split_trace_updates(
@@ -1368,6 +1583,10 @@ class CycleDetector:
         self,
         kind: str,
         *,
+        severity: str = "warning",
+        action: str = "",
+        reason: str = "",
+        module_key: str = "",
         slot: str | None = None,
         scope: str | None = None,
         split: datetime | None = None,
@@ -1381,9 +1600,25 @@ class CycleDetector:
         direction: str = "",
         log_count: int = 0,
         detail: str = "",
+        conflicts: list[dict] | None = None,
+        protected_boundaries: list[dict] | None = None,
+        evidence: list[dict] | None = None,
+        suggested_commands: list[str] | None = None,
     ) -> None:
+        issue_slot = slot or ""
+        issue_scope = scope or "board"
+        event_id = (
+            f"{module_key or self._module_key or '-'}:"
+            f"{issue_slot or '-'}:{issue_scope}:{kind}:"
+            f"{self._fmt_optional_ts(split)}"
+        )
         self.boundary_issues.append(MechBoundaryIssue(
             kind=kind,
+            severity=severity,
+            action=action,
+            reason=reason,
+            module_key=module_key or self._module_key,
+            event_id=event_id,
             slot=slot or "",
             scope=scope or "board",
             split_time=split,
@@ -1397,7 +1632,25 @@ class CycleDetector:
             direction=direction,
             log_count=log_count,
             detail=detail,
+            conflicts=conflicts or [],
+            protected_boundaries=protected_boundaries or [],
+            evidence=evidence or [],
+            suggested_commands=suggested_commands or [],
         ))
+
+    @staticmethod
+    def _diagnostic_severity(kind: str) -> str:
+        if kind in {"restart_boundary_overlap", "same_pid_kept"}:
+            return "error"
+        if kind in {
+            "same_pid_adjusted",
+            "same_pid_adjusted_backward",
+            "same_pid_dropped",
+            "protected_forced_split",
+            "suspect_pid_bounce",
+        }:
+            return "warning"
+        return "info"
 
     def _record_split_diagnostic(
         self,
@@ -1408,6 +1661,12 @@ class CycleDetector:
         split: datetime | None = None,
         adjusted: datetime | None = None,
         reason: str | None = None,
+        action: str = "",
+        severity: str | None = None,
+        conflicts: list[dict] | None = None,
+        protected_boundaries: list[dict] | None = None,
+        evidence: list[dict] | None = None,
+        suggested_commands: list[str] | None = None,
         **fields: str,
     ) -> None:
         parts = [
@@ -1432,11 +1691,19 @@ class CycleDetector:
             self.lifecycle_reliable = False
         self._append_boundary_issue(
             kind,
+            severity=severity or self._diagnostic_severity(kind),
+            action=action,
+            reason=reason or "",
+            module_key=self._module_key,
             slot=slot,
             scope=scope,
             split=split,
             adjusted=adjusted,
             detail=" ".join(f"{key}={value}" for key, value in fields.items()),
+            conflicts=conflicts,
+            protected_boundaries=protected_boundaries,
+            evidence=evidence,
+            suggested_commands=suggested_commands,
         )
         logger.error(message)
 

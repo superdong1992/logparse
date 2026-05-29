@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -127,6 +127,11 @@ class MechCycleSplitTrace(BaseModel):
 class MechBoundaryIssue(BaseModel):
     """Structured lifecycle boundary diagnostic."""
     kind: str
+    severity: str = "warning"
+    action: str = ""
+    reason: str = ""
+    module_key: str = ""
+    event_id: str = ""
     scope: str = "board"
     slot: str = ""
     split_time: datetime | None = None
@@ -140,6 +145,10 @@ class MechBoundaryIssue(BaseModel):
     direction: str = ""
     log_count: int = 0
     detail: str = ""
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    protected_boundaries: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    suggested_commands: list[str] = Field(default_factory=list)
 
 
 class MechCpuCycle(BaseModel):

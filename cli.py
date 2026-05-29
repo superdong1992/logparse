@@ -257,12 +257,78 @@ def mech_slots(task_id, module_name, output):
         )
 
 
+def _format_issue_time(value) -> str:
+    return value or "-"
+
+
+def _print_boundary_evidence(evidence: dict, indent: str = "    ") -> None:
+    if not evidence:
+        return
+    source = evidence.get("source") or "-"
+    source_file = evidence.get("source_file") or "-"
+    sequence = evidence.get("sequence", 0)
+    raw = evidence.get("raw_excerpt") or ""
+    click.echo(f"{indent}evidence {source}|{source_file} seq={sequence} raw={raw}")
+
+
+def _print_boundary_issues(group: dict, task_id: str) -> None:
+    reliable = str(group.get("lifecycle_reliable", True)).lower()
+    click.echo(f"  生命周期可靠性: {reliable}")
+    issues = group.get("boundary_issues") or []
+    if not issues:
+        return
+
+    for issue in issues:
+        severity = (issue.get("severity") or "warning").upper()
+        kind = issue.get("kind") or "-"
+        action = issue.get("action") or ""
+        reason = issue.get("reason") or "-"
+        scope = issue.get("scope") or "board"
+        split = _format_issue_time(issue.get("split_time"))
+        adjusted = _format_issue_time(issue.get("adjusted_time"))
+        line = f"  [{severity}] {kind}"
+        if action:
+            line += f" action={action}"
+        line += f" reason={reason} scope={scope} split={split}"
+        if adjusted != "-":
+            line += f" adjusted={adjusted}"
+        click.echo(line)
+
+        for conflict in issue.get("conflicts", []):
+            proc = conflict.get("process_name") or "-"
+            pid = conflict.get("pid") or ""
+            cpu = conflict.get("cpu_id") or "board"
+            proc_pid = f"{proc}-{pid}" if pid else proc
+            before = _format_issue_time(conflict.get("before_time"))
+            after = _format_issue_time(conflict.get("after_time"))
+            click.echo(f"    conflict {proc_pid}@{cpu} before={before} after={after}")
+            _print_boundary_evidence(conflict.get("before_log") or {}, indent="    ")
+            _print_boundary_evidence(conflict.get("after_log") or {}, indent="    ")
+
+        for boundary in issue.get("protected_boundaries", []):
+            proc = boundary.get("process_name") or "-"
+            cpu = boundary.get("cpu_id") or "board"
+            role = boundary.get("role") or "-"
+            old_pids = ",".join(boundary.get("old_pids") or [])
+            new_pid = boundary.get("new_pid") or "-"
+            click.echo(
+                f"    protected {proc}@{cpu} role={role} "
+                f"old_pids={old_pids} new_pid={new_pid} "
+                f"old_end={_format_issue_time(boundary.get('old_end'))} "
+                f"new_start={_format_issue_time(boundary.get('new_start'))}"
+            )
+
+        for command in issue.get("suggested_commands", []):
+            click.echo(f"    hint {command.replace('<task_id>', task_id)}")
+
+
 @cli.command()
 @click.argument("task_id")
 @click.option("--slot", "-s", required=True, help="槽位 ID")
 @click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认展示全部模块")
+@click.option("--show-boundaries", is_flag=True, help="显示生命周期切分诊断")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_lifecycles(task_id, slot, module_name, output):
+def mech_lifecycles(task_id, slot, module_name, show_boundaries, output):
     """列出某 slot 的机制模块周期和进程。"""
     svc = ResultQueryService(Path(output))
     result_data = svc.read_result(task_id)
@@ -275,6 +341,8 @@ def mech_lifecycles(task_id, slot, module_name, output):
         return
     for group in groups:
         click.echo(f"[{group['module_name']}] slot_{slot}")
+        if show_boundaries:
+            _print_boundary_issues(group, task_id)
         for c in group["board_cycles"]:
             click.echo(f"  {c['dir_name']}")
             for p in c["processes"]:
