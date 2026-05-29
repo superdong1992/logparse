@@ -26,6 +26,7 @@ import click
 from backend.config_validation import validate_config
 from backend.parsing.mech_journal_pattern import JournalPatternMatcher
 from backend.query import ResultQueryService
+from backend.result_serializer import result_to_dict
 from backend.utils import glob_to_regex
 from backend.models import ParseResult
 from backend.pipeline import Pipeline
@@ -49,7 +50,11 @@ def _cycle_process_total_dict(cycle: dict) -> tuple[int, int]:
     return len(processes), sum(process.get("total_count", 0) for process in processes)
 
 
-def _print_summary(result: ParseResult, output_dir: Path) -> None:
+def _print_summary(
+    result: ParseResult,
+    output_dir: Path,
+    result_json_mode: str = "compact",
+) -> None:
     """打印解析结果摘要 + 落盘 result.json。"""
     click.echo(f"\n=== 解析结果 ===")
     click.echo(f"压缩包: {result.package_name}")
@@ -107,7 +112,12 @@ def _print_summary(result: ParseResult, output_dir: Path) -> None:
     json_output = output_dir / result.task_id / "result.json"
     json_output.parent.mkdir(parents=True, exist_ok=True)
     json_output.write_text(
-        json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2, default=str),
+        json.dumps(
+            result_to_dict(result, result_json_mode),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
         encoding="utf-8",
     )
     click.echo(f"\n完整结果: {json_output}")
@@ -161,7 +171,8 @@ def parse(ctx, package_path, output, verbose, product, debug_expand_gz):
             click.echo(f"  - {e}")
 
     # 输出摘要
-    _print_summary(result, output_dir)
+    result_json_mode = raw_config.get("pipeline", {}).get("result_json_mode", "compact")
+    _print_summary(result, output_dir, result_json_mode=result_json_mode)
 
 
 @cli.command()

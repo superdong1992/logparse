@@ -14,6 +14,7 @@
 - 流式读取普通 `.gz` 日志
 - 安全压缩包解压
 - Windows UTF-8 终端支持
+- 轻量 `result.json` 和解析后清理配置
 
 ---
 
@@ -316,7 +317,7 @@ python cli.py mech-logs diagnostic_information_20260103 \
 ```text
 output/
 └── diagnostic_information_20260103/
-    ├── extracted/
+    ├── extracted/                 # cleanup_extracted=true 时不保留
     ├── result.json
     └── mech_modules/
         └── EXAMPLE/
@@ -332,8 +333,8 @@ output/
 
 | 路径 | 说明 |
 |---|---|
-| `extracted/` | 原始解压目录 |
-| `result.json` | 结构化解析结果 |
+| `extracted/` | 原始解压目录；`pipeline.cleanup_extracted: true` 时解析完成后删除 |
+| `result.json` | 结构化解析结果；默认 compact 摘要，不重复保存每条 raw 日志 |
 | `mech_modules/` | 机制模块日志拆分结果 |
 
 机制模块日志使用板卡周期作为顶层目录。板卡日志直接写到板卡周期下；CPU 日志写到 `cpu_<id>/<cpu_cycle>/`，如果只匹配到板卡周期但没有匹配到 CPU 周期，则进入 `cpu_<id>/unknown/`。
@@ -348,6 +349,9 @@ output/
 pipeline:
   recursive_extraction: true
   debug_expand_gz: false
+  result_json_mode: "compact"
+  cleanup_extracted: false
+  cleanup_inner_archives: false
 
 products:
   default:
@@ -377,6 +381,9 @@ products:
 |---|---|
 | `pipeline.recursive_extraction` | 是否递归解压归档压缩包 |
 | `pipeline.debug_expand_gz` | 是否调试展开普通 `.gz` 日志 |
+| `pipeline.result_json_mode` | `compact` 写轻量结果摘要；`full` 写完整 ParseResult |
+| `pipeline.cleanup_extracted` | 解析完成后是否删除整个 `extracted/` 工作区 |
+| `pipeline.cleanup_inner_archives` | 保留 `extracted/` 时，是否删除已有 `_extracted/` 目录的内层归档副本 |
 | `products` | 产品配置 |
 | `discovery` | 日志发现插件 |
 | `log_parser` | 日志解析插件 |

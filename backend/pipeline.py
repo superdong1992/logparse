@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,10 @@ class Pipeline:
             if verbose and meta_path:
                 print(f"    元数据: {meta_path}")
 
+        cleanup_count = self._cleanup_intermediate_files(extract_dir)
+        if verbose and cleanup_count:
+            print(f"    清理中间文件: {cleanup_count} 项")
+
         return result
 
     def _load_plugins(
@@ -182,6 +187,42 @@ class Pipeline:
 
         self._plugin_cache[product] = (discovery, log_parser)
         return discovery, log_parser
+
+    def _cleanup_intermediate_files(self, extract_dir: Path) -> int:
+        if self.pipeline_config.get("cleanup_extracted", False):
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
+                return 1
+            return 0
+
+        if self.pipeline_config.get("cleanup_inner_archives", False):
+            return self._cleanup_inner_archives(extract_dir)
+
+        return 0
+
+    def _cleanup_inner_archives(self, extract_dir: Path) -> int:
+        if not extract_dir.exists():
+            return 0
+
+        removed = 0
+        for path in sorted(extract_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            if not self._is_cleanup_archive(path.name):
+                continue
+            if not (path.parent / f"{path.name}_extracted").is_dir():
+                continue
+            path.unlink()
+            removed += 1
+        return removed
+
+    def _is_cleanup_archive(self, name: str) -> bool:
+        lower = name.lower()
+        if lower.endswith(".gz") and not (
+            lower.endswith(".tar.gz") or lower.endswith(".tgz")
+        ):
+            return False
+        return self.decompressor.is_compressed(name)
 
     @staticmethod
     def _decompress_gz_in_dir(directory: Path) -> int:

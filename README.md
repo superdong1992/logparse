@@ -44,7 +44,7 @@ python cli.py test-pattern -m module1 -t journal "日志行"
   → LogParserPlugin 提取基础时间戳和 ActivePeriod，编排机制模块插件
   → MechanismModulePlugin 解析特殊机制模块日志
   → MechOutputWriter 写出板卡周期 + 嵌套 CPU 周期日志
-  → MetadataGenerator 生成 metadata.json，CLI 写出 result.json
+  → MetadataGenerator 生成 metadata.json，CLI 写出轻量 result.json
 ```
 
 机制模块通过 `MechanismModulePlugin` 扩展。`module1` 是机制模块插件，拥有自己的日志扫描、周期切分和主控角色信号；其他模块如果没有周期切分或主控判定需求，可以只实现自己的解析逻辑。`module1` 支持日志行缺少 `No[n]` 的旧版本格式：同一个 slot family（slot 本体及其 CPU 子卡）的同一周期内，若所有 module1 日志都没有 `No[n]`，则按时间排序输出；若都有 `No[n]`，则保留按序号排序、缺号检测和 journal 序号回绕辅助切分。
@@ -53,9 +53,11 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 
 `module2` 是诊断日志-only 的机制模块示例。它依赖 `module1` 的生命周期切分结果，不自行切周期；解析到的 module2 日志会按 `slot + cpu_id + timestamp` 归入 module1 对应周期。CPU 日志优先匹配嵌套 CPU 周期，找不到 CPU 周期但能匹配板卡周期时写入 `cpu_<id>/unknown/`；无法匹配板卡周期的日志写入 `unknown/`。配置时需要把 `module2` 声明在它依赖的 `module1` 之后。
 
-解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用。
+解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用；如需降低磁盘占用，可配置 `pipeline.cleanup_inner_archives: true` 在解析后删除已展开的内层归档副本，或配置 `pipeline.cleanup_extracted: true` 删除整个 `extracted/` 工作区。
 
 普通 `.gz` 日志（如 `journal.log.1.gz`）默认不会展开成独立文件，parser 会直接流式读取，避免批量解析时产生大量重复文件。只有传入 `--debug-expand-gz` 或配置 `pipeline.debug_expand_gz: true` 时，才会额外展开普通 `.gz`，方便人工排查。
+
+`result.json` 默认使用 `pipeline.result_json_mode: "compact"`，只保留查询所需摘要，不再重复写入每条机制日志 raw 内容；需要历史完整对象时可改为 `"full"`。
 
 ## 测试
 
@@ -65,6 +67,7 @@ python -m pytest tests/ -v
 
 ## 变更记录
 
+- 2026-05-29：新增大包资源占用优化配置。`result.json` 默认改为 compact 摘要；`pipeline.cleanup_extracted` 可在解析完成后删除 `extracted/`；`pipeline.cleanup_inner_archives` 可删除已展开的内层归档副本。
 - 2026-05-29：生命周期输出改为板卡周期内嵌套 CPU 周期，`MechCpuCycle`、`lifecycle_reliable` 和 `boundary_issues` 已进入模型/元数据；`module2` 按 `slot + cpu_id + timestamp` 优先匹配嵌套 CPU 周期；`mech-logs` 支持 `--cpu` / `--cpu-cycle` 查询嵌套 CPU 日志。
 - 2026-05-26：新增 `module2` 机制模块。module2 只扫描诊断日志，复用 module1 生命周期切分结果落盘；未匹配周期的日志写入 `unknown/`。module2 日志中 Slot 字段支持 `框号/slot` 格式（如 `1/2`），当前临时提取 `/` 后的 slot 号匹配 module1 周期，正式方案将保留完整框号语义。
 - 2026-05-26：支持 `module1` 无 `No[n]` 日志格式。诊断日志和 journal 日志不再强制要求序号；journal 会从现有 4 组 `No[n]` pattern 自动派生无序号 fallback，一般无需手动修改 `config.yaml`；按 slot family 的周期判断排序模式，有序号周期继续使用 `No[n]` 排序和缺号检测，无序号周期按时间排序，并对混合状态记录 warning。

@@ -1,13 +1,25 @@
 """Tests for cli.py."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 import importlib
 
 from click.testing import CliRunner
 import yaml
 
 from cli import cli
-from backend.models import ParseResult
+from cli import _print_summary
+from backend.models import (
+    LogEntry,
+    MechBoardCycle,
+    MechLogEntry,
+    MechProcessLifecycle,
+    MechResult,
+    MechSlotOutput,
+    ParseResult,
+    SlotInfo,
+)
 
 
 def test_test_pattern_reads_nested_mechanism_config(sample_config, tmp_path):
@@ -113,6 +125,70 @@ def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
     assert "same_pid_conflicts=other-500@board" in result.output
     assert "protected_boundaries=dhcp@board role=indicator" in result.output
     assert "reason=no_safe_gap_candidate" in result.output
+
+
+def test_print_summary_writes_compact_result_by_default(tmp_path):
+    ts = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    diag_entry = LogEntry(
+        path="diag.zip",
+        name="diag.zip",
+        size_bytes=100,
+        compressed=True,
+        content_timestamps=[ts],
+    )
+    slot = SlotInfo(
+        slot_id="1",
+        name="slot_1",
+        path="/tmp/slot_1",
+        diagnostic_logs=[diag_entry],
+    )
+    mech_log = MechLogEntry(
+        timestamp=ts,
+        source="diagnostic",
+        source_file="slot_1/diag.zip",
+        slot="1",
+        process_name="svc",
+        pid="123",
+        sequence=1,
+        raw="raw line that should only live in mech_modules output",
+    )
+    process = MechProcessLifecycle(
+        process_name="svc",
+        pid="123",
+        logs=[mech_log],
+        total_count=1,
+        missing_sequences=[2],
+    )
+    cycle = MechBoardCycle(
+        dir_name="cycle",
+        start_time=ts,
+        end_time=ts,
+        processes=[process],
+    )
+    mech_result = MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[MechSlotOutput(slot_id="1", board_cycles=[cycle])],
+        diag_entry_count=1,
+    )
+    result = ParseResult(
+        task_id="task",
+        package_name="package.zip",
+        diagnostic_slots=[slot],
+        mech_results=[mech_result],
+    )
+
+    _print_summary(result, tmp_path)
+
+    data = json.loads((tmp_path / "task" / "result.json").read_text(encoding="utf-8"))
+    diag_log = data["diagnostic_slots"][0]["diagnostic_logs"][0]
+    assert diag_log["content_timestamp_count"] == 1
+    assert "content_timestamps" not in diag_log
+    proc = data["mech_results"][0]["slots"][0]["board_cycles"][0]["processes"][0]
+    assert proc["total_count"] == 1
+    assert proc["missing_sequences"] == [2]
+    assert "logs" not in proc
+    assert "raw line that should only live" not in json.dumps(data, ensure_ascii=False)
 
 
 def test_test_pattern_journal_without_sequence(sample_config, tmp_path):

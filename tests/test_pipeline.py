@@ -60,3 +60,62 @@ class TestUnifiedExtractionBoundary:
         pipeline._plugin_cache["default"] = (FakeDiscovery(), FakeParser())
 
         pipeline.run(tmp_path / "package.zip", tmp_path / "out")
+
+
+class TestPipelineCleanup:
+    def test_cleanup_extracted_removes_workspace_after_run(self, tmp_path):
+        class FakeDecompressor:
+            def extract_all(self, source, dest_dir, recursive=True, expand_gz=False):
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                (dest_dir / "diag.zip").write_text("archive", encoding="utf-8")
+                return []
+
+        class FakeDiscovery:
+            def discover(self, extract_dir):
+                return [], []
+
+        class FakeParser:
+            def parse(self, result):
+                return result
+
+        pipeline = Pipeline({"pipeline": {"cleanup_extracted": True}})
+        pipeline.decompressor = FakeDecompressor()
+        pipeline._plugin_cache["default"] = (FakeDiscovery(), FakeParser())
+
+        pipeline.run(tmp_path / "package.zip", tmp_path / "out", task_id="task")
+
+        assert not (tmp_path / "out" / "task" / "extracted").exists()
+
+    def test_cleanup_inner_archives_keeps_extracted_workspace(self, tmp_path):
+        class FakeDecompressor:
+            def extract_all(self, source, dest_dir, recursive=True, expand_gz=False):
+                slot_dir = dest_dir / "diag" / "slot_1"
+                slot_dir.mkdir(parents=True, exist_ok=True)
+                (slot_dir / "diag.zip").write_text("archive", encoding="utf-8")
+                (slot_dir / "diag.zip_extracted").mkdir()
+                (slot_dir / "diag.zip_extracted" / "inner.log").write_text("log", encoding="utf-8")
+                (slot_dir / "unexpanded.zip").write_text("keep", encoding="utf-8")
+                return []
+
+            def is_compressed(self, name):
+                return name.endswith(".zip")
+
+        class FakeDiscovery:
+            def discover(self, extract_dir):
+                return [], []
+
+        class FakeParser:
+            def parse(self, result):
+                return result
+
+        pipeline = Pipeline({"pipeline": {"cleanup_inner_archives": True}})
+        pipeline.decompressor = FakeDecompressor()
+        pipeline._plugin_cache["default"] = (FakeDiscovery(), FakeParser())
+
+        pipeline.run(tmp_path / "package.zip", tmp_path / "out", task_id="task")
+
+        slot_dir = tmp_path / "out" / "task" / "extracted" / "diag" / "slot_1"
+        assert slot_dir.exists()
+        assert not (slot_dir / "diag.zip").exists()
+        assert (slot_dir / "diag.zip_extracted" / "inner.log").exists()
+        assert (slot_dir / "unexpanded.zip").exists()
