@@ -165,10 +165,7 @@ def parse(ctx, package_path, output, verbose, product, debug_expand_gz):
         raw_config["pipeline"]["debug_expand_gz"] = True
     pipeline = Pipeline(raw_config)
     result = pipeline.run(source, output_dir, product=product, verbose=verbose)
-    if result.errors:
-        click.echo(f"\n⚠ {len(result.errors)} 个错误:")
-        for e in result.errors:
-            click.echo(f"  - {e}")
+    _print_parse_errors(result)
 
     # 输出摘要
     result_json_mode = raw_config.get("pipeline", {}).get("result_json_mode", "compact")
@@ -261,6 +258,86 @@ def _format_issue_time(value) -> str:
     return value or "-"
 
 
+def _issue_get(issue, key: str, default=None):
+    if isinstance(issue, dict):
+        return issue.get(key, default)
+    return getattr(issue, key, default)
+
+
+def _severity_key(value) -> str:
+    severity = str(value or "warning").upper()
+    if severity not in {"ERROR", "WARNING", "INFO"}:
+        return "WARNING"
+    return severity
+
+
+def _empty_issue_counts() -> dict[str, int]:
+    return {"ERROR": 0, "WARNING": 0, "INFO": 0}
+
+
+def _format_issue_counts(counts: dict[str, int]) -> str:
+    return f"ERROR={counts['ERROR']} WARNING={counts['WARNING']} INFO={counts['INFO']}"
+
+
+def _boundary_issue_counts(issues) -> dict[str, int]:
+    counts = _empty_issue_counts()
+    for issue in issues:
+        counts[_severity_key(_issue_get(issue, "severity"))] += 1
+    return counts
+
+
+def _iter_result_boundary_issues(result: ParseResult):
+    for mech_result in result.mech_results:
+        for slot in mech_result.slots:
+            for issue in slot.boundary_issues:
+                yield issue
+
+
+def _is_lifecycle_dfx_error(message: str) -> bool:
+    return (
+        "unsafe cycle split" in message
+        or "cycle split diagnostic:" in message
+        or "forced protected pid split:" in message
+    )
+
+
+def _lifecycle_error_severity(message: str) -> str:
+    if (
+        "unsafe cycle split kept" in message
+        or "restart_boundary_overlap" in message
+        or "same_pid_kept" in message
+    ):
+        return "ERROR"
+    if "scoped_cpu_split" in message or "suspect_over_split" in message:
+        return "INFO"
+    return "WARNING"
+
+
+def _print_parse_errors(result: ParseResult) -> None:
+    raw_errors = list(result.errors)
+    lifecycle_errors = [err for err in raw_errors if _is_lifecycle_dfx_error(err)]
+    normal_errors = [err for err in raw_errors if not _is_lifecycle_dfx_error(err)]
+
+    issues = list(_iter_result_boundary_issues(result))
+    counts = _boundary_issue_counts(issues)
+    if not issues:
+        for err in lifecycle_errors:
+            counts[_lifecycle_error_severity(err)] += 1
+
+    if sum(counts.values()):
+        click.echo(f"\n⚠ 生命周期切分诊断: {_format_issue_counts(counts)}")
+        click.echo(
+            "  定位: "
+            f"python cli.py mech-lifecycles {result.task_id} "
+            "-s <slot_id> -m <module_name> --show-boundaries"
+        )
+
+    if normal_errors:
+        click.echo(f"\n⚠ {len(normal_errors)} 个错误:")
+        for err in normal_errors:
+            click.echo(f"  - {err}")
+
+
 def _print_boundary_evidence(evidence: dict, indent: str = "    ") -> None:
     if not evidence:
         return
@@ -271,55 +348,222 @@ def _print_boundary_evidence(evidence: dict, indent: str = "    ") -> None:
     click.echo(f"{indent}evidence {source}|{source_file} seq={sequence} raw={raw}")
 
 
-def _print_boundary_issues(group: dict, task_id: str) -> None:
+def _print_boundary_log(label: str, log: dict, indent: str = "    ") -> None:
+    if not log:
+        return
+    source = log.get("source") or "-"
+    source_file = log.get("source_file") or "-"
+    sequence = log.get("sequence", 0)
+    raw = log.get("raw_excerpt") or ""
+    click.echo(f"{indent}{label} {source}|{source_file} seq={sequence} raw={raw}")
+
+
+def _proc_pid(process_name: str, pid: str) -> str:
+    return f"{process_name}-{pid}" if pid else process_name
+
+
+def _cpu_scope(cpu_id: str | None) -> str:
+    return cpu_id or "board"
+
+
+def _first_hint(commands: list[str], task_id: str) -> str | None:
+    if not commands:
+        return None
+    command = next((cmd for cmd in commands if "mech-logs" in cmd), commands[0])
+    return command.replace("<task_id>", task_id)
+
+
+def _print_issue_header(issue: dict) -> None:
+    severity = (issue.get("severity") or "warning").upper()
+    kind = issue.get("kind") or "-"
+    action = issue.get("action") or ""
+    reason = issue.get("reason") or "-"
+    scope = issue.get("scope") or "board"
+    split = _format_issue_time(issue.get("split_time"))
+    adjusted = _format_issue_time(issue.get("adjusted_time"))
+    line = f"  [{severity}] {kind}"
+    if action:
+        line += f" action={action}"
+    line += f" reason={reason} scope={scope} split={split}"
+    if adjusted != "-":
+        line += f" adjusted={adjusted}"
+    click.echo(line)
+
+
+def _boundary_endpoint(boundaries: list[dict], key: str, value: str | None) -> dict | None:
+    if value:
+        for boundary in boundaries:
+            if boundary.get(key) == value:
+                return boundary
+    return None
+
+
+def _print_restart_overlap_compact(issue: dict) -> None:
+    old_end = _format_issue_time(issue.get("old_pid_end"))
+    new_start = _format_issue_time(issue.get("new_pid_start"))
+    click.echo(f"    overlap new_start={new_start} <= old_end={old_end}")
+
+    boundaries = issue.get("protected_boundaries") or []
+    old_boundary = _boundary_endpoint(boundaries, "old_end", issue.get("old_pid_end"))
+    new_boundary = _boundary_endpoint(boundaries, "new_start", issue.get("new_pid_start"))
+
+    if old_boundary and new_boundary and (
+        old_boundary.get("process_name") == new_boundary.get("process_name")
+        and (old_boundary.get("cpu_id") or "") == (new_boundary.get("cpu_id") or "")
+    ):
+        proc = old_boundary.get("process_name") or "-"
+        old_pid = ",".join(old_boundary.get("old_pids") or [])
+        new_pid = old_boundary.get("new_pid") or "-"
+        cpu = _cpu_scope(old_boundary.get("cpu_id"))
+        role = old_boundary.get("role") or "-"
+        old_raw = (old_boundary.get("old_log") or {}).get("raw_excerpt") or ""
+        new_raw = (new_boundary.get("new_log") or {}).get("raw_excerpt") or ""
+        click.echo(
+            f"    boundary {proc}@{cpu} role={role} {old_pid}->{new_pid} "
+            f"old_end={old_end} new_start={new_start} "
+            f"old_raw={old_raw} new_raw={new_raw}"
+        )
+        return
+
+    if old_boundary:
+        proc = old_boundary.get("process_name") or "-"
+        pid = ",".join(old_boundary.get("old_pids") or [])
+        cpu = _cpu_scope(old_boundary.get("cpu_id"))
+        role = old_boundary.get("role") or "-"
+        raw = (old_boundary.get("old_log") or {}).get("raw_excerpt") or ""
+        click.echo(f"    old-side {_proc_pid(proc, pid)}@{cpu} role={role} old_end={old_end} raw={raw}")
+    if new_boundary:
+        proc = new_boundary.get("process_name") or "-"
+        pid = new_boundary.get("new_pid") or ""
+        cpu = _cpu_scope(new_boundary.get("cpu_id"))
+        role = new_boundary.get("role") or "-"
+        raw = (new_boundary.get("new_log") or {}).get("raw_excerpt") or ""
+        click.echo(f"    new-side {_proc_pid(proc, pid)}@{cpu} role={role} new_start={new_start} raw={raw}")
+
+
+def _print_conflict_compact(issue: dict) -> None:
+    conflict = (issue.get("conflicts") or [{}])[0]
+    proc = conflict.get("process_name") or "-"
+    pid = conflict.get("pid") or ""
+    cpu = _cpu_scope(conflict.get("cpu_id"))
+    before = _format_issue_time(conflict.get("before_time"))
+    after = _format_issue_time(conflict.get("after_time"))
+    click.echo(f"    conflict {_proc_pid(proc, pid)}@{cpu} before={before} after={after}")
+    _print_boundary_log("before", conflict.get("before_log") or {})
+    _print_boundary_log("after", conflict.get("after_log") or {})
+    blocker = (issue.get("protected_boundaries") or [{}])[0]
+    if blocker:
+        bproc = blocker.get("process_name") or "-"
+        bcpu = _cpu_scope(blocker.get("cpu_id"))
+        role = blocker.get("role") or "-"
+        click.echo(
+            f"    blocker {bproc}@{bcpu} role={role} "
+            f"old_end={_format_issue_time(blocker.get('old_end'))} "
+            f"new_start={_format_issue_time(blocker.get('new_start'))}"
+        )
+
+
+def _print_protected_forced_split_compact(issue: dict) -> None:
+    boundary = (issue.get("protected_boundaries") or [{}])[0]
+    if not boundary:
+        return
+    proc = boundary.get("process_name") or "-"
+    old_pid = ",".join(boundary.get("old_pids") or [])
+    new_pid = boundary.get("new_pid") or ""
+    cpu = _cpu_scope(boundary.get("cpu_id"))
+    role = boundary.get("role") or "-"
+    click.echo(
+        f"    protected {_proc_pid(proc, old_pid)}->{new_pid}@{cpu} role={role} "
+        f"old_end={_format_issue_time(boundary.get('old_end'))} "
+        f"new_start={_format_issue_time(boundary.get('new_start'))}"
+    )
+    _print_boundary_log("old", boundary.get("old_log") or {})
+    _print_boundary_log("new", boundary.get("new_log") or {})
+
+
+def _print_pid_bounce_compact(issue: dict) -> None:
+    evidence = issue.get("evidence") or []
+    pids = [item.get("pid") or "-" for item in evidence]
+    if pids:
+        click.echo(f"    pid-bounce {' -> '.join(pids)}")
+    for item in evidence[:3]:
+        _print_boundary_log(item.get("role") or "bounce", item)
+
+
+def _print_boundary_issue_compact(issue: dict, task_id: str) -> None:
+    if _severity_key(issue.get("severity")) == "INFO":
+        return
+    _print_issue_header(issue)
+    kind = issue.get("kind") or ""
+    if kind == "restart_boundary_overlap":
+        _print_restart_overlap_compact(issue)
+    elif kind in {"unsafe_cycle_split", "same_pid_kept", "same_pid_adjusted", "same_pid_adjusted_backward", "same_pid_dropped"}:
+        _print_conflict_compact(issue)
+    elif kind == "protected_forced_split":
+        _print_protected_forced_split_compact(issue)
+    elif kind == "suspect_pid_bounce":
+        _print_pid_bounce_compact(issue)
+    else:
+        for item in (issue.get("evidence") or [])[:2]:
+            _print_boundary_log(item.get("role") or "context", item)
+
+    hint = _first_hint(issue.get("suggested_commands") or [], task_id)
+    if hint:
+        click.echo(f"    hint {hint}")
+
+
+def _print_boundary_issue_full(issue: dict, task_id: str) -> None:
+    _print_issue_header(issue)
+
+    for conflict in issue.get("conflicts", []):
+        proc = conflict.get("process_name") or "-"
+        pid = conflict.get("pid") or ""
+        cpu = _cpu_scope(conflict.get("cpu_id"))
+        before = _format_issue_time(conflict.get("before_time"))
+        after = _format_issue_time(conflict.get("after_time"))
+        click.echo(f"    conflict {_proc_pid(proc, pid)}@{cpu} before={before} after={after}")
+        _print_boundary_evidence(conflict.get("before_log") or {}, indent="    ")
+        _print_boundary_evidence(conflict.get("after_log") or {}, indent="    ")
+
+    for boundary in issue.get("protected_boundaries", []):
+        proc = boundary.get("process_name") or "-"
+        cpu = _cpu_scope(boundary.get("cpu_id"))
+        role = boundary.get("role") or "-"
+        old_pids = ",".join(boundary.get("old_pids") or [])
+        new_pid = boundary.get("new_pid") or "-"
+        click.echo(
+            f"    protected {proc}@{cpu} role={role} "
+            f"old_pids={old_pids} new_pid={new_pid} "
+            f"old_end={_format_issue_time(boundary.get('old_end'))} "
+            f"new_start={_format_issue_time(boundary.get('new_start'))}"
+        )
+
+    for evidence in issue.get("evidence", []):
+        _print_boundary_evidence(evidence, indent="    ")
+
+    for command in issue.get("suggested_commands", []):
+        click.echo(f"    hint {command.replace('<task_id>', task_id)}")
+
+
+def _print_boundary_issues(group: dict, task_id: str, detail: str = "compact") -> None:
     reliable = str(group.get("lifecycle_reliable", True)).lower()
     click.echo(f"  生命周期可靠性: {reliable}")
     issues = group.get("boundary_issues") or []
     if not issues:
         return
 
+    counts = _boundary_issue_counts(issues)
+    click.echo(f"  生命周期切分诊断: {_format_issue_counts(counts)}")
+
+    if detail == "full":
+        for issue in issues:
+            _print_boundary_issue_full(issue, task_id)
+        return
+
     for issue in issues:
-        severity = (issue.get("severity") or "warning").upper()
-        kind = issue.get("kind") or "-"
-        action = issue.get("action") or ""
-        reason = issue.get("reason") or "-"
-        scope = issue.get("scope") or "board"
-        split = _format_issue_time(issue.get("split_time"))
-        adjusted = _format_issue_time(issue.get("adjusted_time"))
-        line = f"  [{severity}] {kind}"
-        if action:
-            line += f" action={action}"
-        line += f" reason={reason} scope={scope} split={split}"
-        if adjusted != "-":
-            line += f" adjusted={adjusted}"
-        click.echo(line)
-
-        for conflict in issue.get("conflicts", []):
-            proc = conflict.get("process_name") or "-"
-            pid = conflict.get("pid") or ""
-            cpu = conflict.get("cpu_id") or "board"
-            proc_pid = f"{proc}-{pid}" if pid else proc
-            before = _format_issue_time(conflict.get("before_time"))
-            after = _format_issue_time(conflict.get("after_time"))
-            click.echo(f"    conflict {proc_pid}@{cpu} before={before} after={after}")
-            _print_boundary_evidence(conflict.get("before_log") or {}, indent="    ")
-            _print_boundary_evidence(conflict.get("after_log") or {}, indent="    ")
-
-        for boundary in issue.get("protected_boundaries", []):
-            proc = boundary.get("process_name") or "-"
-            cpu = boundary.get("cpu_id") or "board"
-            role = boundary.get("role") or "-"
-            old_pids = ",".join(boundary.get("old_pids") or [])
-            new_pid = boundary.get("new_pid") or "-"
-            click.echo(
-                f"    protected {proc}@{cpu} role={role} "
-                f"old_pids={old_pids} new_pid={new_pid} "
-                f"old_end={_format_issue_time(boundary.get('old_end'))} "
-                f"new_start={_format_issue_time(boundary.get('new_start'))}"
-            )
-
-        for command in issue.get("suggested_commands", []):
-            click.echo(f"    hint {command.replace('<task_id>', task_id)}")
+        _print_boundary_issue_compact(issue, task_id)
+    if counts["INFO"]:
+        click.echo(f"  INFO 诊断 {counts['INFO']} 个，使用 --boundary-detail full 查看")
 
 
 @cli.command()
@@ -327,8 +571,15 @@ def _print_boundary_issues(group: dict, task_id: str) -> None:
 @click.option("--slot", "-s", required=True, help="槽位 ID")
 @click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认展示全部模块")
 @click.option("--show-boundaries", is_flag=True, help="显示生命周期切分诊断")
+@click.option(
+    "--boundary-detail",
+    type=click.Choice(["compact", "full"]),
+    default="compact",
+    show_default=True,
+    help="生命周期切分诊断展示详细度",
+)
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_lifecycles(task_id, slot, module_name, show_boundaries, output):
+def mech_lifecycles(task_id, slot, module_name, show_boundaries, boundary_detail, output):
     """列出某 slot 的机制模块周期和进程。"""
     svc = ResultQueryService(Path(output))
     result_data = svc.read_result(task_id)
@@ -342,7 +593,7 @@ def mech_lifecycles(task_id, slot, module_name, show_boundaries, output):
     for group in groups:
         click.echo(f"[{group['module_name']}] slot_{slot}")
         if show_boundaries:
-            _print_boundary_issues(group, task_id)
+            _print_boundary_issues(group, task_id, detail=boundary_detail)
         for c in group["board_cycles"]:
             click.echo(f"  {c['dir_name']}")
             for p in c["processes"]:

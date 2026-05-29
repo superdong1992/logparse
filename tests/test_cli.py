@@ -13,6 +13,7 @@ from cli import _print_summary
 from backend.models import (
     LogEntry,
     MechBoardCycle,
+    MechBoundaryIssue,
     MechLogEntry,
     MechProcessLifecycle,
     MechResult,
@@ -101,6 +102,33 @@ def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
                     "ad=2026-01-03T05:00:00 reason=adjusted_backward",
                     "unsafe cycle split kept: module=module1 slot=1 split=2026-01-03T06:00:00 "
                     "same_pid_conflicts=other-500@board reason=no_safe_gap_candidate",
+                    "普通解析错误: bad file",
+                ],
+                mech_results=[
+                    MechResult(
+                        module_name="EXAMPLE",
+                        module_key="module1",
+                        slots=[
+                            MechSlotOutput(
+                                slot_id="1",
+                                lifecycle_reliable=False,
+                                boundary_issues=[
+                                    MechBoundaryIssue(
+                                        kind="unsafe_cycle_split",
+                                        severity="error",
+                                    ),
+                                    MechBoundaryIssue(
+                                        kind="same_pid_adjusted_backward",
+                                        severity="warning",
+                                    ),
+                                    MechBoundaryIssue(
+                                        kind="scoped_cpu_split",
+                                        severity="info",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
                 ],
             )
 
@@ -119,12 +147,13 @@ def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    assert "unsafe cycle split adjusted_backward" in result.output
-    assert "cycle split diagnostic: same_pid_adjusted_backward" in result.output
-    assert "unsafe cycle split kept" in result.output
-    assert "same_pid_conflicts=other-500@board" in result.output
-    assert "protected_boundaries=dhcp@board role=indicator" in result.output
-    assert "reason=no_safe_gap_candidate" in result.output
+    assert "生命周期切分诊断: ERROR=1 WARNING=1 INFO=1" in result.output
+    assert "定位: python cli.py mech-lifecycles task -s <slot_id> -m <module_name> --show-boundaries" in result.output
+    assert "普通解析错误: bad file" in result.output
+    assert "unsafe cycle split adjusted_backward" not in result.output
+    assert "cycle split diagnostic: same_pid_adjusted_backward" not in result.output
+    assert "unsafe cycle split kept" not in result.output
+    assert "protected_boundaries=dhcp@board role=indicator" not in result.output
 
 
 def test_print_summary_writes_compact_result_by_default(tmp_path):
@@ -391,7 +420,202 @@ def test_mech_lifecycles_show_boundaries(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "生命周期可靠性: false" in result.output
+    assert "生命周期切分诊断: ERROR=1 WARNING=0 INFO=0" in result.output
     assert "[ERROR] unsafe_cycle_split action=kept reason=no_safe_gap_candidate" in result.output
     assert "conflict other-500@board before=2026-01-03T00:00:05+08:00 after=2026-01-03T00:00:12+08:00" in result.output
-    assert "evidence diagnostic|slot_1/diag.log seq=0 raw=before raw" in result.output
-    assert "python cli.py mech-logs task -s 1 -c <board_cycle> -p other-500 -m EXAMPLE" in result.output
+    assert "before diagnostic|slot_1/diag.log seq=0 raw=before raw" in result.output
+    assert "evidence diagnostic|slot_1/diag.log" not in result.output
+    assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p other-500 -m EXAMPLE" in result.output
+
+
+def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "restart_boundary_overlap",
+                                        "severity": "error",
+                                        "reason": "new_pid_start_le_old_pid_end",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10.000001+08:00",
+                                        "old_pid_end": "2026-01-03T00:00:10+08:00",
+                                        "new_pid_start": "2026-01-03T00:00:09+08:00",
+                                        "protected_boundaries": [
+                                            {
+                                                "slot": "1",
+                                                "process_name": "dhcp",
+                                                "cpu_id": "",
+                                                "role": "indicator",
+                                                "old_pids": ["100"],
+                                                "old_end": "2026-01-03T00:00:00+08:00",
+                                                "new_pid": "200",
+                                                "new_start": "2026-01-03T00:00:09+08:00",
+                                                "old_log": {"raw_excerpt": "dhcp old"},
+                                                "new_log": {
+                                                    "source": "diagnostic",
+                                                    "source_file": "slot_1/dhcp.log",
+                                                    "sequence": 0,
+                                                    "raw_excerpt": "dhcp new",
+                                                },
+                                            },
+                                            {
+                                                "slot": "1",
+                                                "process_name": "svc_a",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["300"],
+                                                "old_end": "2026-01-03T00:00:10+08:00",
+                                                "new_pid": "400",
+                                                "new_start": "2026-01-03T00:00:11+08:00",
+                                                "old_log": {
+                                                    "source": "diagnostic",
+                                                    "source_file": "slot_1/svc_a.log",
+                                                    "sequence": 0,
+                                                    "raw_excerpt": "svc old",
+                                                },
+                                                "new_log": {"raw_excerpt": "svc new"},
+                                            },
+                                            {
+                                                "slot": "1",
+                                                "process_name": "noise",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["900"],
+                                                "old_end": "2026-01-03T00:00:03+08:00",
+                                                "new_pid": "901",
+                                                "new_start": "2026-01-03T00:00:20+08:00",
+                                                "old_log": {"raw_excerpt": "noise old"},
+                                                "new_log": {"raw_excerpt": "noise new"},
+                                            },
+                                        ],
+                                        "suggested_commands": [
+                                            "python cli.py mech-lifecycles <task_id> -s 1 -m EXAMPLE --show-boundaries",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-200 -m EXAMPLE",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-400 -m EXAMPLE",
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "overlap new_start=2026-01-03T00:00:09+08:00 <= old_end=2026-01-03T00:00:10+08:00" in result.output
+    assert "old-side svc_a-300@board role=whitelist old_end=2026-01-03T00:00:10+08:00 raw=svc old" in result.output
+    assert "new-side dhcp-200@board role=indicator new_start=2026-01-03T00:00:09+08:00 raw=dhcp new" in result.output
+    assert "noise" not in result.output
+    assert result.output.count("hint ") == 1
+
+
+def test_mech_lifecycles_boundary_detail_full_expands_all_evidence(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "restart_boundary_overlap",
+                                        "severity": "error",
+                                        "reason": "new_pid_start_le_old_pid_end",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10.000001+08:00",
+                                        "old_pid_end": "2026-01-03T00:00:10+08:00",
+                                        "new_pid_start": "2026-01-03T00:00:09+08:00",
+                                        "protected_boundaries": [
+                                            {
+                                                "slot": "1",
+                                                "process_name": "noise",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["900"],
+                                                "old_end": "2026-01-03T00:00:03+08:00",
+                                                "new_pid": "901",
+                                                "new_start": "2026-01-03T00:00:20+08:00",
+                                            },
+                                        ],
+                                        "evidence": [
+                                            {
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/noise.log",
+                                                "sequence": 0,
+                                                "raw_excerpt": "noise raw",
+                                            },
+                                        ],
+                                        "suggested_commands": [
+                                            "python cli.py mech-lifecycles <task_id> -s 1 -m EXAMPLE --show-boundaries",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p noise-901 -m EXAMPLE",
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "protected noise@board role=whitelist old_pids=900 new_pid=901" in result.output
+    assert "evidence diagnostic|slot_1/noise.log seq=0 raw=noise raw" in result.output
+    assert result.output.count("hint ") == 2

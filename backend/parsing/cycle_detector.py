@@ -129,12 +129,18 @@ class CycleDetector:
                 if cpu_splits:
                     diag_slot = by_cpu[cpu_key][0].slot if by_cpu[cpu_key] else "-"
                     for split_ts in cpu_splits:
+                        evidence = self._context_evidence(by_cpu[cpu_key], split_ts)
                         self._record_split_diagnostic(
                             "scoped_cpu_split",
                             slot=diag_slot,
                             scope=f"cpu:{cpu_key}",
                             split=split_ts,
                             reason="cpu_local_split",
+                            evidence=evidence,
+                            suggested_commands=self._suggested_commands(
+                                evidence=evidence,
+                                slot=diag_slot,
+                            ),
                         )
                 if cpu_splits:
                     logger.info(
@@ -409,12 +415,18 @@ class CycleDetector:
                 if len(pid_states) >= 3:
                     a, b, c = pid_states[-3:]
                     if a == c and a != b:
+                        evidence = self._pid_bounce_evidence(group, indicator_lower, i)
                         self._record_split_diagnostic(
                             "suspect_pid_bounce",
                             slot=e.slot,
                             scope=f"cpu:{e.cpu_id}" if e.cpu_id else "board",
                             split=e.timestamp,
                             reason="indicator_pid_bounce",
+                            evidence=evidence,
+                            suggested_commands=self._suggested_commands(
+                                evidence=evidence,
+                                slot=e.slot,
+                            ),
                             proc=indicator_lower,
                             pids=f"{a}>{b}>{c}",
                         )
@@ -462,13 +474,27 @@ class CycleDetector:
 
         # 记录每个白名单进程的 PID 变化索引，供后续序号跳变检测使用
         proc_change_indices: dict[str, int] = {}
+        protected_boundaries: list[tuple[str, str, str, tuple[str, ...], str, datetime, datetime]] = []
 
-        for proc_name_lower in whitelist_set:
-            old_last_ts, new_first_ts, change_at = self._find_pid_boundary(
+        ordered_protected_names = [indicator_name] + sorted(whitelist_set - {indicator_name})
+        for proc_name_lower in ordered_protected_names:
+            old_last_ts, new_first_ts, change_at, old_pid, new_pid = self._find_pid_boundary(
                 group, proc_name_lower, search_start,
             )
             if change_at is not None:
                 proc_change_indices[proc_name_lower] = change_at
+            if old_last_ts and new_first_ts and old_pid and new_pid:
+                role = "indicator" if proc_name_lower == indicator_name else "whitelist"
+                cpu_key = group[change_at].cpu_id if change_at is not None else ""
+                protected_boundaries.append((
+                    proc_name_lower,
+                    new_pid,
+                    cpu_key or "",
+                    (old_pid,),
+                    role,
+                    old_last_ts,
+                    new_first_ts,
+                ))
             if old_last_ts:
                 old_pid_ends.append(old_last_ts)
                 logger.debug(
@@ -502,12 +528,22 @@ class CycleDetector:
         # 初始切分点：优先取 old_pid_end（保证旧 PID 完整性）
         if old_pid_end and new_pid_start and new_pid_start <= old_pid_end:
             scope = f"cpu:{group[change_idx].cpu_id}" if group[change_idx].cpu_id else "board"
+            protected_payload = self._protected_boundary_summaries(group, protected_boundaries)
+            evidence_payload = self._issue_evidence([], protected_payload)
             self._record_split_diagnostic(
                 "restart_boundary_overlap",
                 slot=group[change_idx].slot,
                 scope=scope,
                 split=old_pid_end + timedelta(microseconds=1),
                 reason="new_pid_start_le_old_pid_end",
+                old_pid_end_time=old_pid_end,
+                new_pid_start_time=new_pid_start,
+                protected_boundaries=protected_payload,
+                evidence=evidence_payload,
+                suggested_commands=self._suggested_commands(
+                    protected_boundaries=protected_payload,
+                    slot=group[change_idx].slot,
+                ),
                 old_pid_end=old_pid_end.isoformat(),
                 new_pid_start=new_pid_start.isoformat(),
             )
@@ -557,7 +593,7 @@ class CycleDetector:
         group: list[MechLogEntry],
         proc_name_lower: str,
         search_start: int,
-    ) -> tuple[datetime | None, datetime | None, int | None]:
+    ) -> tuple[datetime | None, datetime | None, int | None, str | None, str | None]:
         """找到指定进程的旧 PID 最后一条、新 PID 第一条及 PID 变化索引。
 
         通过检测 PID 变化来区分旧生命周期和新生命周期。
@@ -569,6 +605,7 @@ class CycleDetector:
         prev_pid: str | None = None
         old_pid: str | None = None
         new_first_ts: datetime | None = None
+        new_pid: str | None = None
         change_at: int | None = None
         found_change = False
 
@@ -582,6 +619,7 @@ class CycleDetector:
             if prev_pid and e.pid != prev_pid and not found_change:
                 found_change = True
                 old_pid = prev_pid
+                new_pid = e.pid
                 change_at = i
                 if e.timestamp:
                     new_first_ts = e.timestamp
@@ -591,7 +629,7 @@ class CycleDetector:
             logger.debug(
                 "进程 %r 在搜索范围内未检测到 PID 变化", proc_name_lower,
             )
-            return None, None, None
+            return None, None, None, None, None
 
         # 从 PID 变化点向前扫描，只取旧 PID 条目的最后一条
         old_last_ts: datetime | None = None
@@ -611,7 +649,7 @@ class CycleDetector:
                     proc_name_lower, old_pid,
                 )
 
-        return old_last_ts, new_first_ts, change_at
+        return old_last_ts, new_first_ts, change_at, old_pid, new_pid
 
     # ── Journal 序号前移 ────────────────────────────────────
 
@@ -960,12 +998,18 @@ class CycleDetector:
 
                 refined.remove(split)
                 removed[split] = None
+                evidence = self._context_evidence(entries, split)
                 self._record_split_diagnostic(
                     "suspect_over_split",
                     slot=self._split_window_slot(entries, window_start, window_end),
                     scope=self._split_window_scope(entries, window_start, window_end),
                     split=split,
                     reason="pruned_redundant_split",
+                    evidence=evidence,
+                    suggested_commands=self._suggested_commands(
+                        evidence=evidence,
+                        slot=self._split_window_slot(entries, window_start, window_end),
+                    ),
                 )
                 changed = True
                 break
@@ -1057,6 +1101,7 @@ class CycleDetector:
         for (_slot, _cpu, proc_name), logs in by_key.items():
             logs.sort(key=self._timestamp_sort_key)
             prev_pid: str | None = None
+            prev_log: MechLogEntry | None = None
             for e in logs:
                 if prev_pid and e.pid != prev_pid:
                     splits.append(e.timestamp)
@@ -1071,16 +1116,37 @@ class CycleDetector:
                     )
                     self.errors.append(message)
                     logger.error(message)
+                    role = "indicator" if proc_name == (self._indicator or "").lower() else "whitelist"
+                    protected_payload = self._protected_boundary_summaries(
+                        entries,
+                        [(
+                            proc_name,
+                            e.pid,
+                            e.cpu_id or "",
+                            (prev_pid,),
+                            role,
+                            prev_log.timestamp if prev_log and prev_log.timestamp else e.timestamp,
+                            e.timestamp,
+                        )],
+                    )
+                    evidence_payload = self._issue_evidence([], protected_payload)
                     self._record_split_diagnostic(
                         "protected_forced_split",
                         slot=e.slot,
                         scope=f"cpu:{e.cpu_id}" if e.cpu_id else "board",
                         split=e.timestamp,
                         reason="protected_pid_change",
+                        protected_boundaries=protected_payload,
+                        evidence=evidence_payload,
+                        suggested_commands=self._suggested_commands(
+                            protected_boundaries=protected_payload,
+                            slot=e.slot,
+                        ),
                         proc=proc_name,
                         pids=f"{prev_pid}>{e.pid}",
                     )
                 prev_pid = e.pid
+                prev_log = e
 
         return splits
 
@@ -1200,6 +1266,38 @@ class CycleDetector:
             "sequence": entry.sequence,
             "raw_excerpt": self._raw_excerpt(entry.raw or entry.context),
         }
+
+    def _context_evidence(self, entries: list[MechLogEntry], split: datetime | None) -> list[dict]:
+        if split is None:
+            return []
+        ordered = sorted(
+            [entry for entry in entries if entry.timestamp],
+            key=self._timestamp_sort_key,
+        )
+        before = [entry for entry in ordered if entry.timestamp and entry.timestamp < split]
+        after = [entry for entry in ordered if entry.timestamp and entry.timestamp >= split]
+        evidence: list[dict] = []
+        if before:
+            evidence.append(self._entry_summary(before[-1], "context_before"))
+        if after:
+            evidence.append(self._entry_summary(after[0], "context_after"))
+        return evidence
+
+    def _pid_bounce_evidence(
+        self,
+        entries: list[MechLogEntry],
+        process_name: str,
+        current_idx: int,
+    ) -> list[dict]:
+        relevant = [
+            entry
+            for entry in entries[:current_idx + 1]
+            if entry.process_name.lower() == process_name and entry.pid
+        ][-3:]
+        return [
+            self._entry_summary(entry, f"pid_bounce_{idx}")
+            for idx, entry in enumerate(relevant, start=1)
+        ]
 
     @staticmethod
     def _find_evidence_entry(
@@ -1342,12 +1440,29 @@ class CycleDetector:
 
     def _suggested_commands(
         self,
-        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]],
+        conflicts: list[tuple[str, str, str, str, datetime, datetime, datetime]] | None = None,
+        protected_boundaries: list[dict] | None = None,
+        evidence: list[dict] | None = None,
+        slot: str | None = None,
     ) -> list[str]:
-        if not conflicts:
+        conflicts = conflicts or []
+        protected_boundaries = protected_boundaries or []
+        evidence = evidence or []
+        if not conflicts and not protected_boundaries and not evidence and not slot:
             return []
         module_name = self._module_name or self._module_key or "<module>"
-        slots = sorted({slot or "-" for slot, *_rest in conflicts})
+        slots = sorted({
+            item
+            for item in (
+                [slot] if slot else []
+            )
+            + [conflict_slot or "-" for conflict_slot, *_rest in conflicts]
+            + [boundary.get("slot") or "-" for boundary in protected_boundaries]
+            + [item.get("slot") or "-" for item in evidence]
+            if item
+        })
+        if not slots:
+            slots = ["-"]
         commands = [
             f"python cli.py mech-lifecycles <task_id> -s {slots[0]} -m {module_name} --show-boundaries"
         ]
@@ -1360,6 +1475,40 @@ class CycleDetector:
             proc_arg = f"{proc}-{pid}" if pid else proc
             cmd = (
                 f"python cli.py mech-logs <task_id> -s {slot or '-'} "
+                f"-c <board_cycle> -p {proc_arg} -m {module_name}"
+            )
+            if cpu:
+                cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"
+            commands.append(cmd)
+        for boundary in protected_boundaries:
+            proc = boundary.get("process_name") or ""
+            pid = boundary.get("new_pid") or ""
+            cpu = boundary.get("cpu_id") or ""
+            boundary_slot = boundary.get("slot") or slots[0]
+            key = (boundary_slot, proc, pid, cpu)
+            if not proc or key in seen_proc:
+                continue
+            seen_proc.add(key)
+            proc_arg = f"{proc}-{pid}" if pid else proc
+            cmd = (
+                f"python cli.py mech-logs <task_id> -s {boundary_slot} "
+                f"-c <board_cycle> -p {proc_arg} -m {module_name}"
+            )
+            if cpu:
+                cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"
+            commands.append(cmd)
+        for item in evidence:
+            proc = item.get("process_name") or ""
+            pid = item.get("pid") or ""
+            cpu = item.get("cpu_id") or ""
+            evidence_slot = item.get("slot") or slots[0]
+            key = (evidence_slot, proc, pid, cpu)
+            if not proc or key in seen_proc:
+                continue
+            seen_proc.add(key)
+            proc_arg = f"{proc}-{pid}" if pid else proc
+            cmd = (
+                f"python cli.py mech-logs <task_id> -s {evidence_slot} "
                 f"-c <board_cycle> -p {proc_arg} -m {module_name}"
             )
             if cpu:
@@ -1493,6 +1642,7 @@ class CycleDetector:
             scopes: set[str] = set()
             left_has_protected = False
             right_has_protected = False
+            evidence: list[dict] = []
 
             for cycle, side in ((left, "left"), (right, "right")):
                 for proc in cycle.processes:
@@ -1509,6 +1659,10 @@ class CycleDetector:
                             left_has_protected = True
                         else:
                             right_has_protected = True
+                    if proc.logs:
+                        role = "over_split_left" if side == "left" else "over_split_right"
+                        candidate = proc.logs[-1] if side == "left" else proc.logs[0]
+                        evidence.append(self._entry_summary(candidate, role))
 
             if not left_has_protected or not right_has_protected:
                 continue
@@ -1526,6 +1680,11 @@ class CycleDetector:
                 scope=scope,
                 split=right.start_time,
                 reason="protected_merge_has_no_pid_conflict",
+                evidence=evidence[:2],
+                suggested_commands=self._suggested_commands(
+                    evidence=evidence[:2],
+                    slot=",".join(sorted(slots)) if slots else "-",
+                ),
             )
 
     def _assign_split_traces(self, cycles: list[MechBoardCycle]) -> None:
@@ -1661,6 +1820,8 @@ class CycleDetector:
         split: datetime | None = None,
         adjusted: datetime | None = None,
         reason: str | None = None,
+        old_pid_end_time: datetime | None = None,
+        new_pid_start_time: datetime | None = None,
         action: str = "",
         severity: str | None = None,
         conflicts: list[dict] | None = None,
@@ -1699,6 +1860,8 @@ class CycleDetector:
             scope=scope,
             split=split,
             adjusted=adjusted,
+            old_pid_end=old_pid_end_time,
+            new_pid_start=new_pid_start_time,
             detail=" ".join(f"{key}={value}" for key, value in fields.items()),
             conflicts=conflicts,
             protected_boundaries=protected_boundaries,

@@ -98,6 +98,20 @@ class TestBasicDetection:
         assert any("cycle split diagnostic: suspect_pid_bounce" in error for error in det.errors)
         assert any("m=m1" in error and "proc=dhcp" in error for error in det.errors)
         assert any("pids=100>200>100" in error for error in det.errors)
+        issue = next(issue for issue in det.boundary_issues if issue.kind == "suspect_pid_bounce")
+        assert issue.severity == "warning"
+        assert issue.reason == "indicator_pid_bounce"
+        assert [item["pid"] for item in issue.evidence] == ["100", "200", "100"]
+        assert [item["role"] for item in issue.evidence] == [
+            "pid_bounce_1",
+            "pid_bounce_2",
+            "pid_bounce_3",
+        ]
+        assert issue.suggested_commands == [
+            "python cli.py mech-lifecycles <task_id> -s 1 -m m1 --show-boundaries",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-100 -m m1",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-200 -m m1",
+        ]
 
     def test_adjacent_cycles_without_protected_pid_conflict_emit_over_split_diagnostic(self):
         det = CycleDetector(indicator="dhcp", module_key="m1")
@@ -136,6 +150,13 @@ class TestBasicDetection:
 
         assert any("cycle split diagnostic: suspect_over_split" in error for error in det.errors)
         assert any("reason=protected_merge_has_no_pid_conflict" in error for error in det.errors)
+        issue = next(issue for issue in det.boundary_issues if issue.kind == "suspect_over_split")
+        assert issue.severity == "info"
+        assert issue.reason == "protected_merge_has_no_pid_conflict"
+        assert [item["raw_excerpt"] for item in issue.evidence] == [
+            "dhcp-100-no-sequence",
+            "dhcp-100-no-sequence",
+        ]
 
     def test_no_indicator(self):
         """无 indicator → 不切分。"""
@@ -208,6 +229,13 @@ class TestWhitelistSafeSplit:
             assert len(pids_by_name.get("svc_a", set())) <= 1
         assert any("forced protected pid split" in error for error in det.errors)
         assert any("cycle split diagnostic: protected_forced_split" in error for error in det.errors)
+        issue = next(issue for issue in det.boundary_issues if issue.kind == "protected_forced_split")
+        assert issue.severity == "warning"
+        assert issue.reason == "protected_pid_change"
+        assert issue.protected_boundaries[0]["process_name"] == "dhcp"
+        assert issue.protected_boundaries[0]["role"] == "indicator"
+        assert issue.protected_boundaries[0]["old_log"]["raw_excerpt"] == "dhcp-100-no-sequence"
+        assert issue.protected_boundaries[0]["new_log"]["raw_excerpt"] == "dhcp-200-no-sequence"
 
     def test_non_whitelist_process_is_split_when_protected_pid_boundary_would_be_merged(self):
         """Keep the protected PID boundary even if a non-whitelist PID is split."""
@@ -385,6 +413,9 @@ class TestWhitelistSafeSplit:
         assert refined == [_ts(1, 3, 6, 0), _ts(1, 3, 12, 0)]
         assert any("cycle split diagnostic: suspect_over_split" in error for error in det.errors)
         assert any("reason=pruned_redundant_split" in error for error in det.errors)
+        issue = next(issue for issue in det.boundary_issues if issue.kind == "suspect_over_split")
+        assert issue.reason == "pruned_redundant_split"
+        assert [item["pid"] for item in issue.evidence] == ["200", "200"]
 
     def test_split_that_would_merge_protected_pid_generations_is_not_pruned(self):
         det = CycleDetector(indicator="dhcp")
@@ -552,7 +583,7 @@ class TestWhitelistSafeSplit:
         ]
 
     def test_overlap_records_boundary_issue_and_marks_unreliable(self):
-        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"])
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
         entries = [
             _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
             _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 9)),
@@ -566,6 +597,40 @@ class TestWhitelistSafeSplit:
         assert det.lifecycle_reliable is False
         assert any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
         assert any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
+
+        issue = next(issue for issue in det.boundary_issues if issue.kind == "restart_boundary_overlap")
+        assert issue.severity == "error"
+        assert issue.reason == "new_pid_start_le_old_pid_end"
+        assert issue.old_pid_end == _ts(1, 3, 0, 10)
+        assert issue.new_pid_start == _ts(1, 3, 0, 9)
+        assert issue.protected_boundaries
+        dhcp_boundary = next(
+            boundary
+            for boundary in issue.protected_boundaries
+            if boundary["process_name"] == "dhcp"
+        )
+        assert dhcp_boundary["role"] == "indicator"
+        assert dhcp_boundary["old_log"]["raw_excerpt"] == "dhcp-100-no-sequence"
+        assert dhcp_boundary["new_log"]["raw_excerpt"] == "dhcp-200-no-sequence"
+        svc_boundary = next(
+            boundary
+            for boundary in issue.protected_boundaries
+            if boundary["process_name"] == "svc_a"
+        )
+        assert svc_boundary["role"] == "whitelist"
+        assert svc_boundary["old_log"]["raw_excerpt"] == "svc_a-300-no-sequence"
+        assert svc_boundary["new_log"]["raw_excerpt"] == "svc_a-400-no-sequence"
+        assert [item["role"] for item in issue.evidence] == [
+            "protected_old",
+            "protected_new",
+            "protected_old",
+            "protected_new",
+        ]
+        assert issue.suggested_commands == [
+            "python cli.py mech-lifecycles <task_id> -s 1 -m m1 --show-boundaries",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-200 -m m1",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-400 -m m1",
+        ]
 
 
 class TestJournalForwardAdjust:
@@ -638,6 +703,11 @@ class TestCpuSubcardIsolation:
         aaa = [p for p in aaa_cycles[0].processes if p.process_name == "aaa" and p.pid == "100"][0]
         assert [log.timestamp for log in aaa.logs] == [entry.timestamp for entry in board]
         assert any("cycle split diagnostic: scoped_cpu_split" in error for error in det.errors)
+        issue = next(issue for issue in det.boundary_issues if issue.kind == "scoped_cpu_split")
+        assert issue.severity == "info"
+        assert issue.reason == "cpu_local_split"
+        assert [item["cpu_id"] for item in issue.evidence] == ["1", "1"]
+        assert [item["pid"] for item in issue.evidence] == ["10", "20"]
 
     def test_cpu_subcard_isolation(self, detector):
         board = [
