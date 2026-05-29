@@ -88,7 +88,7 @@ def generate() -> str:
     parts.append(
         f'<rect x="0" y="0" width="{SVG_W}" height="{HEADER_H}" fill="url(#headerGrad)"/>'
         f'<text x="{SVG_W/2}" y="28" text-anchor="middle" fill="white" font-size="22" '
-        f'font-weight="bold" font-family="system-ui,sans-serif">ailogparse 工作流程</text>'
+        f'font-weight="bold" font-family="system-ui,sans-serif">logparse 工作流程</text>'
         f'<text x="{SVG_W/2}" y="48" text-anchor="middle" fill="#aaa" font-size="12" '
         f'font-family="system-ui,sans-serif">日志压缩包预处理管道 — 插件化架构</text>'
     )
@@ -110,7 +110,7 @@ def generate() -> str:
     y += row_h
     s1x, s1y = cx - BOX_W/2, y
     parts.append(section_label(s1x - 10, s1y - 5, "Step 1"))
-    parts.append(box(s1x, s1y, BOX_W, BOX_H, "Decompressor\n外层解压 recursive=False"))
+    parts.append(box(s1x, s1y, BOX_W, BOX_H, "Decompressor\n统一解压归档\n普通 .gz 默认保留", font_size=12))
     parts.append(arrow(cx, s1y - GAP_Y + BOX_H, cx, s1y))
 
     # Row 2: Step 2 — 目录发现（分支）
@@ -133,11 +133,11 @@ def generate() -> str:
                      fill=C_CARD, border=C_BLUE))
     parts.append(arrow(cx + BOX_W/2, s2y + BOX_H/2, right_x, branch_y + bh/2, "compact"))
 
-    # Row 3: Step 3 — 内层解压
+    # Row 3: Step 3 — no separate middle extraction stage
     y = branch_y + bh + GAP_Y
     s3x, s3y = cx - BOX_W/2, y
     parts.append(section_label(s3x - 10, s3y - 5, "Step 3"))
-    parts.append(box(s3x, s3y, BOX_W, BOX_H, "Decompressor\n内层解压 diag.zip → contents/"))
+    parts.append(box(s3x, s3y, BOX_W, BOX_H, "无中间解压阶段\nScanner 只扫描工作区", font_size=12))
     # arrows from branches
     parts.append(arrow(left_x + bw/2, branch_y + bh, cx - 30, s3y))
     parts.append(arrow(right_x + bw/2, branch_y + bh, cx + 30, s3y))
@@ -181,8 +181,8 @@ def generate() -> str:
     out_w = 220
     # Step 5: 落盘
     parts.append(section_label(left_x - 10, y - 5, "Step 5"))
-    parts.append(box(left_x, y, out_w, BOX_H, "MechOutputWriter\nslot/周期/cpu_N/\n进程名-PID.log",
-                     fill=C_CARD, border=C_GREEN, text_color=C_TEXT))
+    parts.append(box(left_x, y, out_w, BOX_H, "MechOutputWriter\nslot/board_cycle/\n[cpu_N/cpu_cycle/]proc.log",
+                     fill=C_CARD, border=C_GREEN, text_color=C_TEXT, font_size=12))
     parts.append(arrow(ts_x + sub_w/2, sub_y + sub_h, left_x + out_w/2 - 30, y))
     parts.append(arrow(cd_x + sub_w/2, sub_y + sub_h, left_x + out_w/2 + 30, y))
 
@@ -212,7 +212,7 @@ def generate() -> str:
     legends = [
         (C_ACCENT, "ParserPlugin — 解析编排，委托给 3 个子组件"),
         (C_PURPLE, "TimestampExtractor / CycleDetector / RoleIdentifier — 核心解析组件"),
-        (C_GREEN, "MechOutputWriter — slot/周期/cpu_N 三层落盘"),
+        (C_GREEN, "MechOutputWriter — slot/board_cycle/[cpu_N/cpu_cycle/] 嵌套落盘"),
         (C_GOLD, "MetadataGenerator — 输出 metadata.json"),
     ]
     for i, (color, text) in enumerate(legends):
@@ -222,17 +222,18 @@ def generate() -> str:
                      f'font-family="system-ui,sans-serif">{_esc(text)}</text>')
 
     # ── 组装 ──
-    return (
+    svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_W}" height="{SVG_H}" '
         f'viewBox="0 0 {SVG_W} {SVG_H}">\n'
         f'<rect width="100%" height="100%" fill="{C_BG}"/>\n'
         + "\n".join(parts)
         + "\n</svg>"
     )
+    return "\n".join(line.rstrip() for line in svg.splitlines()) + "\n"
 
 
 if __name__ == "__main__":
     from pathlib import Path
     out = Path(__file__).parent / "workflow.svg"
-    out.write_text(generate(), encoding="utf-8")
+    out.write_text(generate(), encoding="utf-8", newline="\n")
     print(f"已生成: {out}")

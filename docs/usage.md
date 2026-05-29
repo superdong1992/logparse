@@ -8,6 +8,7 @@
 - 多产品支持
 - 机制模块日志拆分
 - 生命周期分析
+- 板卡周期内嵌套 CPU 周期输出
 - 多机制模块查询
 - 配置预飞检查
 - 流式读取普通 `.gz` 日志
@@ -246,9 +247,10 @@ python cli.py mech-lifecycles diagnostic_information_20260103 \
 
 ```text
 [EXAMPLE] slot_1
-20260103T000100-20260103T000200
-  SERVICE-12345: 80 条
-  TASK-888: 40 条
+  20260103T000100-20260103T000200
+    SERVICE-12345: 80 条
+    cpu_1/20260103T000130-20260103T000180
+      TASK-888: 40 条
 ```
 
 ## 只查看指定机制模块的生命周期
@@ -281,14 +283,29 @@ python cli.py mech-logs diagnostic_information_20260103 \
   --module EXAMPLE
 ```
 
+查询嵌套 CPU 周期日志：
+
+```bash
+python cli.py mech-logs diagnostic_information_20260103 \
+  --output output \
+  -s 1 \
+  -c 20260103T000100-20260103T000200 \
+  -p SERVICE-12345 \
+  --module EXAMPLE \
+  --cpu 1 \
+  --cpu-cycle 20260103T000130-20260103T000180
+```
+
 查询参数说明：
 
 | 参数 | 说明 |
 |---|---|
 | `-s / --slot` | slot 编号 |
-| `-c / --cycle` | 周期目录名 |
-| `-p / --proc` | 进程名 |
-| `--module` | 机制模块名；不传时默认查询全部模块或使用默认模块 |
+| `-c / --cycle` | 板卡周期目录名 |
+| `-p / --proc` | 进程名-PID 文件名前缀 |
+| `--module` | 机制模块名；`mech-logs` 不传时默认取第一个机制模块 |
+| `--cpu` | CPU ID；查询 CPU 日志时传入 |
+| `--cpu-cycle` | CPU 周期目录名；查询 CPU 日志时传入，不传则落到 `unknown` |
 
 ---
 
@@ -305,7 +322,10 @@ output/
         └── EXAMPLE/
             └── slot_1/
                 └── 20260103T000100-20260103T000200/
-                    └── SERVICE-12345.log
+                    ├── SERVICE-12345.log
+                    └── cpu_1/
+                        └── 20260103T000130-20260103T000180/
+                            └── TASK-888.log
 ```
 
 目录说明：
@@ -315,6 +335,8 @@ output/
 | `extracted/` | 原始解压目录 |
 | `result.json` | 结构化解析结果 |
 | `mech_modules/` | 机制模块日志拆分结果 |
+
+机制模块日志使用板卡周期作为顶层目录。板卡日志直接写到板卡周期下；CPU 日志写到 `cpu_<id>/<cpu_cycle>/`，如果只匹配到板卡周期但没有匹配到 CPU 周期，则进入 `cpu_<id>/unknown/`。
 
 ---
 
@@ -445,10 +467,10 @@ pytest tests/test_config_validation.py -q
 
 # 当前版本
 
-当前推荐版本：
+当前工作区版本：
 
 ```text
-v0.3.1
+2026-05-29
 ```
 
 当前已具备：
@@ -457,6 +479,7 @@ v0.3.1
 - 安全压缩包解压
 - 多机制模块支持
 - 生命周期分析
+- 板卡周期内嵌套 CPU 周期输出
 - 机制模块查询
 - 配置预飞检查
 - 普通 `.gz` 流式读取

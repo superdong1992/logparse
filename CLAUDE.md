@@ -19,7 +19,7 @@ python cli.py list-slots <task_id>
 python cli.py query-diag <task_id> -s <slot_id>
 python cli.py mech-slots <task_id> [-m <module_name>]
 python cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>]
-python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc_name> [-m <module_name>]
+python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <proc_name-pid> [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
 
 # 调试工具
 python cli.py check-config [-c config.yaml]            # 检查配置有效性
@@ -41,7 +41,8 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **错误隔离**：每一步失败不终止全流程，继续执行并在最后汇总所有错误
 - **`--verbose`**：输出每步耗时、处理项数、机制模块 诊断/journal 条数对比、同名进程多实例检测
 - **`--debug-expand-gz`**：调试用，将普通 `.gz` 日志就地展开（如 `journal.log.1.gz` → `journal.log.1.gz_extracted/`），正式批量解析不建议开启
-- **`--module` / `-m`**：mech 查询命令可按机制模块名过滤，不传则展示全部模块
+- **`--module` / `-m`**：`mech-slots` / `mech-lifecycles` 不传时展示全部模块；`mech-logs` 不传时默认取第一个机制模块
+- **`--cpu` / `--cpu-cycle`**：`mech-logs` 查询嵌套 CPU 周期日志时使用；路径为 `.../<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>.log`
 - **Windows 编码**：CLI 入口自动将 stdout/stderr 切换为 UTF-8，避免 GBK 编码下 Unicode 符号报错
 
 ## 架构
@@ -54,19 +55,19 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 ### 数据流
 
 ```
-外层压缩包 → Decompressor(解压外层, recursive=False)
+外层压缩包 → Decompressor(按配置统一解压外层和内层归档；普通 .gz 默认保留)
 → DirectoryDiscoveryPlugin(发现 slot+文件，产品插件)
-→ Decompressor(解压内层 .zip 到 _extracted 子目录)
 → LogParserPlugin(时间戳→ActivePeriod→机制模块→角色判定，产品插件)
-→ MechOutputWriter(三层落盘) → MetadataGenerator(JSON输出)
+→ MechOutputWriter(板卡周期 + 嵌套 CPU 周期落盘) → MetadataGenerator(JSON输出)
 ```
 
 关键设计决策：
-- **解压与扫描分离**：外层包 `recursive=False` 解压到 `extracted/`，内部压缩包保留原样供 ScannerPlugin 收集元数据，之后再解压内容到 `_extracted` 子目录做解析
+- **解压与扫描分离**：`Pipeline` 在 Step 1 通过 `Decompressor.extract_all()` 统一处理外层和内层归档；`config.yaml` 默认 `recursive_extraction: true`。Scanner 插件只扫描统一解压后的工作区，不再承担中间内层解压阶段。
 - **普通 `.gz` 流式读取**：默认不展开普通 `.gz` 日志（如 `journal.log.1.gz`），parser 直接流式读取；仅 `--debug-expand-gz` 或配置 `debug_expand_gz: true` 时才展开。`.tar.gz` / `.tgz` 归档不受此控制
 - **机制模块优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界
 - **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。从全部条目中检测时区并归一化所有 naive timestamp
 - **journal 双正则 fallback**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式
+- **嵌套生命周期输出**：`MechBoardCycle` 是顶层板卡生命周期；`MechCpuCycle` 嵌套在对应板卡周期下，保存 CPU-local 重启周期、split trace 和进程生命周期。
 
 ### 模块分工
 
@@ -88,12 +89,12 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 | `backend/parsing/file_iter.py` | 流式文件读取迭代器：`iter_text_file_lines`、`iter_log_entry_lines` |
 | `backend/parsing/cycle_detector.py` | CycleDetector：PID 变化 + 序号回绕反向扫描的重启周期检测，含 split trace |
 | `backend/parsing/role_identifier.py` | RoleIdentifier：机制模块优先 + 保守兜底角色判定 |
-| `backend/parsing/output_writer.py` | MechOutputWriter：slot/周期/cpu_N 三层目录落盘 |
+| `backend/parsing/output_writer.py` | MechOutputWriter：slot/板卡周期/cpu_N/CPU周期 嵌套目录落盘 |
 | `backend/query.py` | ResultQueryService：封装 result.json/metadata.json 的读取与查询 |
 | `backend/metadata.py` | 生成 `metadata.json`（含 mech_results 键） |
 | `backend/models.py` | Pydantic 数据模型（SlotInfo、ParseResult、MechResult 等） |
 | `backend/utils.py` | 纯函数工具：glob_to_regex、时间戳提取、文件读取等 |
-| `cli.py` | Click CLI：parse/info/list-slots/query-diag/mech-slots/mech-lifecycles/mech-logs/check-config/test-pattern，mech 查询命令支持 `--module` 按模块过滤 |
+| `cli.py` | Click CLI：parse/info/list-slots/query-diag/mech-slots/mech-lifecycles/mech-logs/check-config/test-pattern，mech 查询命令支持 `--module` 按模块过滤，`mech-logs` 支持 `--cpu` / `--cpu-cycle` |
 
 ### 核心模型 (`backend/models.py`)
 
@@ -101,8 +102,9 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - `LogEntry` — 单个日志文件，含 `dump_time`(文件名转储时间)、`content_timestamps`(内容时间戳)
 - `ActivePeriod` — 连续主控时段段 (start/end)
 - `PrivateSlotInfo` + `JournalLogFile` — 私有日志槽位和 journal 文件元数据
-- `MechResult` / `MechSlotOutput` / `MechBoardCycle` / `MechProcessLifecycle` / `MechLogEntry` — 机制模块输出结构，进程按 `(process_name, pid, cpu_id)` 分组
+- `MechResult` / `MechSlotOutput` / `MechBoardCycle` / `MechCpuCycle` / `MechProcessLifecycle` / `MechLogEntry` — 机制模块输出结构，进程按 `(process_name, pid, cpu_id)` 分组；CPU 进程嵌套在 `MechBoardCycle.cpu_cycles[]`
 - `MechCycleSplitTrace` — 重启周期切分原因追踪（reason、old_pid、new_pid、timestamp）
+- `MechBoundaryIssue` — 生命周期边界诊断，记录 overlap、unsafe split、调整方向和影响范围；`MechSlotOutput.lifecycle_reliable=false` 时必须关注
 - `ParseResult` — 顶层解析结果，含 `diagnostic_slots`、`private_slots`、`mech_results`、`errors`
 
 ### 日志包结构
@@ -137,7 +139,10 @@ output/{task_id}/mech_modules/{module_name}/
 │   ├── 20260430T103707-20260430T113708/    ← 周期起止时间
 │   │   ├── SERVICE-12345.log               ← 板卡级进程（cpu_id=""）直接放周期下
 │   │   └── cpu_1/                          ← CPU 子卡进程放 cpu_N/ 子目录
-│   │       └── SERVICE-67890.log
+│   │       ├── 20260430T103800-20260430T104500/
+│   │       │   └── SERVICE-67890.log        ← 嵌套 CPU 周期内的进程日志
+│   │       └── unknown/
+│   │           └── WORKER-777.log           ← 匹配到板卡周期但未匹配到 CPU 周期
 │   └── 20260430T120000-20260430T130000/
 └── slot_2/
 
@@ -158,6 +163,7 @@ output/{task_id}/mech_modules/{module_name}/
    - 切分点 = 安全候选中的最早值，保证同 PID 段不被拆断
 3. **Journal 序号前移**：对白名单内进程，从诊断日志获取旧 PID 最后 No，在全部条目（含 journal）中找序号跳变（从大号跳到小号），尝试前移切分点（受安全约束限制）
 4. **层级传播**：板卡级 PID 变化 → 所有子 cpu 组同步切分；cpu 级 PID 变化 → 仅该 cpu 组切分
+5. **嵌套输出**：板卡日志进入 `MechBoardCycle.processes`；CPU 日志进入对应 `MechBoardCycle.cpu_cycles[].processes`。找不到可用板卡周期时使用 `unknown`，找不到 CPU 周期时使用 `cpu_<id>/unknown`。
 
 ### 配置驱动
 
@@ -202,9 +208,9 @@ slot_1_cpu_2/    ← slot_1 的 2 号 CPU 子卡
 Source Archive
   → [Decompressor]              通用
   → [DirectoryDiscoveryPlugin]   产品插件：找到 slot、文件
-  → [Inner Extraction]           通用：解压内层压缩包
+  → [No middle extraction]       内层归档已由统一解压阶段处理；普通 .gz 由 parser 流式读取
   → [LogParserPlugin]            产品插件：解析内容、构建周期、判定角色
-  → [MechOutputWriter]           通用：三层落盘
+  → [MechOutputWriter]           通用：板卡周期 + 嵌套 CPU 周期落盘
   → [MetadataGenerator]          通用：输出 metadata.json
 ```
 
@@ -224,7 +230,7 @@ Source Archive
 
 ### 测试
 
-167 个单元测试，覆盖：
+当前 `pytest --collect-only -q` 收集到 240 个测试，覆盖：
 - `tests/test_utils.py` — utils 纯函数（glob、slot 提取、时间戳等）
 - `tests/test_decompressor.py` — 解压安全（路径穿越、Windows 绝对路径、UNC 路径、zip 炸弹）和提取逻辑
 - `tests/test_config_validation.py` — 机制模块配置校验（正则合法性、命名组、白名单冲突）
@@ -243,6 +249,7 @@ Source Archive
 
 | 日期 | 变更 |
 |------|------|
+| 2026-05-29 | **生命周期嵌套输出**：`MechCpuCycle`、`lifecycle_reliable`、`boundary_issues` 进入模型和元数据；CPU 日志落盘到 `slot/<board_cycle>/cpu_N/<cpu_cycle>/`；`module2` 按 `slot + cpu_id + timestamp` 优先匹配嵌套 CPU 周期；`mech-logs` 支持 `--cpu` / `--cpu-cycle`；240 个测试可收集 |
 | 2026-05-24 | **v0.3.1**：`--module`/`-m` 参数支持按机制模块过滤查询结果；`--debug-expand-gz` 控制普通 `.gz` 展开；默认流式读取 `.gz`；`check-config` 新增插件类继承和方法校验；167 个单元测试 |
 | 2026-05-24 | **v0.2 演进完成**：9 步渐进式重构，123 个单元测试。修复解压安全路径 bug、配置校验前置化、CycleDetector split trace、ParserPlugin 拆为 5 组件、流式文件读取、保守角色判定、查询服务从 CLI 提取 |
 | 2026-05-18 | **P0-P3 重构完成**：93 个单元测试、新管道默认化、删除旧管道 5 模块 (-1123 行)、ParserPlugin 拆为 4 组件 |

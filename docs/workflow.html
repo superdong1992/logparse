@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ailogparse 工作流程</title>
+<title>logparse 工作流程</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
   body {
@@ -31,7 +31,7 @@
 </style>
 </head>
 <body>
-<h1>ailogparse 工作流程</h1>
+<h1>logparse 工作流程</h1>
 <p class="subtitle">日志压缩包预处理管道 — 插件化架构</p>
 
 <div class="mermaid">
@@ -40,9 +40,10 @@ flowchart TB
         A["日志压缩包\n.zip / .tar.gz"]
     end
 
-    subgraph STEP1["Step 1: 外层解压"]
-        B["Decompressor\nrecursive=False"]
-        B1["extracted/\n全部文件展开"]
+    subgraph STEP1["Step 1: 统一解压"]
+        B["Decompressor\n按配置递归解压归档"]
+        B1["extracted/\n内层 zip/tar/tgz/tar.gz → *_extracted"]
+        B2["普通 .gz 默认保留\nparser 流式读取"]
     end
 
     subgraph STEP2["Step 2: 目录发现 📂"]
@@ -51,19 +52,20 @@ flowchart TB
         C2["CompactScannerPlugin\n(compact产品)\nboards/ + logs/"]
     end
 
-    subgraph STEP3["Step 3: 内层解压"]
-        D["Decompressor\n解压 diag.zip 等\n到 contents/ 子目录"]
+    subgraph STEP3["Step 3: 无中间解压阶段"]
+        D["Scanner 只扫描工作区\n内层归档已由 Step 1 处理"]
     end
 
     subgraph STEP4["Step 4: 日志解析 🔍"]
         E["ParserPlugin\n解析编排层"]
         E1["TimestampExtractor\n时间戳提取 + 时区对齐"]
-        E2["CycleDetector\n重启周期切分\nPID变化 + 序号回绕"]
-        E3["RoleIdentifier\n主控判定\n机制优先 + 兜底"]
+        E2["MechanismModulePlugin\nmodule1 / module2 / other"]
+        E3["CycleDetector\n板卡周期 + 嵌套 CPU 周期"]
+        E4["RoleIdentifier\n主控判定\n机制优先 + 兜底"]
     end
 
     subgraph STEP5["Step 5: 落盘"]
-        F["MechOutputWriter\nslot/周期/cpu_N/\n进程名-PID.log"]
+        F["MechOutputWriter\nslot/board_cycle/\n[cpu_N/cpu_cycle/]进程名-PID.log"]
     end
 
     subgraph STEP6["Step 6: 元数据"]
@@ -76,7 +78,8 @@ flowchart TB
 
     A --> B
     B --> B1
-    B1 --> C
+    B --> B2
+    B1 & B2 --> C
     C -->|default| C1
     C -->|compact| C2
     C1 & C2 --> D
@@ -84,8 +87,9 @@ flowchart TB
     E --> E1
     E1 --> E2
     E2 --> E3
-    E3 --> F
-    E3 --> G
+    E3 --> E4
+    E4 --> F
+    E4 --> G
     F --> H
     G --> H
 
@@ -101,6 +105,7 @@ flowchart TB
     style E1 fill:#533483,stroke:#3d2466,color:#e0e0e0
     style E2 fill:#533483,stroke:#3d2466,color:#e0e0e0
     style E3 fill:#533483,stroke:#3d2466,color:#e0e0e0
+    style E4 fill:#533483,stroke:#3d2466,color:#e0e0e0
 </div>
 
 <div class="mermaid">
@@ -128,12 +133,12 @@ flowchart LR
 <div class="legend">
   <h3>模块职责速查</h3>
   <table>
-    <tr><td style="color:#e94560">Pipeline</td><td>6 步管道编排，按产品名加载插件对</td></tr>
+    <tr><td style="color:#e94560">Pipeline</td><td>6 步编号管道编排；Step 3 已并入统一解压，不存在中间内层解压阶段</td></tr>
     <tr><td style="color:#533483">TimestampExtractor</td><td>从文本/文件/LogEntry 提取时间戳，处理 .gz 和 UTF-8/GBK 编码</td></tr>
-    <tr><td style="color:#533483">CycleDetector</td><td>indicator 进程 PID 变化 + 序号回绕反向扫描，板卡重启传播到子 CPU</td></tr>
+    <tr><td style="color:#533483">CycleDetector</td><td>indicator 进程 PID 变化 + 序号回绕反向扫描，输出板卡周期和嵌套 CPU 周期</td></tr>
     <tr><td style="color:#533483">RoleIdentifier</td><td>机制模块 active_master_keyword 优先，兜底按 ActivePeriod/日志存在性判定</td></tr>
-    <tr><td style="color:#0f3460">MechOutputWriter</td><td>slot/周期/cpu_N/ 进程名-PID.log 三层目录落盘</td></tr>
-    <tr><td style="color:#0f3460">ScannerPlugin</td><td>发现 diag/slot_*/ 和 varlog/slot_*/ 目录结构，解压内层 varlog.zip</td></tr>
+    <tr><td style="color:#0f3460">MechOutputWriter</td><td>slot/board_cycle/[cpu_N/cpu_cycle/] 进程名-PID.log 嵌套目录落盘</td></tr>
+    <tr><td style="color:#0f3460">ScannerPlugin</td><td>只发现 diag/slot_*/ 和 varlog/slot_*/ 目录结构，不做内层解压</td></tr>
   </table>
 </div>
 

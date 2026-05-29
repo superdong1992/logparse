@@ -1,6 +1,6 @@
 ---
 name: logparse-diagnose
-description: Use this skill to locate issues from logparse preprocessed output when the user provides an approximate problem time plus one or more slot/process/PID anchors. It guides agents through reading metadata.json, result.json, and mech_modules/{module}/slot_{slot}/{cycle}/[cpu_x/]process[-pid].log, matching target processes strictly, selecting exact or nearest cycles, and expanding to mechanism-related logs.
+description: Use this skill to locate issues from logparse preprocessed output when the user provides an approximate problem time plus one or more slot/process/PID anchors. It guides agents through reading metadata.json, result.json, and mech_modules/{module}/slot_{slot}/{board_cycle}/[cpu_x/{cpu_cycle}/]process[-pid].log, matching target processes strictly, selecting exact or nearest board/CPU cycles, and expanding to mechanism-related logs.
 ---
 
 # Logparse Diagnose
@@ -31,8 +31,12 @@ If the task output directory or problem time is missing and cannot be inferred f
 2. Build a candidate index from `result.json`.
    - Iterate `mech_results[]`.
    - For each module, record both `module_key` and `module_name`.
-   - For each slot, cycle, and process, keep `slot_id`, `dir_name`, `start_time`, `end_time`, `process_name`, `pid`, `missing_sequences`, and the process `logs[]`.
-   - Derive the written log path from `mech_modules/{module_name}/slot_{slot_id}/{dir_name}/[cpu_{cpu_id}/]{process_name}[-pid].log`. Use the first log's non-empty `cpu_id` for the optional CPU directory. If the derived path is missing, search that cycle directory for the exact process filename.
+   - For each slot, keep `slot_id`, `lifecycle_reliable`, and `boundary_issues` when present.
+   - For each board cycle in `board_cycles[]`, record `dir_name`, `start_time`, `end_time`, top-level `processes[]`, and nested `cpu_cycles[]`.
+   - For board-level processes, keep `slot_id`, board cycle fields, `process_name`, `pid`, `missing_sequences`, and `logs[]`.
+   - For CPU-level processes, also keep `cpu_id`, `cpu_cycle_dir`, `cpu_cycle.start_time`, and `cpu_cycle.end_time`.
+   - Derive board-level log paths from `mech_modules/{module_name}/slot_{slot_id}/{board_cycle_dir}/{process_name}[-pid].log`.
+   - Derive CPU-level log paths from `mech_modules/{module_name}/slot_{slot_id}/{board_cycle_dir}/cpu_{cpu_id}/{cpu_cycle_dir}/{process_name}[-pid].log`. Older output may place CPU logs directly under `cpu_{cpu_id}/`; if the nested path is missing, check that legacy path before reporting an output consistency issue.
 
 3. Match each target anchor independently.
    - Slot must match when the user provides `slot`.
@@ -43,9 +47,11 @@ If the task output directory or problem time is missing and cannot be inferred f
    - Keep multiple matches only when they are genuinely distinct candidates; report the ambiguity instead of silently choosing one by process alone.
 
 4. Select the cycle for each matched anchor.
+   - For board-level processes, select by the board cycle interval.
+   - For CPU-level processes, select by the CPU cycle interval first, while preserving its parent board cycle.
    - Exact hit: choose a cycle when `start_time <= problem_time <= end_time`.
-   - Nearest hit: if no exact hit exists, choose the cycle with the smallest distance from `problem_time` to the cycle interval and mark it as approximate.
-   - Unknown cycles: use `dir_name == "unknown"` only when no timed cycle can be selected for that anchor; mark it as not time-bounded.
+   - Nearest hit: if no exact hit exists, choose the cycle with the smallest distance from `problem_time` to the relevant interval and mark it as approximate.
+   - Unknown cycles: use `dir_name == "unknown"` only when no timed board/CPU cycle can be selected for that anchor; mark it as not time-bounded.
 
 5. Read the target process logs.
    - Read only the matched process log first.
@@ -55,8 +61,8 @@ If the task output directory or problem time is missing and cannot be inferred f
 6. Expand related logs.
    - Read `references/relation-rules.md`.
    - Apply rules per anchor, not globally. If multiple anchors are in different slots/modules, each anchor gets its own cycle selection.
-   - Add mechanism-related logs only from the anchor's selected cycle unless a rule explicitly says otherwise.
-   - For `module2`, include same-slot, same-cycle upstream `module1` context when available.
+   - Add mechanism-related logs only from the anchor's selected board cycle, and selected CPU cycle when applicable, unless a rule explicitly says otherwise.
+   - For `module2`, include same-slot, same-board-cycle upstream `module1` context when available; for CPU anchors, prefer the same nested `cpu_id` and CPU cycle.
 
 7. Correlate across anchors.
    - Preserve user labels such as `client` and `server`.
@@ -69,7 +75,7 @@ If the task output directory or problem time is missing and cannot be inferred f
 Return a concise report in this order:
 
 1. Input conditions: task path, problem time, target anchors.
-2. Anchor hits: for each anchor, list module, slot, cycle, exact/nearest status, process log path, and any ambiguity.
+2. Anchor hits: for each anchor, list module, slot, board cycle, CPU cycle when applicable, exact/nearest status, process log path, and any ambiguity.
 3. Related logs: list the extra logs included by relation rules and why each was included.
 4. Cross-anchor evidence summary: time-ordered facts that connect the anchors.
 5. Gaps and caveats: missing files, nearest-cycle fallback, unknown cycles, parse errors, sequence gaps, or insufficient input.
@@ -86,7 +92,7 @@ python cli.py info <task_id> -o <output_dir>
 python cli.py list-slots <task_id> -o <output_dir>
 python cli.py mech-slots <task_id> -o <output_dir>
 python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> -o <output_dir>
-python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <process_name-pid> -m <module_name> -o <output_dir>
+python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> -m <module_name> --cpu <cpu_id> --cpu-cycle <cpu_cycle_dir> -o <output_dir>
 ```
 
 Prefer direct JSON reads when you need exact matching or multi-anchor correlation; use CLI commands for quick human-readable checks.

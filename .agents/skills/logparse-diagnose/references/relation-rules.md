@@ -15,6 +15,7 @@ Rules are written as a human-maintained table. Add product-specific rules here a
     module_key: related module_key
     slot: same | explicit slot id | from anchor field
     cycle: same | nearest-to-problem-time
+    cpu_cycle: same | nearest-to-problem-time | none
     processes: target-only | all-in-cycle | [process names]
   reason: why this related log matters
 ```
@@ -55,6 +56,8 @@ For `module1`, include only the matched target process by default. Add fixed rel
 
 For `module2`, include same-slot, same-cycle `module1` logs when that upstream cycle exists. If the module2 cycle is `unknown`, try the nearest module1 cycle by problem time and mark it approximate.
 
+For CPU anchors, "same cycle" means the same parent board cycle plus the same nested `cpu_id`/CPU cycle when available. If a nested CPU cycle is `unknown`, keep the same board cycle and `cpu_id`, then mark the CPU-cycle context as not time-bounded.
+
 ## Multi-Anchor Guidance
 
 - Treat every user-specified process as a target anchor, not as secondary context.
@@ -70,5 +73,6 @@ When adding a product-specific rule, include:
 - The trigger module or process.
 - Whether the related slot is the same slot, a peer slot, active/standby, or user-specified.
 - Whether the related cycle must be the same cycle or nearest to the problem time.
+- Whether nested CPU-cycle context must be the same CPU cycle, nearest CPU cycle, or omitted.
 - Whether to include all process logs in the cycle or a named process list.
 - A short reason that explains why the relation is valid.

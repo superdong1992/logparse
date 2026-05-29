@@ -27,7 +27,7 @@ python cli.py list-slots <task_id>
 python cli.py query-diag <task_id> -s <slot_id>
 python cli.py mech-slots <task_id> [-m MODULE]
 python cli.py mech-lifecycles <task_id> -s <slot_id> [-m MODULE]
-python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc_name>-<pid> [-m MODULE]
+python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <proc_name>-<pid> [-m MODULE] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
 
 # 调试
 python cli.py check-config [-c config.yaml]
@@ -39,17 +39,19 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 
 ```text
 外层压缩包
-  → Decompressor 统一解压归档包（外层 + 内层 zip/tar/tgz/tar.gz）
+  → Decompressor 统一解压归档包（外层 + 内层 zip/tar/tgz/tar.gz；普通 .gz 默认保留）
   → DirectoryDiscoveryPlugin 扫描已解压工作区
   → LogParserPlugin 提取基础时间戳和 ActivePeriod，编排机制模块插件
   → MechanismModulePlugin 解析特殊机制模块日志
-  → MechOutputWriter 写出机制模块日志
+  → MechOutputWriter 写出板卡周期 + 嵌套 CPU 周期日志
   → MetadataGenerator 生成 metadata.json，CLI 写出 result.json
 ```
 
 机制模块通过 `MechanismModulePlugin` 扩展。`module1` 是机制模块插件，拥有自己的日志扫描、周期切分和主控角色信号；其他模块如果没有周期切分或主控判定需求，可以只实现自己的解析逻辑。`module1` 支持日志行缺少 `No[n]` 的旧版本格式：同一个 slot family（slot 本体及其 CPU 子卡）的同一周期内，若所有 module1 日志都没有 `No[n]`，则按时间排序输出；若都有 `No[n]`，则保留按序号排序、缺号检测和 journal 序号回绕辅助切分。
 
-`module2` 是诊断日志-only 的机制模块示例。它依赖 `module1` 的生命周期切分结果，不自行切周期；解析到的 module2 日志会按 slot 和时间归入 module1 对应周期，无法匹配周期的日志写入 `unknown/`。配置时需要把 `module2` 声明在它依赖的 `module1` 之后。
+当前输出模型以板卡周期为顶层生命周期，CPU 周期嵌套在对应板卡周期下。板卡日志写到 `slot_<id>/<board_cycle>/<proc>-<pid>.log`；CPU 日志写到 `slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>-<pid>.log`。`mech-logs` 查询 CPU 日志时需要同时传 `--cpu` 和 `--cpu-cycle`。
+
+`module2` 是诊断日志-only 的机制模块示例。它依赖 `module1` 的生命周期切分结果，不自行切周期；解析到的 module2 日志会按 `slot + cpu_id + timestamp` 归入 module1 对应周期。CPU 日志优先匹配嵌套 CPU 周期，找不到 CPU 周期但能匹配板卡周期时写入 `cpu_<id>/unknown/`；无法匹配板卡周期的日志写入 `unknown/`。配置时需要把 `module2` 声明在它依赖的 `module1` 之后。
 
 解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用。
 
@@ -63,6 +65,7 @@ python -m pytest tests/ -v
 
 ## 变更记录
 
+- 2026-05-29：生命周期输出改为板卡周期内嵌套 CPU 周期，`MechCpuCycle`、`lifecycle_reliable` 和 `boundary_issues` 已进入模型/元数据；`module2` 按 `slot + cpu_id + timestamp` 优先匹配嵌套 CPU 周期；`mech-logs` 支持 `--cpu` / `--cpu-cycle` 查询嵌套 CPU 日志。
 - 2026-05-26：新增 `module2` 机制模块。module2 只扫描诊断日志，复用 module1 生命周期切分结果落盘；未匹配周期的日志写入 `unknown/`。module2 日志中 Slot 字段支持 `框号/slot` 格式（如 `1/2`），当前临时提取 `/` 后的 slot 号匹配 module1 周期，正式方案将保留完整框号语义。
 - 2026-05-26：支持 `module1` 无 `No[n]` 日志格式。诊断日志和 journal 日志不再强制要求序号；journal 会从现有 4 组 `No[n]` pattern 自动派生无序号 fallback，一般无需手动修改 `config.yaml`；按 slot family 的周期判断排序模式，有序号周期继续使用 `No[n]` 排序和缺号检测，无序号周期按时间排序，并对混合状态记录 warning。
 - 2026-05-26：`module1` 机制模块插件化。`ParserPlugin` 只负责编排机制模块插件，module1 自己拥有特殊日志解析、周期切分和主控判定逻辑。

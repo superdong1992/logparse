@@ -1,6 +1,6 @@
 # logparse 架构图
 
-下面是当前完成统一解压和 `module1` 机制模块插件化后的架构。
+下面是当前统一解压、机制模块插件化、以及板卡周期内嵌套 CPU 周期输出后的架构。
 
 ```mermaid
 flowchart TD
@@ -28,18 +28,24 @@ flowchart TD
     H --> I["Module1Plugin<br/>backend/plugins/mechanisms/module1.py"]
     I --> I1["MechDiagScanner"]
     I --> I2["MechJournalScanner"]
-    I --> I3["CycleDetector<br/>module1 周期切分"]
+    I --> I3["CycleDetector<br/>板卡周期 + 嵌套 CPU 周期"]
     I --> I4["RoleIdentifier<br/>module1 主控信号"]
     I1 --> J["MechResult"]
     I2 --> J
     I3 --> J
     I4 --> F
 
-    H --> K["Other Mechanism Plugins<br/>按需扩展"]
-    K --> K1["自定义解析逻辑"]
-    K1 --> J
+    H --> K["Module2Plugin<br/>backend/plugins/mechanisms/module2.py"]
+    J --> K
+    K --> K1["依赖 module1 周期<br/>按 slot + cpu_id + timestamp 归档"]
+    K1 --> J2["MechResult<br/>module2 / other"]
 
-    J --> L["MechOutputWriter<br/>mech_modules/{module}/..."]
+    H --> O["Other Mechanism Plugins<br/>按需扩展"]
+    O --> O1["自定义解析逻辑"]
+    O1 --> J2
+
+    J --> L["MechOutputWriter<br/>slot/{board_cycle}/[cpu_N/{cpu_cycle}/]"]
+    J2 --> L
     F --> M["MetadataGenerator<br/>metadata.json"]
     F --> N["CLI result writer<br/>result.json"]
 ```
@@ -50,4 +56,5 @@ flowchart TD
 - `DirectoryDiscoveryPlugin`：只扫描统一解压后的工作区，发现 slot、诊断日志和 private/journal 日志。
 - `LogParserPlugin`：负责产品级解析编排，提取基础时间戳、构建 `ActivePeriod`，并加载机制模块插件。
 - `MechanismModulePlugin`：机制模块自己的扩展点。`module1` 自己拥有特殊日志扫描、周期切分和主控角色信号。
-- `MechOutputWriter` / `MetadataGenerator`：负责结构化输出落盘。
+- `module2`：诊断日志-only 机制模块，依赖 `module1` 的生命周期结果；CPU 日志优先落到同 slot、同板卡周期下的嵌套 CPU 周期，无法匹配 CPU 周期时进入 `cpu_<id>/unknown/`。
+- `MechOutputWriter` / `MetadataGenerator`：负责结构化输出落盘；日志路径为 `slot_<id>/<board_cycle>/<proc>.log` 或 `slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>.log`。
