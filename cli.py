@@ -408,6 +408,29 @@ def _first_hint(commands: list[str], task_id: str) -> str | None:
     return command.replace("<task_id>", task_id)
 
 
+def _hint_for_boundary_endpoint(
+    commands: list[str],
+    boundary: dict | None,
+    side: str,
+    task_id: str,
+) -> str | None:
+    if not boundary:
+        return None
+    proc = boundary.get("process_name") or ""
+    if not proc:
+        return None
+    pids = boundary.get("old_pids") or [] if side == "old" else [boundary.get("new_pid") or ""]
+    for pid in pids:
+        if not pid:
+            continue
+        proc_arg = _proc_pid(proc, pid)
+        pattern = rf"(^|\s)-p\s+{re.escape(proc_arg)}($|\s)"
+        for command in commands:
+            if "mech-logs" in command and re.search(pattern, command):
+                return command.replace("<task_id>", task_id)
+    return None
+
+
 def _detail_fields(issue: dict) -> dict[str, str]:
     detail = str(issue.get("detail") or "")
     return {key: value for key, value in re.findall(r"(\w+)=([^\s]+)", detail)}
@@ -652,7 +675,7 @@ def _print_restart_overlap_compact(issue: dict) -> None:
     ):
         proc = old_boundary.get("process_name") or "-"
         old_pid = ",".join(old_boundary.get("old_pids") or [])
-        new_pid = old_boundary.get("new_pid") or "-"
+        new_pid = new_boundary.get("new_pid") or old_boundary.get("new_pid") or "-"
         cpu = _cpu_scope(old_boundary.get("cpu_id"))
         role = old_boundary.get("role") or "-"
         old_raw = (old_boundary.get("old_log") or {}).get("raw_excerpt") or ""
@@ -795,7 +818,28 @@ def _print_boundary_issue_compact_body(issue: dict) -> None:
 
 
 def _print_issue_hint(issue: dict, task_id: str) -> None:
-    hint = _first_hint(issue.get("suggested_commands") or [], task_id)
+    commands = issue.get("suggested_commands") or []
+    hint = None
+    if issue.get("kind") == "restart_boundary_overlap":
+        boundaries = issue.get("protected_boundaries") or []
+        issue_old_end = issue.get("old_pid_end")
+        issue_new_start = issue.get("new_pid_start")
+        old_boundary = _boundary_endpoint(boundaries, "old_end", issue_old_end)
+        new_boundary = _boundary_endpoint(boundaries, "new_start", issue_new_start)
+        if old_boundary is None and not issue_old_end:
+            old_boundary = _boundary_extreme(boundaries, "old_end", "max")
+        if new_boundary is None and not issue_new_start:
+            new_boundary = _boundary_extreme(boundaries, "new_start", "min")
+        if old_boundary is None:
+            old_boundary = _boundary_from_restart_evidence(issue, "old")
+        if new_boundary is None:
+            new_boundary = _boundary_from_restart_evidence(issue, "new")
+        hint = (
+            _hint_for_boundary_endpoint(commands, old_boundary, "old", task_id)
+            or _hint_for_boundary_endpoint(commands, new_boundary, "new", task_id)
+        )
+    if hint is None:
+        hint = _first_hint(commands, task_id)
     if hint:
         click.echo(f"    hint {hint}")
 

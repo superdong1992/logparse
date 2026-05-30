@@ -48,6 +48,10 @@ python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-bou
 
 先看 `conflict-pair`：左侧是旧 PID 最后一条日志所在进程，右侧是新 PID 第一条日志所在进程，这两个端点发生了时间重叠。再看 `old-side` 和 `new-side` 的原始摘要确认证据。无关 protected 进程不会在默认视图出现。
 
+`restart_boundary_overlap` 的 protected 证据只取相邻两次 indicator PID 变化之间的窗口；如果某个白名单进程在下一次启动后才重新出现，它不会被当成本次 overlap 的冲突证据。
+
+如果 compact 里显示的是同一个进程的 `boundary proc@... old_pid->new_pid`，说明 overlap 来自这个 protected 进程自己的 PID 边界。若两条日志肉眼看属于同一个生命周期，优先检查该进程是否在同一板卡生命周期内发生了独立 PID 变化，或同名多实例被配置进了 `board_restart_whitelist`。
+
 ### unsafe_cycle_split / same_pid_*
 
 表示切点会拆断普通同 PID 进程，或解析器为避免拆断而调整了切点。默认展示第一个冲突进程、切点前后日志，以及阻止继续移动切点的 protected blocker：

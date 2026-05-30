@@ -365,13 +365,16 @@ class CycleDetector:
         for idx, (old_pid, new_pid, change_idx) in enumerate(indicator_splits):
             # 确定搜索范围：从上一个切分点到当前切分点之后
             search_start = 0
+            search_end = len(group)
             if idx > 0:
                 prev_change_idx = indicator_splits[idx - 1][2]
                 # 搜索起点从上一次变化点开始（包含旧生命周期尾部）
                 search_start = prev_change_idx
+            if idx + 1 < len(indicator_splits):
+                search_end = indicator_splits[idx + 1][2]
 
             split_ts = self._compute_split_timestamp(
-                group, change_idx, search_start, old_pid,
+                group, change_idx, search_start, search_end, old_pid,
             )
             if split_ts:
                 split_timestamps.append(split_ts)
@@ -448,6 +451,7 @@ class CycleDetector:
         group: list[MechLogEntry],
         change_idx: int,
         search_start: int,
+        search_end: int,
         indicator_old_pid: str,
     ) -> datetime | None:
         """计算单次重启的精确切分时间戳。
@@ -456,6 +460,7 @@ class CycleDetector:
             group: 按 (slot, cpu_key) 分组并排序后的全部条目
             change_idx: indicator PID 变化发生的条目索引
             search_start: 搜索范围起始索引（上一个切分点）
+            search_end: 搜索范围结束索引（下一次 indicator PID 变化点）
             indicator_old_pid: indicator 的旧 PID
         """
         # 确定 indicator 新 PID 的第一条时间戳，作为 fallback
@@ -479,11 +484,12 @@ class CycleDetector:
         ordered_protected_names = [indicator_name] + sorted(whitelist_set - {indicator_name})
         for proc_name_lower in ordered_protected_names:
             old_last_ts, new_first_ts, change_at, old_pid, new_pid = self._find_pid_boundary(
-                group, proc_name_lower, search_start,
+                group, proc_name_lower, search_start, change_idx, search_end,
             )
-            if change_at is not None:
+            has_old_side = old_last_ts is not None
+            if change_at is not None and has_old_side:
                 proc_change_indices[proc_name_lower] = change_at
-            if old_last_ts and new_first_ts and old_pid and new_pid:
+            if old_last_ts and new_first_ts and old_pid and new_pid and has_old_side:
                 role = "indicator" if proc_name_lower == indicator_name else "whitelist"
                 cpu_key = group[change_at].cpu_id if change_at is not None else ""
                 protected_boundaries.append((
@@ -495,13 +501,13 @@ class CycleDetector:
                     old_last_ts,
                     new_first_ts,
                 ))
-            if old_last_ts:
+            if old_last_ts and has_old_side:
                 old_pid_ends.append(old_last_ts)
                 logger.debug(
                     "白名单进程 %r: 旧 PID 最后一条 ts=%s",
                     proc_name_lower, old_last_ts.isoformat(),
                 )
-            if new_first_ts:
+            if new_first_ts and has_old_side:
                 new_pid_starts.append(new_first_ts)
                 logger.debug(
                     "白名单进程 %r: 新 PID 第一条 ts=%s",
@@ -593,64 +599,101 @@ class CycleDetector:
         group: list[MechLogEntry],
         proc_name_lower: str,
         search_start: int,
+        anchor_idx: int,
+        search_end: int | None = None,
     ) -> tuple[datetime | None, datetime | None, int | None, str | None, str | None]:
         """找到指定进程的旧 PID 最后一条、新 PID 第一条及 PID 变化索引。
 
         通过检测 PID 变化来区分旧生命周期和新生命周期。
         仅考虑有 PID 的条目（journal 无 PID 条目不参与 PID 边界判定）。
+        搜索范围限制在相邻 indicator PID 变化之间，避免把未来启动的
+        白名单 PID 变化当成本次重启边界。
+        对一次重启，旧 PID 以 indicator PID 变化前或同时间戳最后观察到的
+        PID 为准，新 PID 取之后第一个不同 PID，避免拿同一旧生命周期内更早的
+        白名单 PID 自变化当成本次重启边界。
 
         Returns:
             (旧 PID 最后一条时间戳, 新 PID 第一条时间戳, PID 变化索引)
         """
-        prev_pid: str | None = None
+        if search_end is None:
+            search_end = len(group)
         old_pid: str | None = None
+        old_last_ts: datetime | None = None
         new_first_ts: datetime | None = None
         new_pid: str | None = None
         change_at: int | None = None
-        found_change = False
 
-        for i in range(search_start, len(group)):
+        anchor_ts = group[anchor_idx].timestamp if anchor_idx < len(group) else None
+
+        for i in range(search_start, min(anchor_idx, search_end)):
             e = group[i]
             if e.process_name.lower() != proc_name_lower:
                 continue
             if not e.pid:
                 continue
+            old_pid = e.pid
+            if e.timestamp:
+                old_last_ts = e.timestamp
 
-            if prev_pid and e.pid != prev_pid and not found_change:
-                found_change = True
-                old_pid = prev_pid
+        if not old_pid and anchor_ts is not None:
+            for i in range(max(anchor_idx, search_start), search_end):
+                e = group[i]
+                if e.timestamp and e.timestamp > anchor_ts:
+                    break
+                if e.timestamp != anchor_ts:
+                    continue
+                if e.process_name.lower() != proc_name_lower:
+                    continue
+                if not e.pid:
+                    continue
+                old_pid = e.pid
+                old_last_ts = e.timestamp
+                break
+
+        if not old_pid:
+            logger.debug(
+                "进程 %r 在 indicator 变化前或同时间戳未观察到旧 PID", proc_name_lower,
+            )
+            return None, None, None, None, None
+
+        for i in range(max(anchor_idx, search_start), search_end):
+            e = group[i]
+            if e.process_name.lower() != proc_name_lower:
+                continue
+            if not e.pid:
+                continue
+            if e.pid != old_pid:
                 new_pid = e.pid
                 change_at = i
                 if e.timestamp:
                     new_first_ts = e.timestamp
-            prev_pid = e.pid
+                break
 
-        if not found_change:
+        if change_at is None:
             logger.debug(
                 "进程 %r 在搜索范围内未检测到 PID 变化", proc_name_lower,
             )
             return None, None, None, None, None
 
-        # 从 PID 变化点向前扫描，只取旧 PID 条目的最后一条
-        old_last_ts: datetime | None = None
-        if old_pid:
-            for i in range(change_at - 1, search_start - 1, -1):
-                e = group[i]
-                if e.process_name.lower() != proc_name_lower:
-                    continue
-                if e.pid != old_pid:
-                    continue
-                if e.timestamp:
-                    old_last_ts = e.timestamp
-                    break
-            if not old_last_ts:
-                logger.warning(
-                    "进程 %r 旧 PID=%s 无时间戳条目，切分点可能偏移",
-                    proc_name_lower, old_pid,
-                )
+        # 同时间戳日志排序不可靠：new PID 可能排在 old PID 尾部之前。
+        # 因此 old_end 按时间在相邻窗口内取 old PID 的最后一条，而不是按下标回扫。
+        old_times = [
+            e.timestamp
+            for e in group[search_start:search_end]
+            if e.process_name.lower() == proc_name_lower
+            and e.pid == old_pid
+            and e.timestamp is not None
+            and new_first_ts is not None
+            and e.timestamp <= new_first_ts
+        ]
+        old_last_ts = max(old_times) if old_times else old_last_ts
+        if not old_last_ts:
+            logger.warning(
+                "进程 %r 旧 PID=%s 无时间戳条目，切分点可能偏移",
+                proc_name_lower, old_pid,
+            )
 
         return old_last_ts, new_first_ts, change_at, old_pid, new_pid
-
     # ── Journal 序号前移 ────────────────────────────────────
 
     def _find_journal_earliest(
@@ -965,7 +1008,10 @@ class CycleDetector:
             if not new_splits:
                 return refined
 
-            refined = self._refine_split_timestamps(entries, sorted(set(refined + new_splits)))
+            next_refined = self._refine_split_timestamps(entries, sorted(set(refined + new_splits)))
+            if next_refined == refined:
+                return refined
+            refined = next_refined
 
     def _prune_redundant_splits(
         self,
@@ -1482,21 +1528,25 @@ class CycleDetector:
             commands.append(cmd)
         for boundary in protected_boundaries:
             proc = boundary.get("process_name") or ""
-            pid = boundary.get("new_pid") or ""
             cpu = boundary.get("cpu_id") or ""
             boundary_slot = boundary.get("slot") or slots[0]
-            key = (boundary_slot, proc, pid, cpu)
-            if not proc or key in seen_proc:
-                continue
-            seen_proc.add(key)
-            proc_arg = f"{proc}-{pid}" if pid else proc
-            cmd = (
-                f"python cli.py mech-logs <task_id> -s {boundary_slot} "
-                f"-c <board_cycle> -p {proc_arg} -m {module_name}"
-            )
-            if cpu:
-                cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"
-            commands.append(cmd)
+            endpoint_pids = [
+                pid for pid in list(boundary.get("old_pids") or []) + [boundary.get("new_pid") or ""]
+                if pid
+            ]
+            for pid in endpoint_pids:
+                key = (boundary_slot, proc, pid, cpu)
+                if not proc or key in seen_proc:
+                    continue
+                seen_proc.add(key)
+                proc_arg = f"{proc}-{pid}" if pid else proc
+                cmd = (
+                    f"python cli.py mech-logs <task_id> -s {boundary_slot} "
+                    f"-c <board_cycle> -p {proc_arg} -m {module_name}"
+                )
+                if cpu:
+                    cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"
+                commands.append(cmd)
         for item in evidence:
             proc = item.get("process_name") or ""
             pid = item.get("pid") or ""

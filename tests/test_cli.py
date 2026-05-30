@@ -720,6 +720,7 @@ def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(t
                                         "suggested_commands": [
                                             "python cli.py mech-lifecycles <task_id> -s 1 -m EXAMPLE --show-boundaries",
                                             "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-200 -m EXAMPLE",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-300 -m EXAMPLE",
                                             "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-400 -m EXAMPLE",
                                         ],
                                     },
@@ -760,6 +761,7 @@ def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(t
     assert "new-side dhcp-200@board role=indicator new_start=2026-01-03T00:00:09+08:00 raw=dhcp new" in result.output
     assert "noise" not in result.output
     assert result.output.count("hint ") == 1
+    assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p svc_a-300 -m EXAMPLE" in result.output
 
 
 def test_mech_lifecycles_restart_overlap_infers_conflict_pair_from_boundaries(tmp_path):
@@ -998,6 +1000,85 @@ def test_mech_lifecycles_restart_overlap_uses_evidence_when_boundaries_missing(t
     ) in result.output
     assert "old-side svc_a-300@board role=protected_old old_end=2026-01-03T00:00:10+08:00 raw=svc old" in result.output
     assert "new-side dhcp-200@board role=protected_new new_start=2026-01-03T00:00:09+08:00 raw=dhcp new" in result.output
+
+
+def test_mech_lifecycles_restart_overlap_same_process_fallback_shows_new_pid(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "restart_boundary_overlap",
+                                        "severity": "error",
+                                        "reason": "new_pid_start_le_old_pid_end",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10.000001+08:00",
+                                        "old_pid_end": "2026-01-03T00:00:10+08:00",
+                                        "new_pid_start": "2026-01-03T00:00:09+08:00",
+                                        "evidence": [
+                                            {
+                                                "role": "protected_new",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/svc_a.log",
+                                                "process_name": "svc_a",
+                                                "pid": "400",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T00:00:09+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "svc new",
+                                            },
+                                            {
+                                                "role": "protected_old",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/svc_a.log",
+                                                "process_name": "svc_a",
+                                                "pid": "300",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T00:00:10+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "svc old",
+                                            },
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "conflict-pair svc_a-300@board old_end=2026-01-03T00:00:10+08:00 overlaps svc_a-400@board new_start=2026-01-03T00:00:09+08:00" in result.output
+    assert "boundary svc_a@board role=protected_old 300->400 old_end=2026-01-03T00:00:10+08:00 new_start=2026-01-03T00:00:09+08:00" in result.output
 
 
 def test_mech_lifecycles_show_boundaries_accepts_old_result_without_boundary_fields(tmp_path):
