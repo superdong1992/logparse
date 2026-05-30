@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import click
@@ -286,6 +287,14 @@ def _boundary_issue_counts(issues) -> dict[str, int]:
     return counts
 
 
+def _issue_kind_counts(issues) -> Counter[str]:
+    return Counter(str(_issue_get(issue, "kind") or "-") for issue in issues)
+
+
+def _format_kind_counts(counts: Counter[str]) -> str:
+    return " ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
+
+
 def _iter_result_boundary_issues(result: ParseResult):
     for mech_result in result.mech_results:
         for slot in mech_result.slots:
@@ -398,6 +407,20 @@ def _boundary_endpoint(boundaries: list[dict], key: str, value: str | None) -> d
     return None
 
 
+def _boundary_old_label(boundary: dict) -> str:
+    proc = boundary.get("process_name") or "-"
+    pid = ",".join(boundary.get("old_pids") or [])
+    cpu = _cpu_scope(boundary.get("cpu_id"))
+    return f"{_proc_pid(proc, pid)}@{cpu}"
+
+
+def _boundary_new_label(boundary: dict) -> str:
+    proc = boundary.get("process_name") or "-"
+    pid = boundary.get("new_pid") or ""
+    cpu = _cpu_scope(boundary.get("cpu_id"))
+    return f"{_proc_pid(proc, pid)}@{cpu}"
+
+
 def _print_restart_overlap_compact(issue: dict) -> None:
     old_end = _format_issue_time(issue.get("old_pid_end"))
     new_start = _format_issue_time(issue.get("new_pid_start"))
@@ -406,6 +429,12 @@ def _print_restart_overlap_compact(issue: dict) -> None:
     boundaries = issue.get("protected_boundaries") or []
     old_boundary = _boundary_endpoint(boundaries, "old_end", issue.get("old_pid_end"))
     new_boundary = _boundary_endpoint(boundaries, "new_start", issue.get("new_pid_start"))
+
+    if old_boundary and new_boundary:
+        click.echo(
+            f"    conflict-pair {_boundary_old_label(old_boundary)} old_end={old_end} "
+            f"overlaps {_boundary_new_label(new_boundary)} new_start={new_start}"
+        )
 
     if old_boundary and new_boundary and (
         old_boundary.get("process_name") == new_boundary.get("process_name")
@@ -448,7 +477,8 @@ def _print_conflict_compact(issue: dict) -> None:
     cpu = _cpu_scope(conflict.get("cpu_id"))
     before = _format_issue_time(conflict.get("before_time"))
     after = _format_issue_time(conflict.get("after_time"))
-    click.echo(f"    conflict {_proc_pid(proc, pid)}@{cpu} before={before} after={after}")
+    split = _format_issue_time(issue.get("split_time"))
+    click.echo(f"    conflict {_proc_pid(proc, pid)}@{cpu} spans split={split} before={before} after={after}")
     _print_boundary_log("before", conflict.get("before_log") or {})
     _print_boundary_log("after", conflict.get("after_log") or {})
     blocker = (issue.get("protected_boundaries") or [{}])[0]
@@ -456,10 +486,11 @@ def _print_conflict_compact(issue: dict) -> None:
         bproc = blocker.get("process_name") or "-"
         bcpu = _cpu_scope(blocker.get("cpu_id"))
         role = blocker.get("role") or "-"
+        old_end = _format_issue_time(blocker.get("old_end"))
+        new_start = _format_issue_time(blocker.get("new_start"))
         click.echo(
-            f"    blocker {bproc}@{bcpu} role={role} "
-            f"old_end={_format_issue_time(blocker.get('old_end'))} "
-            f"new_start={_format_issue_time(blocker.get('new_start'))}"
+            f"    blocked-by {bproc}@{bcpu} role={role} "
+            f"safe_gap=({old_end}, {new_start}]"
         )
 
 
@@ -472,8 +503,10 @@ def _print_protected_forced_split_compact(issue: dict) -> None:
     new_pid = boundary.get("new_pid") or ""
     cpu = _cpu_scope(boundary.get("cpu_id"))
     role = boundary.get("role") or "-"
+    split = _format_issue_time(issue.get("split_time") or boundary.get("new_start"))
     click.echo(
-        f"    protected {_proc_pid(proc, old_pid)}->{new_pid}@{cpu} role={role} "
+        f"    pid-change {proc}@{cpu} role={role} {old_pid or '-'} -> {new_pid or '-'} "
+        f"split={split} "
         f"old_end={_format_issue_time(boundary.get('old_end'))} "
         f"new_start={_format_issue_time(boundary.get('new_start'))}"
     )
@@ -485,7 +518,10 @@ def _print_pid_bounce_compact(issue: dict) -> None:
     evidence = issue.get("evidence") or []
     pids = [item.get("pid") or "-" for item in evidence]
     if pids:
-        click.echo(f"    pid-bounce {' -> '.join(pids)}")
+        first = next((item for item in evidence if item), {})
+        proc = first.get("process_name") or issue.get("process_name") or "-"
+        cpu = _cpu_scope(first.get("cpu_id"))
+        click.echo(f"    pid-bounce {proc}@{cpu} {' -> '.join(pids)}")
     for item in evidence[:3]:
         _print_boundary_log(item.get("role") or "bounce", item)
 
@@ -563,7 +599,10 @@ def _print_boundary_issues(group: dict, task_id: str, detail: str = "compact") -
     for issue in issues:
         _print_boundary_issue_compact(issue, task_id)
     if counts["INFO"]:
-        click.echo(f"  INFO 诊断 {counts['INFO']} 个，使用 --boundary-detail full 查看")
+        info_issues = [issue for issue in issues if _severity_key(issue.get("severity")) == "INFO"]
+        kind_text = _format_kind_counts(_issue_kind_counts(info_issues))
+        suffix = f": {kind_text}" if kind_text else ""
+        click.echo(f"  INFO 诊断 {counts['INFO']} 个{suffix}，使用 --boundary-detail full 查看")
 
 
 @cli.command()

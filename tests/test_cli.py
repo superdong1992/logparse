@@ -422,10 +422,215 @@ def test_mech_lifecycles_show_boundaries(tmp_path):
     assert "生命周期可靠性: false" in result.output
     assert "生命周期切分诊断: ERROR=1 WARNING=0 INFO=0" in result.output
     assert "[ERROR] unsafe_cycle_split action=kept reason=no_safe_gap_candidate" in result.output
-    assert "conflict other-500@board before=2026-01-03T00:00:05+08:00 after=2026-01-03T00:00:12+08:00" in result.output
+    assert (
+        "conflict other-500@board spans split=2026-01-03T00:00:10+08:00 "
+        "before=2026-01-03T00:00:05+08:00 after=2026-01-03T00:00:12+08:00"
+    ) in result.output
     assert "before diagnostic|slot_1/diag.log seq=0 raw=before raw" in result.output
     assert "evidence diagnostic|slot_1/diag.log" not in result.output
     assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p other-500 -m EXAMPLE" in result.output
+
+
+def test_mech_lifecycles_compact_other_dfx_events_are_human_readable(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "same_pid_adjusted_backward",
+                                        "severity": "warning",
+                                        "action": "adjusted_backward",
+                                        "reason": "adjusted_backward",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T13:04:18+08:00",
+                                        "adjusted_time": "2026-01-03T13:04:12+08:00",
+                                        "conflicts": [
+                                            {
+                                                "process_name": "other",
+                                                "pid": "500",
+                                                "cpu_id": "",
+                                                "before_time": "2026-01-03T13:04:12+08:00",
+                                                "after_time": "2026-01-03T13:04:21+08:00",
+                                                "before_log": {
+                                                    "source": "diagnostic",
+                                                    "source_file": "slot_1/other.log",
+                                                    "sequence": 0,
+                                                    "raw_excerpt": "other before",
+                                                },
+                                                "after_log": {
+                                                    "source": "diagnostic",
+                                                    "source_file": "slot_1/other.log",
+                                                    "sequence": 0,
+                                                    "raw_excerpt": "other after",
+                                                },
+                                            },
+                                        ],
+                                        "protected_boundaries": [
+                                            {
+                                                "process_name": "dhcp",
+                                                "cpu_id": "",
+                                                "role": "indicator",
+                                                "old_pids": ["10"],
+                                                "old_end": "2026-01-03T12:59:03+08:00",
+                                                "new_pid": "20",
+                                                "new_start": "2026-01-03T13:04:18+08:00",
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "protected_forced_split",
+                                        "severity": "warning",
+                                        "reason": "protected_pid_change",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:06+08:00",
+                                        "protected_boundaries": [
+                                            {
+                                                "process_name": "svc_a",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["300"],
+                                                "old_end": "2026-01-03T00:00:05+08:00",
+                                                "new_pid": "400",
+                                                "new_start": "2026-01-03T00:00:06+08:00",
+                                                "old_log": {
+                                                    "source": "diagnostic",
+                                                    "source_file": "slot_1/svc_a.log",
+                                                    "sequence": 0,
+                                                    "raw_excerpt": "svc old",
+                                                },
+                                                "new_log": {
+                                                    "source": "diagnostic",
+                                                    "source_file": "slot_1/svc_a.log",
+                                                    "sequence": 0,
+                                                    "raw_excerpt": "svc new",
+                                                },
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "suspect_pid_bounce",
+                                        "severity": "warning",
+                                        "reason": "indicator_pid_bounce",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:02+08:00",
+                                        "evidence": [
+                                            {
+                                                "role": "pid_bounce_1",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/dhcp.log",
+                                                "process_name": "dhcp",
+                                                "pid": "100",
+                                                "cpu_id": "",
+                                                "sequence": 0,
+                                                "raw_excerpt": "dhcp 100",
+                                            },
+                                            {
+                                                "role": "pid_bounce_2",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/dhcp.log",
+                                                "process_name": "dhcp",
+                                                "pid": "200",
+                                                "cpu_id": "",
+                                                "sequence": 0,
+                                                "raw_excerpt": "dhcp 200",
+                                            },
+                                            {
+                                                "role": "pid_bounce_3",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/dhcp.log",
+                                                "process_name": "dhcp",
+                                                "pid": "100",
+                                                "cpu_id": "",
+                                                "sequence": 0,
+                                                "raw_excerpt": "dhcp 100 again",
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "scoped_cpu_split",
+                                        "severity": "info",
+                                        "reason": "cpu_local_split",
+                                        "scope": "cpu:1",
+                                        "split_time": "2026-01-03T00:00:05+08:00",
+                                        "evidence": [
+                                            {
+                                                "role": "context_before",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/cpu.log",
+                                                "process_name": "dhcp",
+                                                "pid": "10",
+                                                "cpu_id": "1",
+                                                "sequence": 0,
+                                                "raw_excerpt": "cpu before",
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "suspect_over_split",
+                                        "severity": "info",
+                                        "reason": "protected_merge_has_no_pid_conflict",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:07+08:00",
+                                        "evidence": [
+                                            {
+                                                "role": "over_split_left",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/dhcp.log",
+                                                "process_name": "dhcp",
+                                                "pid": "100",
+                                                "cpu_id": "",
+                                                "sequence": 0,
+                                                "raw_excerpt": "over split left",
+                                            },
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "conflict other-500@board spans split=2026-01-03T13:04:18+08:00 "
+        "before=2026-01-03T13:04:12+08:00 after=2026-01-03T13:04:21+08:00"
+    ) in result.output
+    assert "blocked-by dhcp@board role=indicator safe_gap=(2026-01-03T12:59:03+08:00, 2026-01-03T13:04:18+08:00]" in result.output
+    assert "pid-change svc_a@board role=whitelist 300 -> 400 split=2026-01-03T00:00:06+08:00" in result.output
+    assert "pid-bounce dhcp@board 100 -> 200 -> 100" in result.output
+    assert "INFO 诊断 2 个: scoped_cpu_split=1 suspect_over_split=1" in result.output
+    assert "cpu before" not in result.output
+    assert "over split left" not in result.output
 
 
 def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(tmp_path):
@@ -533,6 +738,10 @@ def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(t
 
     assert result.exit_code == 0, result.output
     assert "overlap new_start=2026-01-03T00:00:09+08:00 <= old_end=2026-01-03T00:00:10+08:00" in result.output
+    assert (
+        "conflict-pair svc_a-300@board old_end=2026-01-03T00:00:10+08:00 "
+        "overlaps dhcp-200@board new_start=2026-01-03T00:00:09+08:00"
+    ) in result.output
     assert "old-side svc_a-300@board role=whitelist old_end=2026-01-03T00:00:10+08:00 raw=svc old" in result.output
     assert "new-side dhcp-200@board role=indicator new_start=2026-01-03T00:00:09+08:00 raw=dhcp new" in result.output
     assert "noise" not in result.output
