@@ -50,6 +50,8 @@ python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-bou
 
 `restart_boundary_overlap` 的 protected 证据只取相邻两次 indicator PID 变化之间的窗口；如果某个白名单进程在下一次启动后才重新出现，它不会被当成本次 overlap 的冲突证据。
 
+白名单进程可以比 indicator 更早启动、也可以比 indicator 更晚结束。若同一个白名单 PID 在 indicator 新 PID 前后都出现，解析器会把这个白名单 PID 视为当前生命周期的新一代，而不是旧侧；因此不应因为“白名单跨度大于 indicator”本身产生 `restart_boundary_overlap`。
+
 如果 compact 里显示的是同一个进程的 `boundary proc@... old_pid->new_pid`，说明 overlap 来自这个 protected 进程自己的 PID 边界。若两条日志肉眼看属于同一个生命周期，优先检查该进程是否在同一板卡生命周期内发生了独立 PID 变化，或同名多实例被配置进了 `board_restart_whitelist`。
 
 ### unsafe_cycle_split / same_pid_*

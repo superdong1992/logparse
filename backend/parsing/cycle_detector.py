@@ -625,6 +625,76 @@ class CycleDetector:
 
         anchor_ts = group[anchor_idx].timestamp if anchor_idx < len(group) else None
 
+        proc_entries = [
+            (i, group[i])
+            for i in range(search_start, search_end)
+            if group[i].process_name.lower() == proc_name_lower and group[i].pid
+        ]
+
+        # Whitelist processes may start earlier than the indicator in the same
+        # board lifecycle. If the PID observed immediately before the indicator
+        # change continues after that change, treat that PID as the new side and
+        # use its previous PID run as the old side.
+        if proc_name_lower != (self._indicator or "").lower():
+            before_anchor_pos: int | None = None
+            for pos, (entry_idx, _entry) in enumerate(proc_entries):
+                if entry_idx < anchor_idx:
+                    before_anchor_pos = pos
+                    continue
+                break
+
+            if before_anchor_pos is not None:
+                current_pid = proc_entries[before_anchor_pos][1].pid
+                run_start = before_anchor_pos
+                while run_start > 0 and proc_entries[run_start - 1][1].pid == current_pid:
+                    run_start -= 1
+                run_end = before_anchor_pos
+                while (
+                    run_end + 1 < len(proc_entries)
+                    and proc_entries[run_end + 1][1].pid == current_pid
+                ):
+                    run_end += 1
+
+                spans_anchor = any(
+                    entry_idx >= anchor_idx
+                    for entry_idx, _entry in proc_entries[run_start:run_end + 1]
+                )
+                if spans_anchor and run_start > 0:
+                    previous_pid = proc_entries[run_start - 1][1].pid
+                    previous_start = run_start - 1
+                    while (
+                        previous_start > 0
+                        and proc_entries[previous_start - 1][1].pid == previous_pid
+                    ):
+                        previous_start -= 1
+
+                    previous_run = proc_entries[previous_start:run_start]
+                    current_run = proc_entries[run_start:run_end + 1]
+                    new_first_ts = next(
+                        (entry.timestamp for _idx, entry in current_run if entry.timestamp),
+                        None,
+                    )
+                    old_times = [
+                        entry.timestamp
+                        for _idx, entry in previous_run
+                        if entry.timestamp is not None
+                        and new_first_ts is not None
+                        and entry.timestamp <= new_first_ts
+                    ]
+                    old_last_ts = max(old_times) if old_times else None
+                    if old_last_ts and new_first_ts:
+                        logger.debug(
+                            "进程 %r PID=%s 横跨 indicator 变化，使用前一 PID=%s 作为旧侧",
+                            proc_name_lower, current_pid, previous_pid,
+                        )
+                        return (
+                            old_last_ts,
+                            new_first_ts,
+                            proc_entries[run_start][0],
+                            previous_pid,
+                            current_pid,
+                        )
+
         for i in range(search_start, min(anchor_idx, search_end)):
             e = group[i]
             if e.process_name.lower() != proc_name_lower:

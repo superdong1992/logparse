@@ -21,7 +21,11 @@
 - `new_pid_start = min(可靠进程新 PID 第一条时间)`
 - 正常安全区间为 `(old_pid_end, new_pid_start]`
 
-对每个白名单进程，旧 PID 取本次 indicator PID 变化前或同时间戳最后观察到的 PID，新 PID 取之后第一个不同 PID；同一窗口内更早的白名单 PID 自变化不会被当成本次板卡重启边界。
+对每个白名单进程，边界以本次 indicator PID 变化为锚点，但允许白名单进程比 indicator 更早启动、或更晚结束：
+
+- 如果 indicator 变化前观察到的白名单 PID 在 indicator 变化后仍继续出现，说明该 PID 是当前板卡生命周期的新一代；此时取它前一个 PID -> 该 PID 作为本次边界。
+- 否则旧 PID 取本次 indicator PID 变化前或同时间戳最后观察到的 PID，新 PID 取之后第一个不同 PID。
+- 同一窗口内更早的白名单 PID 自变化不会被当成本次板卡重启边界。
 
 候选切点生成顺序：
 

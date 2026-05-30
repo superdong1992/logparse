@@ -717,6 +717,26 @@ class TestWhitelistSafeSplit:
             for boundary in issue.protected_boundaries
         )
 
+    def test_whitelist_pid_spanning_indicator_is_current_generation_not_overlap(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 1)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 4)),
+            # svc_a for the new board lifecycle starts before the indicator does.
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 5)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 10)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 20)),
+            # A later protected PID change must not be mistaken for the boundary
+            # of the restart that started at dhcp-200.
+            _entry_without_seq("svc_a", "500", _ts(1, 3, 0, 30)),
+        ]
+
+        det.detect(entries)
+
+        assert not any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
+        assert not any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
+
     def test_whitelist_absent_for_one_restart_does_not_force_split_across_gap(self):
         det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
         entries = [
