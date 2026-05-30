@@ -249,13 +249,16 @@ class TestWhitelistSafeSplit:
             assert len(pids_by_name.get("svc_a", set())) <= 1
         assert any("forced protected pid split" in error for error in det.errors)
         assert any("cycle split diagnostic: protected_forced_split" in error for error in det.errors)
-        issue = next(issue for issue in det.boundary_issues if issue.kind == "protected_forced_split")
+        issue = next(
+            issue for issue in det.boundary_issues
+            if issue.kind == "protected_forced_split"
+            and issue.protected_boundaries[0]["process_name"] == "svc_a"
+        )
         assert issue.severity == "warning"
         assert issue.reason == "protected_pid_change"
-        assert issue.protected_boundaries[0]["process_name"] == "dhcp"
-        assert issue.protected_boundaries[0]["role"] == "indicator"
-        assert issue.protected_boundaries[0]["old_log"]["raw_excerpt"] == "dhcp-100-no-sequence"
-        assert issue.protected_boundaries[0]["new_log"]["raw_excerpt"] == "dhcp-200-no-sequence"
+        assert issue.protected_boundaries[0]["role"] == "whitelist"
+        assert issue.protected_boundaries[0]["old_log"]["raw_excerpt"] == "svc_a-300-no-sequence"
+        assert issue.protected_boundaries[0]["new_log"]["raw_excerpt"] == "svc_a-400-no-sequence"
 
     def test_non_whitelist_process_is_split_when_protected_pid_boundary_would_be_merged(self):
         """Keep the protected PID boundary even if a non-whitelist PID is split."""
@@ -602,7 +605,7 @@ class TestWhitelistSafeSplit:
             "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p other-500 -m m1",
         ]
 
-    def test_overlap_records_boundary_issue_and_marks_unreliable(self):
+    def test_whitelist_pid_spanning_indicator_adjusts_without_overlap(self):
         det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
         entries = [
             _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
@@ -614,45 +617,17 @@ class TestWhitelistSafeSplit:
 
         det.detect(entries)
 
-        assert det.lifecycle_reliable is False
-        assert any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
-        assert any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
-
-        issue = next(issue for issue in det.boundary_issues if issue.kind == "restart_boundary_overlap")
-        assert issue.severity == "error"
-        assert issue.reason == "new_pid_start_le_old_pid_end"
-        assert issue.old_pid_end == _ts(1, 3, 0, 10)
-        assert issue.new_pid_start == _ts(1, 3, 0, 9)
-        assert issue.protected_boundaries
-        dhcp_boundary = next(
-            boundary
-            for boundary in issue.protected_boundaries
-            if boundary["process_name"] == "dhcp"
+        assert det.lifecycle_reliable is True
+        assert not any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
+        assert not any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
+        assert any(issue.kind == "same_pid_adjusted_backward" for issue in det.boundary_issues)
+        svc_issue = next(
+            issue for issue in det.boundary_issues
+            if issue.kind == "protected_forced_split"
+            and issue.protected_boundaries[0]["process_name"] == "svc_a"
         )
-        assert dhcp_boundary["role"] == "indicator"
-        assert dhcp_boundary["old_log"]["raw_excerpt"] == "dhcp-100-no-sequence"
-        assert dhcp_boundary["new_log"]["raw_excerpt"] == "dhcp-200-no-sequence"
-        svc_boundary = next(
-            boundary
-            for boundary in issue.protected_boundaries
-            if boundary["process_name"] == "svc_a"
-        )
-        assert svc_boundary["role"] == "whitelist"
-        assert svc_boundary["old_log"]["raw_excerpt"] == "svc_a-300-no-sequence"
-        assert svc_boundary["new_log"]["raw_excerpt"] == "svc_a-400-no-sequence"
-        assert [item["role"] for item in issue.evidence] == [
-            "protected_old",
-            "protected_new",
-            "protected_old",
-            "protected_new",
-        ]
-        assert issue.suggested_commands == [
-            "python cli.py mech-lifecycles <task_id> -s 1 -m m1 --show-boundaries",
-            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-100 -m m1",
-            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-200 -m m1",
-            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-300 -m m1",
-            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-400 -m m1",
-        ]
+        assert svc_issue.severity == "warning"
+        assert svc_issue.reason == "protected_pid_change"
 
     def test_whitelist_absent_before_restart_does_not_create_overlap(self):
         det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
@@ -706,16 +681,15 @@ class TestWhitelistSafeSplit:
 
         det.detect(entries)
 
-        issue = next(issue for issue in det.boundary_issues if issue.kind == "restart_boundary_overlap")
-        reported_processes = {
-            boundary["process_name"]
-            for boundary in issue.protected_boundaries
-        }
-        assert reported_processes == {"dhcp", "svc_b"}
-        assert all(
-            boundary["new_start"] < _ts(1, 3, 0, 20).isoformat()
-            for boundary in issue.protected_boundaries
-        )
+        assert not any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
+        assert not any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
+        svc_forced = [
+            issue for issue in det.boundary_issues
+            if issue.kind == "protected_forced_split"
+            and issue.protected_boundaries
+            and issue.protected_boundaries[0]["process_name"] == "svc_b"
+        ]
+        assert svc_forced
 
     def test_whitelist_pid_spanning_indicator_is_current_generation_not_overlap(self):
         det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
@@ -729,6 +703,46 @@ class TestWhitelistSafeSplit:
             _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 20)),
             # A later protected PID change must not be mistaken for the boundary
             # of the restart that started at dhcp-200.
+            _entry_without_seq("svc_a", "500", _ts(1, 3, 0, 30)),
+        ]
+
+        det.detect(entries)
+
+        assert not any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
+        assert not any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
+
+    def test_whitelist_pid_spanning_past_next_indicator_still_current_generation(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 1)),
+            _entry_without_seq("svc_a", "300", _ts(1, 3, 0, 4)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 5)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 10)),
+            # The next indicator boundary appears before svc_a logs again.
+            _entry_without_seq("dhcp", "300", _ts(1, 3, 0, 20)),
+            # svc_a-400 is still the same current lifecycle generation; it just
+            # outlives the indicator process span.
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 25)),
+            _entry_without_seq("svc_a", "500", _ts(1, 3, 0, 30)),
+        ]
+
+        det.detect(entries)
+
+        assert not any(issue.kind == "restart_boundary_overlap" for issue in det.boundary_issues)
+        assert not any("cycle split diagnostic: restart_boundary_overlap" in error for error in det.errors)
+
+    def test_first_observed_whitelist_pid_spanning_indicator_is_not_old_side(self):
+        det = CycleDetector(indicator="dhcp", whitelist=["svc_a"], module_key="m1")
+        entries = [
+            _entry_without_seq("dhcp", "100", _ts(1, 3, 0, 0)),
+            # svc_a-400 is the first observed svc_a PID, but it already belongs
+            # to the lifecycle that starts at dhcp-200.
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 5)),
+            _entry_without_seq("dhcp", "200", _ts(1, 3, 0, 10)),
+            _entry_without_seq("svc_a", "400", _ts(1, 3, 0, 20)),
+            # A later svc_a change must not make svc_a-400 the old side of the
+            # dhcp-200 restart.
             _entry_without_seq("svc_a", "500", _ts(1, 3, 0, 30)),
         ]
 

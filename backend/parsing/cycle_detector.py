@@ -659,6 +659,13 @@ class CycleDetector:
                     entry_idx >= anchor_idx
                     for entry_idx, _entry in proc_entries[run_start:run_end + 1]
                 )
+                if spans_anchor and run_start == 0:
+                    logger.debug(
+                        "进程 %r PID=%s 横跨 indicator 变化且无旧侧 PID，跳过本次边界",
+                        proc_name_lower, current_pid,
+                    )
+                    return None, None, None, None, None
+
                 if spans_anchor and run_start > 0:
                     previous_pid = proc_entries[run_start - 1][1].pid
                     previous_start = run_start - 1
@@ -682,18 +689,23 @@ class CycleDetector:
                         and entry.timestamp <= new_first_ts
                     ]
                     old_last_ts = max(old_times) if old_times else None
-                    if old_last_ts and new_first_ts:
+                    if not (old_last_ts and new_first_ts):
                         logger.debug(
-                            "进程 %r PID=%s 横跨 indicator 变化，使用前一 PID=%s 作为旧侧",
-                            proc_name_lower, current_pid, previous_pid,
+                            "进程 %r PID=%s 横跨 indicator 变化但边界时间不完整，跳过本次边界",
+                            proc_name_lower, current_pid,
                         )
-                        return (
-                            old_last_ts,
-                            new_first_ts,
-                            proc_entries[run_start][0],
-                            previous_pid,
-                            current_pid,
-                        )
+                        return None, None, None, None, None
+                    logger.debug(
+                        "进程 %r PID=%s 横跨 indicator 变化，使用前一 PID=%s 作为旧侧",
+                        proc_name_lower, current_pid, previous_pid,
+                    )
+                    return (
+                        old_last_ts,
+                        new_first_ts,
+                        proc_entries[run_start][0],
+                        previous_pid,
+                        current_pid,
+                    )
 
         for i in range(search_start, min(anchor_idx, search_end)):
             e = group[i]
