@@ -476,6 +476,15 @@ def test_mech_lifecycles_compact_other_dfx_events_are_human_readable(tmp_path):
                                         ],
                                         "protected_boundaries": [
                                             {
+                                                "process_name": "noise",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["900"],
+                                                "old_end": "2026-01-03T12:00:00+08:00",
+                                                "new_pid": "901",
+                                                "new_start": "2026-01-03T12:30:00+08:00",
+                                            },
+                                            {
                                                 "process_name": "dhcp",
                                                 "cpu_id": "",
                                                 "role": "indicator",
@@ -626,8 +635,13 @@ def test_mech_lifecycles_compact_other_dfx_events_are_human_readable(tmp_path):
         "before=2026-01-03T13:04:12+08:00 after=2026-01-03T13:04:21+08:00"
     ) in result.output
     assert "blocked-by dhcp@board role=indicator safe_gap=(2026-01-03T12:59:03+08:00, 2026-01-03T13:04:18+08:00]" in result.output
+    assert "blocked-by noise" not in result.output
     assert "pid-change svc_a@board role=whitelist 300 -> 400 split=2026-01-03T00:00:06+08:00" in result.output
     assert "pid-bounce dhcp@board 100 -> 200 -> 100" in result.output
+    assert "[INFO] scoped_cpu_split reason=cpu_local_split scope=cpu:1 split=2026-01-03T00:00:05+08:00" in result.output
+    assert "context dhcp-10@1 role=context_before" in result.output
+    assert "[INFO] suspect_over_split reason=protected_merge_has_no_pid_conflict scope=board split=2026-01-03T00:00:07+08:00" in result.output
+    assert "context dhcp-100@board role=over_split_left" in result.output
     assert "INFO 诊断 2 个: scoped_cpu_split=1 suspect_over_split=1" in result.output
     assert "cpu before" not in result.output
     assert "over split left" not in result.output
@@ -748,6 +762,435 @@ def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(t
     assert result.output.count("hint ") == 1
 
 
+def test_mech_lifecycles_restart_overlap_infers_conflict_pair_from_boundaries(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "restart_boundary_overlap",
+                                        "severity": "error",
+                                        "reason": "new_pid_start_le_old_pid_end",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10.000001+08:00",
+                                        "protected_boundaries": [
+                                            {
+                                                "process_name": "dhcp",
+                                                "cpu_id": "",
+                                                "role": "indicator",
+                                                "old_pids": ["100"],
+                                                "old_end": "2026-01-03T00:00:00+08:00",
+                                                "new_pid": "200",
+                                                "new_start": "2026-01-03T00:00:09+08:00",
+                                                "new_log": {"raw_excerpt": "dhcp new"},
+                                            },
+                                            {
+                                                "process_name": "svc_a",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["300"],
+                                                "old_end": "2026-01-03T00:00:10+08:00",
+                                                "new_pid": "400",
+                                                "new_start": "2026-01-03T00:00:11+08:00",
+                                                "old_log": {"raw_excerpt": "svc old"},
+                                            },
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "overlap new_start=2026-01-03T00:00:09+08:00 <= old_end=2026-01-03T00:00:10+08:00" in result.output
+    assert (
+        "conflict-pair svc_a-300@board old_end=2026-01-03T00:00:10+08:00 "
+        "overlaps dhcp-200@board new_start=2026-01-03T00:00:09+08:00"
+    ) in result.output
+
+
+def test_mech_lifecycles_restart_overlap_matches_naive_and_offset_times(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "restart_boundary_overlap",
+                                        "severity": "error",
+                                        "reason": "new_pid_start_le_old_pid_end",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10.000001",
+                                        "old_pid_end": "2026-01-03T00:00:10",
+                                        "new_pid_start": "2026-01-03T00:00:09",
+                                        "protected_boundaries": [
+                                            {
+                                                "process_name": "dhcp",
+                                                "cpu_id": "",
+                                                "role": "indicator",
+                                                "old_pids": ["100"],
+                                                "old_end": "2026-01-03T00:00:00+08:00",
+                                                "new_pid": "200",
+                                                "new_start": "2026-01-03T00:00:09+08:00",
+                                            },
+                                            {
+                                                "process_name": "svc_a",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["300"],
+                                                "old_end": "2026-01-03T00:00:10+08:00",
+                                                "new_pid": "400",
+                                                "new_start": "2026-01-03T00:00:11+08:00",
+                                            },
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "conflict-pair svc_a-300@board old_end=2026-01-03T00:00:10 "
+        "overlaps dhcp-200@board new_start=2026-01-03T00:00:09"
+    ) in result.output
+
+
+def test_mech_lifecycles_restart_overlap_uses_evidence_when_boundaries_missing(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "restart_boundary_overlap",
+                                        "severity": "error",
+                                        "reason": "new_pid_start_le_old_pid_end",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10.000001+08:00",
+                                        "old_pid_end": "2026-01-03T00:00:10+08:00",
+                                        "new_pid_start": "2026-01-03T00:00:09+08:00",
+                                        "evidence": [
+                                            {
+                                                "role": "protected_new",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/dhcp.log",
+                                                "process_name": "dhcp",
+                                                "pid": "200",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T00:00:09+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "dhcp new",
+                                            },
+                                            {
+                                                "role": "protected_old",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/svc_a.log",
+                                                "process_name": "svc_a",
+                                                "pid": "300",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T00:00:10+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "svc old",
+                                            },
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "conflict-pair svc_a-300@board old_end=2026-01-03T00:00:10+08:00 "
+        "overlaps dhcp-200@board new_start=2026-01-03T00:00:09+08:00"
+    ) in result.output
+    assert "old-side svc_a-300@board role=protected_old old_end=2026-01-03T00:00:10+08:00 raw=svc old" in result.output
+    assert "new-side dhcp-200@board role=protected_new new_start=2026-01-03T00:00:09+08:00 raw=dhcp new" in result.output
+
+
+def test_mech_lifecycles_show_boundaries_accepts_old_result_without_boundary_fields(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "board_cycles": [
+                                    {
+                                        "dir_name": "cycle_1",
+                                        "processes": [
+                                            {
+                                                "process_name": "svc",
+                                                "pid": "100",
+                                                "total_count": 1,
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "生命周期可靠性: true" in result.output
+    assert "生命周期切分诊断" not in result.output
+    assert "cycle_1" in result.output
+    assert "svc-100: 1" in result.output
+
+
+def test_mech_lifecycles_compact_infers_key_lines_from_evidence_or_detail(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "same_pid_adjusted_backward",
+                                        "severity": "warning",
+                                        "action": "adjusted_backward",
+                                        "reason": "adjusted_backward",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T13:04:18+08:00",
+                                        "conflicts": [
+                                            {
+                                                "pid": "500",
+                                            },
+                                        ],
+                                        "evidence": [
+                                            {
+                                                "role": "conflict_before",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/other.log",
+                                                "process_name": "other",
+                                                "pid": "500",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T13:04:12+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "other before",
+                                            },
+                                            {
+                                                "role": "conflict_after",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/other.log",
+                                                "process_name": "other",
+                                                "pid": "500",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T13:04:21+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "other after",
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "protected_forced_split",
+                                        "severity": "warning",
+                                        "reason": "protected_pid_change",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:06+08:00",
+                                        "protected_boundaries": [
+                                            {
+                                                "new_pid": "400",
+                                            },
+                                        ],
+                                        "evidence": [
+                                            {
+                                                "role": "protected_old",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/svc_a.log",
+                                                "process_name": "svc_a",
+                                                "pid": "300",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T00:00:05+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "svc old",
+                                            },
+                                            {
+                                                "role": "protected_new",
+                                                "source": "diagnostic",
+                                                "source_file": "slot_1/svc_a.log",
+                                                "process_name": "svc_a",
+                                                "pid": "400",
+                                                "cpu_id": "",
+                                                "timestamp": "2026-01-03T00:00:06+08:00",
+                                                "sequence": 0,
+                                                "raw_excerpt": "svc new",
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "suspect_pid_bounce",
+                                        "severity": "warning",
+                                        "reason": "indicator_pid_bounce",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:02+08:00",
+                                        "detail": "proc=dhcp pids=100>200>100",
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "conflict other-500@board spans split=2026-01-03T13:04:18+08:00 "
+        "before=2026-01-03T13:04:12+08:00 after=2026-01-03T13:04:21+08:00"
+    ) in result.output
+    assert "before diagnostic|slot_1/other.log seq=0 raw=other before" in result.output
+    assert "after diagnostic|slot_1/other.log seq=0 raw=other after" in result.output
+    assert "pid-change svc_a@board role=- 300 -> 400 split=2026-01-03T00:00:06+08:00" in result.output
+    assert "old diagnostic|slot_1/svc_a.log seq=0 raw=svc old" in result.output
+    assert "new diagnostic|slot_1/svc_a.log seq=0 raw=svc new" in result.output
+    assert "pid-bounce dhcp@board 100 -> 200 -> 100" in result.output
+
+
 def test_mech_lifecycles_boundary_detail_full_expands_all_evidence(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -828,3 +1271,264 @@ def test_mech_lifecycles_boundary_detail_full_expands_all_evidence(tmp_path):
     assert "protected noise@board role=whitelist old_pids=900 new_pid=901" in result.output
     assert "evidence diagnostic|slot_1/noise.log seq=0 raw=noise raw" in result.output
     assert result.output.count("hint ") == 2
+
+
+def test_mech_lifecycles_boundary_detail_full_keeps_compact_key_lines(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "restart_boundary_overlap",
+                                        "severity": "error",
+                                        "reason": "new_pid_start_le_old_pid_end",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10.000001+08:00",
+                                        "old_pid_end": "2026-01-03T00:00:10+08:00",
+                                        "new_pid_start": "2026-01-03T00:00:09+08:00",
+                                        "protected_boundaries": [
+                                            {
+                                                "process_name": "dhcp",
+                                                "cpu_id": "",
+                                                "role": "indicator",
+                                                "old_pids": ["100"],
+                                                "old_end": "2026-01-03T00:00:00+08:00",
+                                                "new_pid": "200",
+                                                "new_start": "2026-01-03T00:00:09+08:00",
+                                            },
+                                            {
+                                                "process_name": "svc_a",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["300"],
+                                                "old_end": "2026-01-03T00:00:10+08:00",
+                                                "new_pid": "400",
+                                                "new_start": "2026-01-03T00:00:11+08:00",
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "same_pid_adjusted_backward",
+                                        "severity": "warning",
+                                        "action": "adjusted_backward",
+                                        "reason": "adjusted_backward",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T13:04:18+08:00",
+                                        "conflicts": [
+                                            {
+                                                "process_name": "other",
+                                                "pid": "500",
+                                                "cpu_id": "",
+                                                "before_time": "2026-01-03T13:04:12+08:00",
+                                                "after_time": "2026-01-03T13:04:21+08:00",
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "kind": "protected_forced_split",
+                                        "severity": "warning",
+                                        "reason": "protected_pid_change",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:06+08:00",
+                                        "protected_boundaries": [
+                                            {
+                                                "process_name": "svc_a",
+                                                "cpu_id": "",
+                                                "role": "whitelist",
+                                                "old_pids": ["300"],
+                                                "old_end": "2026-01-03T00:00:05+08:00",
+                                                "new_pid": "400",
+                                                "new_start": "2026-01-03T00:00:06+08:00",
+                                            },
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "conflict-pair svc_a-300@board old_end=2026-01-03T00:00:10+08:00 "
+        "overlaps dhcp-200@board new_start=2026-01-03T00:00:09+08:00"
+    ) in result.output
+    assert (
+        "conflict other-500@board spans split=2026-01-03T13:04:18+08:00 "
+        "before=2026-01-03T13:04:12+08:00 after=2026-01-03T13:04:21+08:00"
+    ) in result.output
+    assert "pid-change svc_a@board role=whitelist 300 -> 400 split=2026-01-03T00:00:06+08:00" in result.output
+    assert "protected svc_a@board role=whitelist old_pids=300 new_pid=400" in result.output
+
+
+def test_mech_lifecycles_compact_deduplicates_unsafe_and_same_pid_kept(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    conflict = {
+        "process_name": "other",
+        "pid": "500",
+        "cpu_id": "",
+        "before_time": "2026-01-03T00:00:05+08:00",
+        "after_time": "2026-01-03T00:00:12+08:00",
+    }
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "unsafe_cycle_split",
+                                        "severity": "error",
+                                        "action": "kept",
+                                        "reason": "no_safe_gap_candidate",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10+08:00",
+                                        "conflicts": [conflict],
+                                    },
+                                    {
+                                        "kind": "same_pid_kept",
+                                        "severity": "error",
+                                        "action": "kept",
+                                        "reason": "no_safe_gap_candidate",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10+08:00",
+                                        "conflicts": [conflict],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("conflict other-500@board spans split=2026-01-03T00:00:10+08:00") == 1
+    assert "[ERROR] same_pid_kept action=kept reason=no_safe_gap_candidate" in result.output
+    assert "same-evidence-as unsafe_cycle_split above" in result.output
+
+
+def test_mech_lifecycles_compact_reports_unavailable_evidence_without_fake_process(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "same_pid_adjusted",
+                                        "severity": "warning",
+                                        "reason": "adjusted",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:10+08:00",
+                                    },
+                                    {
+                                        "kind": "protected_forced_split",
+                                        "severity": "warning",
+                                        "reason": "protected_pid_change",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:11+08:00",
+                                    },
+                                    {
+                                        "kind": "suspect_pid_bounce",
+                                        "severity": "warning",
+                                        "reason": "indicator_pid_bounce",
+                                        "scope": "board",
+                                        "split_time": "2026-01-03T00:00:12+08:00",
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "-@board" not in result.output
+    assert "conflict evidence unavailable; use --boundary-detail full" in result.output
+    assert "pid-change evidence unavailable; use --boundary-detail full" in result.output
+    assert "pid-bounce evidence unavailable; use --boundary-detail full" in result.output

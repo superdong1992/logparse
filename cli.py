@@ -20,6 +20,7 @@ import json
 import re
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -255,8 +256,33 @@ def mech_slots(task_id, module_name, output):
         )
 
 
+def _time_text(value) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _parse_time_value(value) -> datetime | None:
+    text = _time_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _time_wall_text(value) -> str:
+    text = _time_text(value)
+    if not text:
+        return ""
+    return text.replace("Z", "+00:00")[:19]
+
+
 def _format_issue_time(value) -> str:
-    return value or "-"
+    return _time_text(value) or "-"
 
 
 def _issue_get(issue, key: str, default=None):
@@ -382,6 +408,154 @@ def _first_hint(commands: list[str], task_id: str) -> str | None:
     return command.replace("<task_id>", task_id)
 
 
+def _detail_fields(issue: dict) -> dict[str, str]:
+    detail = str(issue.get("detail") or "")
+    return {key: value for key, value in re.findall(r"(\w+)=([^\s]+)", detail)}
+
+
+def _first_evidence(issue: dict, roles: set[str]) -> dict:
+    for item in issue.get("evidence") or []:
+        role = str(item.get("role") or "")
+        if role in roles:
+            return item
+    return {}
+
+
+def _conflict_from_evidence(issue: dict) -> dict:
+    before_log = _first_evidence(issue, {"conflict_before", "context_before"})
+    after_log = _first_evidence(issue, {"conflict_after", "context_after"})
+    if not before_log and not after_log:
+        return {}
+
+    anchor = before_log or after_log
+    return {
+        "process_name": anchor.get("process_name") or issue.get("process_name") or "-",
+        "pid": anchor.get("pid") or issue.get("pid") or "",
+        "cpu_id": anchor.get("cpu_id") or issue.get("cpu_id") or "",
+        "before_time": before_log.get("timestamp") or before_log.get("before_time"),
+        "after_time": after_log.get("timestamp") or after_log.get("after_time"),
+        "before_log": before_log,
+        "after_log": after_log,
+    }
+
+
+def _complete_conflict(issue: dict, conflict: dict | None) -> dict:
+    inferred = _conflict_from_evidence(issue)
+    conflict = conflict or {}
+    if not inferred:
+        return conflict
+    merged = dict(inferred)
+    merged.update({key: value for key, value in conflict.items() if value not in (None, "", [])})
+    if not (merged.get("before_log") or {}):
+        merged["before_log"] = inferred.get("before_log") or {}
+    if not (merged.get("after_log") or {}):
+        merged["after_log"] = inferred.get("after_log") or {}
+    return merged
+
+
+def _boundary_from_evidence(issue: dict) -> dict:
+    old_log = _first_evidence(issue, {"protected_old", "old"})
+    new_log = _first_evidence(issue, {"protected_new", "new"})
+    fields = _detail_fields(issue)
+    pids = [pid for pid in fields.get("pids", "").split(">") if pid]
+    if not old_log and not new_log and not pids:
+        return {}
+
+    anchor = new_log or old_log
+    return {
+        "process_name": anchor.get("process_name") or fields.get("proc") or issue.get("process_name") or "-",
+        "cpu_id": anchor.get("cpu_id") or issue.get("cpu_id") or "",
+        "role": issue.get("role") or fields.get("role") or "-",
+        "old_pids": [old_log.get("pid") or (pids[0] if pids else "")],
+        "old_end": old_log.get("timestamp") or issue.get("old_pid_end"),
+        "new_pid": new_log.get("pid") or (pids[1] if len(pids) > 1 else ""),
+        "new_start": new_log.get("timestamp") or issue.get("new_pid_start"),
+        "old_log": old_log,
+        "new_log": new_log,
+    }
+
+
+def _boundary_from_restart_evidence(issue: dict, side: str) -> dict:
+    role = "protected_old" if side == "old" else "protected_new"
+    key = "old_pid_end" if side == "old" else "new_pid_start"
+    time_field = "old_end" if side == "old" else "new_start"
+    pid_field = "old_pids" if side == "old" else "new_pid"
+    log_field = "old_log" if side == "old" else "new_log"
+    candidates = [
+        item for item in issue.get("evidence") or []
+        if item.get("role") == role and item.get("timestamp")
+    ]
+    if not candidates:
+        return {}
+
+    endpoint = _time_text(issue.get(key))
+    endpoint_wall = _time_wall_text(issue.get(key))
+    for item in candidates:
+        if (
+            _time_text(item.get("timestamp")) == endpoint
+            or _time_wall_text(item.get("timestamp")) == endpoint_wall
+        ):
+            selected = item
+            break
+    else:
+        direction = "max" if side == "old" else "min"
+        selected = _boundary_extreme(
+            [{"timestamp": item.get("timestamp"), "item": item} for item in candidates],
+            "timestamp",
+            direction,
+        )["item"]
+
+    boundary = {
+        "process_name": selected.get("process_name") or "-",
+        "cpu_id": selected.get("cpu_id") or "",
+        "role": selected.get("role") or role,
+        time_field: selected.get("timestamp"),
+        log_field: selected,
+    }
+    if side == "old":
+        boundary[pid_field] = [selected.get("pid") or ""]
+    else:
+        boundary[pid_field] = selected.get("pid") or ""
+    return boundary
+
+
+def _complete_boundary(issue: dict, boundary: dict | None) -> dict:
+    inferred = _boundary_from_evidence(issue)
+    boundary = boundary or {}
+    if not inferred:
+        return boundary
+    merged = dict(inferred)
+    merged.update({key: value for key, value in boundary.items() if value not in (None, "", [])})
+    if not (merged.get("old_log") or {}):
+        merged["old_log"] = inferred.get("old_log") or {}
+    if not (merged.get("new_log") or {}):
+        merged["new_log"] = inferred.get("new_log") or {}
+    return merged
+
+
+def _pid_bounce_from_detail(issue: dict) -> tuple[str, str, list[str]]:
+    fields = _detail_fields(issue)
+    pids = [pid for pid in fields.get("pids", "").split(">") if pid]
+    proc = fields.get("proc") or issue.get("process_name") or "-"
+    scope = str(issue.get("scope") or "")
+    cpu = scope.removeprefix("cpu:") if scope.startswith("cpu:") else issue.get("cpu_id") or ""
+    return proc, _cpu_scope(cpu), pids
+
+
+def _issue_conflict_fingerprint(issue: dict) -> tuple[str, str, str, str, str, str] | None:
+    conflict = _complete_conflict(issue, (issue.get("conflicts") or [None])[0])
+    if not conflict:
+        return None
+    return (
+        str(issue.get("split_time") or ""),
+        str(conflict.get("process_name") or ""),
+        str(conflict.get("pid") or ""),
+        str(conflict.get("cpu_id") or ""),
+        str(conflict.get("before_time") or ""),
+        str(conflict.get("after_time") or ""),
+    )
+
+
 def _print_issue_header(issue: dict) -> None:
     severity = (issue.get("severity") or "warning").upper()
     kind = issue.get("kind") or "-"
@@ -400,11 +574,37 @@ def _print_issue_header(issue: dict) -> None:
 
 
 def _boundary_endpoint(boundaries: list[dict], key: str, value: str | None) -> dict | None:
-    if value:
-        for boundary in boundaries:
-            if boundary.get(key) == value:
-                return boundary
+    if not value:
+        return None
+    value_text = _time_text(value)
+    value_dt = _parse_time_value(value)
+    for boundary in boundaries:
+        boundary_value = boundary.get(key)
+        if boundary_value == value:
+            return boundary
+        if value_text and _time_text(boundary_value) == value_text:
+            return boundary
+        if _time_wall_text(value) and _time_wall_text(boundary_value) == _time_wall_text(value):
+            return boundary
+        boundary_dt = _parse_time_value(boundary_value)
+        if value_dt is not None and boundary_dt is not None and boundary_dt == value_dt:
+            return boundary
     return None
+
+
+def _boundary_extreme(boundaries: list[dict], key: str, direction: str) -> dict | None:
+    candidates = [boundary for boundary in boundaries if boundary.get(key)]
+    if not candidates:
+        return None
+
+    parsed = [
+        (parsed_time, boundary)
+        for boundary in candidates
+        if (parsed_time := _parse_time_value(boundary.get(key))) is not None
+    ]
+    if parsed:
+        return (max if direction == "max" else min)(parsed, key=lambda item: item[0].timestamp())[1]
+    return (max if direction == "max" else min)(candidates, key=lambda boundary: _time_text(boundary.get(key)))
 
 
 def _boundary_old_label(boundary: dict) -> str:
@@ -422,13 +622,23 @@ def _boundary_new_label(boundary: dict) -> str:
 
 
 def _print_restart_overlap_compact(issue: dict) -> None:
-    old_end = _format_issue_time(issue.get("old_pid_end"))
-    new_start = _format_issue_time(issue.get("new_pid_start"))
-    click.echo(f"    overlap new_start={new_start} <= old_end={old_end}")
-
     boundaries = issue.get("protected_boundaries") or []
-    old_boundary = _boundary_endpoint(boundaries, "old_end", issue.get("old_pid_end"))
-    new_boundary = _boundary_endpoint(boundaries, "new_start", issue.get("new_pid_start"))
+    issue_old_end = issue.get("old_pid_end")
+    issue_new_start = issue.get("new_pid_start")
+    old_boundary = _boundary_endpoint(boundaries, "old_end", issue_old_end)
+    new_boundary = _boundary_endpoint(boundaries, "new_start", issue_new_start)
+    if old_boundary is None and not issue_old_end:
+        old_boundary = _boundary_extreme(boundaries, "old_end", "max")
+    if new_boundary is None and not issue_new_start:
+        new_boundary = _boundary_extreme(boundaries, "new_start", "min")
+    if old_boundary is None:
+        old_boundary = _boundary_from_restart_evidence(issue, "old")
+    if new_boundary is None:
+        new_boundary = _boundary_from_restart_evidence(issue, "new")
+
+    old_end = _format_issue_time(issue_old_end or (old_boundary or {}).get("old_end"))
+    new_start = _format_issue_time(issue_new_start or (new_boundary or {}).get("new_start"))
+    click.echo(f"    overlap new_start={new_start} <= old_end={old_end}")
 
     if old_boundary and new_boundary:
         click.echo(
@@ -471,7 +681,10 @@ def _print_restart_overlap_compact(issue: dict) -> None:
 
 
 def _print_conflict_compact(issue: dict) -> None:
-    conflict = (issue.get("conflicts") or [{}])[0]
+    conflict = _complete_conflict(issue, (issue.get("conflicts") or [None])[0])
+    if not conflict:
+        click.echo("    conflict evidence unavailable; use --boundary-detail full 查看原始结构")
+        return
     proc = conflict.get("process_name") or "-"
     pid = conflict.get("pid") or ""
     cpu = _cpu_scope(conflict.get("cpu_id"))
@@ -481,7 +694,7 @@ def _print_conflict_compact(issue: dict) -> None:
     click.echo(f"    conflict {_proc_pid(proc, pid)}@{cpu} spans split={split} before={before} after={after}")
     _print_boundary_log("before", conflict.get("before_log") or {})
     _print_boundary_log("after", conflict.get("after_log") or {})
-    blocker = (issue.get("protected_boundaries") or [{}])[0]
+    blocker = _select_blocker(issue)
     if blocker:
         bproc = blocker.get("process_name") or "-"
         bcpu = _cpu_scope(blocker.get("cpu_id"))
@@ -494,9 +707,31 @@ def _print_conflict_compact(issue: dict) -> None:
         )
 
 
+def _select_blocker(issue: dict) -> dict:
+    boundaries = issue.get("protected_boundaries") or []
+    if not boundaries:
+        return _boundary_from_evidence(issue)
+
+    split_dt = _parse_time_value(issue.get("split_time"))
+    if split_dt is not None:
+        spanning = [
+            boundary
+            for boundary in boundaries
+            if (
+                (old_end := _parse_time_value(boundary.get("old_end"))) is not None
+                and (new_start := _parse_time_value(boundary.get("new_start"))) is not None
+                and old_end < split_dt <= new_start
+            )
+        ]
+        if spanning:
+            return min(spanning, key=lambda boundary: _parse_time_value(boundary.get("new_start")).timestamp())
+    return boundaries[0]
+
+
 def _print_protected_forced_split_compact(issue: dict) -> None:
-    boundary = (issue.get("protected_boundaries") or [{}])[0]
+    boundary = _complete_boundary(issue, (issue.get("protected_boundaries") or [None])[0])
     if not boundary:
+        click.echo("    pid-change evidence unavailable; use --boundary-detail full 查看原始结构")
         return
     proc = boundary.get("process_name") or "-"
     old_pid = ",".join(boundary.get("old_pids") or [])
@@ -517,19 +752,32 @@ def _print_protected_forced_split_compact(issue: dict) -> None:
 def _print_pid_bounce_compact(issue: dict) -> None:
     evidence = issue.get("evidence") or []
     pids = [item.get("pid") or "-" for item in evidence]
-    if pids:
+    if not pids:
+        proc, cpu, pids = _pid_bounce_from_detail(issue)
+    else:
         first = next((item for item in evidence if item), {})
         proc = first.get("process_name") or issue.get("process_name") or "-"
         cpu = _cpu_scope(first.get("cpu_id"))
+    if pids:
         click.echo(f"    pid-bounce {proc}@{cpu} {' -> '.join(pids)}")
+    else:
+        click.echo("    pid-bounce evidence unavailable; use --boundary-detail full 查看原始结构")
     for item in evidence[:3]:
         _print_boundary_log(item.get("role") or "bounce", item)
 
 
-def _print_boundary_issue_compact(issue: dict, task_id: str) -> None:
-    if _severity_key(issue.get("severity")) == "INFO":
-        return
-    _print_issue_header(issue)
+def _print_info_compact(issue: dict) -> None:
+    item = (issue.get("evidence") or [{}])[0]
+    if item:
+        proc = item.get("process_name") or "-"
+        pid = item.get("pid") or ""
+        cpu = _cpu_scope(item.get("cpu_id"))
+        role = item.get("role") or "context"
+        ts = _format_issue_time(item.get("timestamp"))
+        click.echo(f"    context {_proc_pid(proc, pid)}@{cpu} role={role} time={ts}")
+
+
+def _print_boundary_issue_compact_body(issue: dict) -> None:
     kind = issue.get("kind") or ""
     if kind == "restart_boundary_overlap":
         _print_restart_overlap_compact(issue)
@@ -539,17 +787,28 @@ def _print_boundary_issue_compact(issue: dict, task_id: str) -> None:
         _print_protected_forced_split_compact(issue)
     elif kind == "suspect_pid_bounce":
         _print_pid_bounce_compact(issue)
+    elif _severity_key(issue.get("severity")) == "INFO":
+        _print_info_compact(issue)
     else:
         for item in (issue.get("evidence") or [])[:2]:
             _print_boundary_log(item.get("role") or "context", item)
 
+
+def _print_issue_hint(issue: dict, task_id: str) -> None:
     hint = _first_hint(issue.get("suggested_commands") or [], task_id)
     if hint:
         click.echo(f"    hint {hint}")
 
 
+def _print_boundary_issue_compact(issue: dict, task_id: str) -> None:
+    _print_issue_header(issue)
+    _print_boundary_issue_compact_body(issue)
+    _print_issue_hint(issue, task_id)
+
+
 def _print_boundary_issue_full(issue: dict, task_id: str) -> None:
     _print_issue_header(issue)
+    _print_boundary_issue_compact_body(issue)
 
     for conflict in issue.get("conflicts", []):
         proc = conflict.get("process_name") or "-"
@@ -596,7 +855,20 @@ def _print_boundary_issues(group: dict, task_id: str, detail: str = "compact") -
             _print_boundary_issue_full(issue, task_id)
         return
 
+    unsafe_fingerprints = {
+        fingerprint
+        for issue in issues
+        if issue.get("kind") == "unsafe_cycle_split"
+        if (fingerprint := _issue_conflict_fingerprint(issue)) is not None
+    }
     for issue in issues:
+        if issue.get("kind") == "same_pid_kept":
+            fingerprint = _issue_conflict_fingerprint(issue)
+            if fingerprint in unsafe_fingerprints:
+                _print_issue_header(issue)
+                click.echo("    same-evidence-as unsafe_cycle_split above")
+                _print_issue_hint(issue, task_id)
+                continue
         _print_boundary_issue_compact(issue, task_id)
     if counts["INFO"]:
         info_issues = [issue for issue in issues if _severity_key(issue.get("severity")) == "INFO"]

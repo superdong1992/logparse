@@ -29,7 +29,7 @@ python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-bou
 
 - `ERROR`：边界不可靠，需要优先定位。典型事件是 `unsafe_cycle_split` 的 `action=kept` 或 `restart_boundary_overlap`。
 - `WARNING`：发现风险但解析器已尝试自动修正。典型事件是 `same_pid_adjusted`、`same_pid_adjusted_backward`、`protected_forced_split`、`suspect_pid_bounce`。
-- `INFO`：辅助诊断信息。默认 compact 不展开详情，只显示数量和类型分布；需要时用 `--boundary-detail full`。
+- `INFO`：辅助诊断信息。默认 compact 只显示每条 INFO 的类型、scope、split 和一条上下文定位行，完整 raw evidence 需要用 `--boundary-detail full`。
 
 ## 默认视图怎么读
 
@@ -63,6 +63,8 @@ python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-bou
 
 `conflict ... spans split=...` 的意思是：这个普通进程同一个 PID 的日志横跨了切点。`blocked-by` 的意思是：为了保护这个 indicator/白名单进程的新旧 PID 边界，切点不能继续随意移动。
 
+如果结构化证据缺失，compact 不会伪造 `-@board before=- after=-` 这类假定位，而会提示 `evidence unavailable`。此时应切到 `--boundary-detail full` 查看原始结构或重新解析生成新的 `result.json`。
+
 ### protected_forced_split
 
 表示 indicator 或白名单进程在已分段窗口内仍发生 PID 变化，解析器强制补切：
@@ -92,9 +94,13 @@ python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-bou
 
 ### scoped_cpu_split / suspect_over_split
 
-这两类默认按 `INFO` 收敛展示，不展开 evidence，但会给出类型分布：
+这两类默认按 `INFO` 收敛展示，不展开 raw evidence，但会给出每条事件的 scope/split 和一条上下文定位行，最后再给类型分布：
 
 ```text
+[INFO] scoped_cpu_split reason=cpu_local_split scope=cpu:1 split=...
+    context dhcp-10@1 role=context_before time=...
+[INFO] suspect_over_split reason=protected_merge_has_no_pid_conflict scope=board split=...
+    context dhcp-100@board role=over_split_left time=...
 INFO 诊断 2 个: scoped_cpu_split=1 suspect_over_split=1，使用 --boundary-detail full 查看
 ```
 
@@ -102,7 +108,7 @@ INFO 诊断 2 个: scoped_cpu_split=1 suspect_over_split=1，使用 --boundary-d
 
 ## full 视图字段
 
-`--boundary-detail full` 会展开完整结构化证据：
+`--boundary-detail full` 会先保留 compact 的关键定位行，再展开完整结构化证据：
 
 - `protected`：参与边界判断的 indicator/白名单进程，包含旧 PID 集合、新 PID、旧 PID 结束时间、新 PID 开始时间。
 - `conflict`：被切点拆断的普通进程及 before/after 时间。
