@@ -179,6 +179,119 @@ def test_module1_plugin_propagates_cycle_detector_errors(tmp_path):
     assert any("protected_gap=" in error for error in result.errors)
 
 
+def test_module1_plugin_uses_lifecycle_split_v2_when_enabled(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        "\n".join([
+            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-100; Context=old)",
+            "2026-01-03T01:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-200; Context=new)",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(diagnostic_slots=[slot])
+    cfg = _module1_config()
+    cfg["lifecycle_split"] = {
+        "enabled": True,
+        "reliable_processes": {"board": ["dhcp"], "cpu": []},
+        "multi_instance_processes": [],
+    }
+    plugin = Module1Plugin(
+        cfg,
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    slot_output = mech.slots[0]
+    assert slot_output.lifecycle_split_result is not None
+    assert slot_output.lifecycle_reliable is True
+    assert len(slot_output.board_cycles) == 2
+    expected_boundary = _timestamp_extractor().extract_from_text("2026-01-03T01:00:00")[0]
+    assert slot_output.lifecycle_split_result.boundaries[0].timestamp == expected_boundary
+    assert not result.errors
+
+
+def test_module1_plugin_lifecycle_split_enabled_false_uses_cycle_detector(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        "\n".join([
+            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-100; Context=old)",
+            "2026-01-03T01:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-200; Context=new)",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(diagnostic_slots=[slot])
+    cfg = _module1_config()
+    cfg["board_restart_indicator"] = "dhcp"
+    cfg["lifecycle_split"] = {
+        "enabled": False,
+        "process_name_mapping": [],
+    }
+    plugin = Module1Plugin(
+        cfg,
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    slot_output = mech.slots[0]
+    assert slot_output.lifecycle_split_result is None
+    assert len(slot_output.board_cycles) == 2
+    assert not result.errors
+
+
+def test_module1_plugin_v2_treats_cpu_id_zero_as_board_scope(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        "\n".join([
+            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-100; Context=old)",
+            "2026-01-03T01:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-200; Context=new)",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(diagnostic_slots=[slot])
+    cfg = _module1_config()
+    cfg["lifecycle_split"] = {
+        "enabled": True,
+        "reliable_processes": {"board": ["dhcp"], "cpu": []},
+    }
+    plugin = Module1Plugin(
+        cfg,
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    split_result = mech.slots[0].lifecycle_split_result
+    assert split_result is not None
+    assert [boundary.origin_scope for boundary in split_result.boundaries] == ["board"]
+    assert all(scope.scope == "board" for scope in split_result.scopes)
+    assert all(
+        log.cpu_id == ""
+        for cycle in mech.slots[0].board_cycles
+        for process in cycle.processes
+        for log in process.logs
+    )
+
+
 def _module1_journal_sequence_config() -> dict:
     cfg = _module1_config()
     cfg["diag_pattern"] = ""

@@ -357,7 +357,102 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
             f"不能同时出现在 process_name_mapping 中: {sorted(conflict)}"
         )
 
+    errors.extend(_validate_lifecycle_split_config(module_key, cfg.get("lifecycle_split")))
+
     return errors
+
+
+def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
+    if raw is None:
+        return []
+
+    path = f"mechanism_modules.{module_key}.lifecycle_split"
+    if not isinstance(raw, dict):
+        return [f"{path} must be an object"]
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        return [f"{path}.enabled must be a boolean"]
+    if enabled is False:
+        return []
+
+    mapping = raw.get("process_name_mapping", {})
+    if not isinstance(mapping, dict):
+        return [f"{path}.process_name_mapping must be an object"]
+
+    alias_to_canonical: dict[str, str] = {}
+    for canonical, aliases in mapping.items():
+        canonical_name = str(canonical)
+        alias_to_canonical[_norm_name(canonical_name)] = canonical_name
+        if aliases is None:
+            continue
+        if isinstance(aliases, str):
+            alias_iterable = [aliases]
+        else:
+            try:
+                alias_iterable = list(aliases)
+            except TypeError:
+                return [f"{path}.process_name_mapping.{canonical_name} must be a list"]
+        for alias in alias_iterable:
+            alias_to_canonical[_norm_name(str(alias))] = canonical_name
+
+    reliable = raw.get("reliable_processes", {})
+    if not isinstance(reliable, dict):
+        return [f"{path}.reliable_processes must be an object"]
+
+    list_errors = [
+        error for error in (
+            _validate_name_list(f"{path}.reliable_processes.board", reliable.get("board", [])),
+            _validate_name_list(f"{path}.reliable_processes.cpu", reliable.get("cpu", [])),
+            _validate_name_list(f"{path}.multi_instance_processes", raw.get("multi_instance_processes", [])),
+        )
+        if error
+    ]
+    if list_errors:
+        return list_errors
+
+    board = _canonical_name_set(reliable.get("board", []), alias_to_canonical)
+    cpu = _canonical_name_set(reliable.get("cpu", []), alias_to_canonical)
+    multi = _canonical_name_set(raw.get("multi_instance_processes", []), alias_to_canonical)
+
+    conflicts = {
+        "reliable_processes.board/reliable_processes.cpu": board & cpu,
+        "reliable_processes.board/multi_instance_processes": board & multi,
+        "reliable_processes.cpu/multi_instance_processes": cpu & multi,
+    }
+    active = {
+        name: sorted(values)
+        for name, values in conflicts.items()
+        if values
+    }
+    if not active:
+        return []
+
+    return [
+        f"{path} has mutually exclusive process conflicts: {active}"
+    ]
+
+
+def _validate_name_list(path: str, raw: Any) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return None
+    return f"{path} must be a list"
+
+
+def _canonical_name_set(raw: Any, alias_to_canonical: dict[str, str]) -> set[str]:
+    if raw is None:
+        return set()
+    names = list(raw)
+    return {
+        _norm_name(alias_to_canonical.get(_norm_name(str(name)), str(name)))
+        for name in names
+    }
+
+
+def _norm_name(value: str) -> str:
+    return value.casefold()
 
 
 def _looks_like_sequence_journal_pattern(pattern: str, seq_pattern: Any) -> bool:

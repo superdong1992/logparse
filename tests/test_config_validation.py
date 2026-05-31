@@ -74,6 +74,146 @@ class TestValidateMechanismModuleConfig:
         assert errors
         assert "dhcp" in errors[0].lower()
 
+    def test_lifecycle_split_reliable_sets_must_be_disjoint(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "process_name_mapping": {"board_anchor": ["boardd"]},
+                "reliable_processes": {
+                    "board": ["board_anchor"],
+                    "cpu": ["board_anchor"],
+                },
+                "multi_instance_processes": ["multi"],
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "lifecycle_split" in errors[0]
+        assert "board_anchor" in errors[0]
+
+    def test_lifecycle_split_conflict_is_checked_after_name_mapping(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "process_name_mapping": {"canonical_proc": ["alias_proc"]},
+                "reliable_processes": {"board": ["alias_proc"], "cpu": []},
+                "multi_instance_processes": ["canonical_proc"],
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "canonical_proc" in errors[0]
+
+    def test_lifecycle_split_missing_enabled_keeps_v2_disabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "process_name_mapping": [],
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors == []
+
+    def test_lifecycle_split_enabled_must_be_boolean(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": "false",
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "enabled" in errors[0]
+        assert "boolean" in errors[0]
+
+    def test_lifecycle_split_process_name_mapping_must_be_object_when_enabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "process_name_mapping": [],
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "process_name_mapping" in errors[0]
+        assert "object" in errors[0]
+
+    def test_lifecycle_split_reliable_processes_must_be_object_when_enabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": [],
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "reliable_processes" in errors[0]
+        assert "object" in errors[0]
+
+    def test_lifecycle_split_reliable_processes_lists_are_required_when_enabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": {
+                    "board": "board_anchor",
+                    "cpu": [],
+                },
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "reliable_processes.board" in errors[0]
+        assert "list" in errors[0]
+
+    def test_lifecycle_split_cpu_reliable_processes_must_be_list_when_enabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": {
+                    "board": [],
+                    "cpu": "cpu_anchor",
+                },
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "reliable_processes.cpu" in errors[0]
+        assert "list" in errors[0]
+
+    def test_lifecycle_split_multi_instance_processes_must_be_list_when_enabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "multi_instance_processes": "worker",
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "multi_instance_processes" in errors[0]
+        assert "list" in errors[0]
+
+    def test_lifecycle_split_conflict_is_case_insensitive(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": {
+                    "board": ["Proc"],
+                    "cpu": ["proc"],
+                },
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "proc" in errors[0].lower()
+
     def test_multiple_errors(self):
         cfg = {
             "diag_pattern": r"((bad",

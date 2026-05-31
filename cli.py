@@ -884,9 +884,63 @@ def _print_boundary_issue_full(issue: dict, task_id: str) -> None:
         click.echo(f"    hint {command.replace('<task_id>', task_id)}")
 
 
+def _print_lifecycle_split_v2(result: dict, detail: str = "compact") -> None:
+    boundaries = result.get("boundaries") or []
+    evidence = result.get("evidence") or []
+    issues = result.get("issues") or []
+    reliable = str(result.get("lifecycle_reliable", True)).lower()
+    click.echo(
+        "  lifecycle_split_v2: "
+        f"reliable={reliable} boundaries={len(boundaries)} "
+        f"evidence={len(evidence)} issues={len(issues)}"
+    )
+
+    for issue in issues:
+        severity = _severity_key(issue.get("severity"))
+        scope = _format_v2_scope(issue)
+        title = issue.get("title_zh") or issue.get("type") or "-"
+        click.echo(
+            f"    [{severity}] {issue.get('type') or '-'} "
+            f"scope={scope} title={title}"
+        )
+
+    for boundary in boundaries:
+        scope = _format_v2_scope(boundary, scope_field="origin_scope")
+        support_count = len(boundary.get("support_evidence") or [])
+        click.echo(
+            f"    boundary {boundary.get('type') or '-'} "
+            f"scope={scope} time={_format_issue_time(boundary.get('timestamp'))} "
+            f"support={support_count}"
+        )
+
+    if detail != "full":
+        return
+
+    for item in evidence:
+        scope = _format_v2_scope(item)
+        covered = len(item.get("covered_boundaries") or [])
+        click.echo(
+            f"    evidence {item.get('type') or '-'} "
+            f"scope={scope} support={item.get('support_type') or '-'} covered={covered}"
+        )
+
+
+def _format_v2_scope(item: dict, *, scope_field: str = "scope") -> str:
+    scope = item.get(scope_field) or item.get("scope") or "-"
+    cpu_id = item.get("cpu_id")
+    if scope == "cpu" and cpu_id:
+        return f"cpu_{cpu_id}"
+    return str(scope)
+
+
 def _print_boundary_issues(group: dict, task_id: str, detail: str = "compact") -> None:
     reliable = str(group.get("lifecycle_reliable", True)).lower()
     click.echo(f"  生命周期可靠性: {reliable}")
+    v2 = group.get("lifecycle_split_result")
+    if isinstance(v2, dict) and any(
+        v2.get(field) for field in ("boundaries", "evidence", "issues", "scopes", "cycles")
+    ):
+        _print_lifecycle_split_v2(v2, detail=detail)
     issues = group.get("boundary_issues") or []
     if not issues:
         return

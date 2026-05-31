@@ -53,6 +53,12 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 
 生命周期切分报错和 DFX 字段解读见 `docs/lifecycle-dfx-guide.md`。定位边界问题时可使用 `mech-lifecycles --show-boundaries` 查看结构化证据和建议查询命令。
 
+`module1` 的新一代生命周期切分 `lifecycle_split` v2 默认关闭，只有显式配置 `enabled: true` 时才启用；未配置或 `enabled: false` 时继续使用旧 `CycleDetector`。启用后，compact `result.json` 会在对应 slot 下写入 `lifecycle_split_result`，其中包含 v2 boundaries、evidence 和 issues。查看方式：
+
+```bash
+python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --boundary-detail full
+```
+
 `module2` 是诊断日志-only 的机制模块示例。它依赖 `module1` 的生命周期切分结果，不自行切周期；解析到的 module2 日志会按 `slot + cpu_id + timestamp` 归入 module1 对应周期。CPU 日志优先匹配嵌套 CPU 周期，找不到 CPU 周期但能匹配板卡周期时写入 `cpu_<id>/unknown/`；无法匹配板卡周期的日志写入 `unknown/`。配置时需要把 `module2` 声明在它依赖的 `module1` 之后。
 
 解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用；如需降低磁盘占用，可配置 `pipeline.cleanup_inner_archives: true` 在解析后删除已展开的内层归档副本，或配置 `pipeline.cleanup_extracted: true` 删除整个 `extracted/` 工作区。

@@ -181,6 +181,34 @@ class TestMechLifecyclesMultiModule:
         assert groups[0]["lifecycle_reliable"] is False
         assert groups[0]["boundary_issues"][0]["kind"] == "unsafe_cycle_split"
 
+    def test_returns_lifecycle_split_v2_result(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {
+                "module_name": "EXAMPLE",
+                "slots": [
+                    {
+                        "slot_id": "1",
+                        "lifecycle_reliable": True,
+                        "lifecycle_split_result": {
+                            "boundaries": [
+                                {
+                                    "origin_scope": "board",
+                                    "timestamp": "2026-01-03T00:01:00",
+                                    "type": "journal_sequence_wrapped",
+                                },
+                            ],
+                            "issues": [],
+                        },
+                        "board_cycles": [{"dir_name": "c1"}],
+                    },
+                ],
+            },
+        ])
+
+        groups = svc.mech_lifecycles("task", slot_id="1", module_name="EXAMPLE")
+
+        assert groups[0]["lifecycle_split_result"]["boundaries"][0]["type"] == "journal_sequence_wrapped"
+
     def test_returns_empty_when_no_match(self, svc, tmp_path):
         _write_result(tmp_path, "task", [
             {"module_name": "EXAMPLE", "slots": [{"slot_id": "1", "board_cycles": []}]},

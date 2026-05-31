@@ -80,6 +80,7 @@ class ResultQueryService:
                         "slot_id": slot_id,
                         "lifecycle_reliable": slot.get("lifecycle_reliable", True),
                         "boundary_issues": slot.get("boundary_issues", []),
+                        "lifecycle_split_result": slot.get("lifecycle_split_result"),
                         "board_cycles": slot.get("board_cycles", []),
                     })
         return results

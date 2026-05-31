@@ -84,7 +84,7 @@ class PrivateSlotInfo(BaseModel):
     """varlog/ 下的私有日志槽位。"""
     dir_name: str         # "slot_1" 或 "slot_1_cpu_0"
     slot_id: str          # 所属板卡 slot_id, e.g. "1"
-    cpu_id: str | None = None  # CPU 子卡编号, e.g. "0"; None 表示为板卡本身
+    cpu_id: str | None = None  # None/"0" means board-level; non-zero values are CPU subcards.
     path: str
     journal_logs: list[JournalLogFile] = Field(default_factory=list)
 
@@ -177,6 +177,7 @@ class MechSlotOutput(BaseModel):
     board_cycles: list[MechBoardCycle] = Field(default_factory=list)
     lifecycle_reliable: bool = True
     boundary_issues: list[MechBoundaryIssue] = Field(default_factory=list)
+    lifecycle_split_result: Any | None = None
 
 
 class MechResult(BaseModel):

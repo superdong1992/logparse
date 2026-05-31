@@ -9,6 +9,7 @@ from typing import Any
 from backend.config_validation import validate_mechanism_module_config
 from backend.models import MechLogEntry, MechResult, MechSlotOutput, ParseResult
 from backend.parsing.cycle_detector import CycleDetector
+from backend.parsing.lifecycle_splitter import LifecycleSplitConfig, LifecycleSplitter
 from backend.parsing.mech_diag_scanner import MechDiagScanner
 from backend.parsing.mech_journal_scanner import MechJournalScanner
 from backend.parsing.process_name_resolver import ProcessNameResolver
@@ -55,6 +56,18 @@ class Module1Plugin(MechanismModulePlugin):
         )
         whitelist = cfg.get("board_restart_whitelist", [])
         name_map: dict[str, str] = cfg.get("process_name_mapping", {})
+        lifecycle_split_cfg = cfg.get("lifecycle_split")
+        use_lifecycle_split_v2 = (
+            isinstance(lifecycle_split_cfg, dict)
+            and lifecycle_split_cfg.get("enabled", False) is True
+        )
+        split_config: LifecycleSplitConfig | None = None
+        if use_lifecycle_split_v2:
+            try:
+                split_config = LifecycleSplitConfig.from_mapping(lifecycle_split_cfg)
+            except ValueError as exc:
+                result.errors.append(f"{self.module_key}: {exc}")
+                return None
 
         whitelist_set = {w.lower() for w in whitelist}
         map_keys = {k.lower() for k in name_map}
@@ -120,16 +133,27 @@ class Module1Plugin(MechanismModulePlugin):
         mech_result = MechResult(module_name=module_name, module_key=self.module_key)
         for slot_id, entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
-            detector = CycleDetector(
-                indicator=indicator,
-                whitelist=whitelist,
-                module_key=self.module_key,
-                module_name=module_name,
-            )
-            slot_output.board_cycles = detector.detect(entries)
-            slot_output.lifecycle_reliable = detector.lifecycle_reliable
-            slot_output.boundary_issues = detector.boundary_issues
-            result.errors.extend(detector.errors)
+            if use_lifecycle_split_v2 and split_config is not None:
+                splitter = LifecycleSplitter(
+                    split_config,
+                    module_key=self.module_key,
+                    module_name=module_name,
+                )
+                split_result = splitter.split(entries)
+                slot_output.board_cycles = splitter.build_board_cycles(split_result)
+                slot_output.lifecycle_reliable = split_result.lifecycle_reliable
+                slot_output.lifecycle_split_result = split_result
+            else:
+                detector = CycleDetector(
+                    indicator=indicator,
+                    whitelist=whitelist,
+                    module_key=self.module_key,
+                    module_name=module_name,
+                )
+                slot_output.board_cycles = detector.detect(entries)
+                slot_output.lifecycle_reliable = detector.lifecycle_reliable
+                slot_output.boundary_issues = detector.boundary_issues
+                result.errors.extend(detector.errors)
             mech_result.slots.append(slot_output)
 
         active_slots = {entry.slot for entry in all_entries if entry.is_active_signal}

@@ -263,6 +263,41 @@ python cli.py mech-lifecycles diagnostic_information_20260103 \
   --module EXAMPLE
 ```
 
+## lifecycle_split v2
+
+`module1` 的 `lifecycle_split` v2 默认关闭。只有在机制模块配置里显式写
+`enabled: true` 时才启用；未配置 `lifecycle_split` 或写 `enabled: false`
+都会继续使用旧 `CycleDetector`。
+
+启用示例：
+
+```yaml
+lifecycle_split:
+  enabled: true
+  process_name_mapping:
+    canonical_proc:
+      - alias_in_diag
+      - alias_in_journal
+  reliable_processes:
+    board:
+      - canonical_board_proc
+    cpu:
+      - canonical_cpu_proc
+  multi_instance_processes: []
+```
+
+启用后，compact `result.json` 会在 slot 下包含 `lifecycle_split_result`，
+记录 v2 boundaries、evidence 和 issues。查看完整解释：
+
+```bash
+python cli.py mech-lifecycles diagnostic_information_20260103 \
+  --output output \
+  -s 1 \
+  --module EXAMPLE \
+  --show-boundaries \
+  --boundary-detail full
+```
+
 ## 查看机制模块日志
 
 ```bash

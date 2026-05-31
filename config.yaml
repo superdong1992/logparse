@@ -91,6 +91,16 @@ products:
               # 示例：{"DHCP": "dhcpd", "AAA": "aaa_svc"}
               process_name_mapping: {}
 
+              # lifecycle_split v2 is off unless enabled is explicitly true.
+              # v2 process_name_mapping uses canonical_name: [aliases].
+              lifecycle_split:
+                enabled: false
+                process_name_mapping: {}
+                reliable_processes:
+                  board: []
+                  cpu: []
+                multi_instance_processes: []
+
               journal:
                 # [按需修改] journal pattern supports two capture layouts:
                 # 4 groups: process_name, pid, sequence, context
@@ -152,6 +162,15 @@ products:
                 active_master_keyword: ""
                 board_restart_indicator: ""
                 process_name_mapping: {}
+                # lifecycle_split v2 is off unless enabled is explicitly true.
+                # v2 process_name_mapping uses canonical_name: [aliases].
+                lifecycle_split:
+                  enabled: false
+                  process_name_mapping: {}
+                  reliable_processes:
+                    board: []
+                    cpu: []
+                  multi_instance_processes: []
                 journal:
                   line_pattern: ''
                   line_pattern2: '^\S+\s+\S+\s+(\S+)(?:-(\d+))?:\s+COMPACT\s+No\[(\d+)\](.+)$'

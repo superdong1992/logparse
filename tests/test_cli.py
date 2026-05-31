@@ -4,12 +4,16 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import importlib
+import re
 
 from click.testing import CliRunner
 import yaml
 
 from cli import cli
 from cli import _print_summary
+from backend.parsing.timestamp_extractor import TimestampExtractor
+from backend.plugins.mechanisms.module1 import Module1Plugin
+from backend.query import ResultQueryService
 from backend.models import (
     LogEntry,
     MechBoardCycle,
@@ -21,6 +25,38 @@ from backend.models import (
     ParseResult,
     SlotInfo,
 )
+
+
+def _module1_v2_test_config() -> dict:
+    return {
+        "module_name": "EXAMPLE",
+        "diag_pattern": (
+            r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?"
+            r"CPU-Id=(?P<CPU_Id>[^;,)]+).*?"
+            r"ProcessName=(?P<ProcessName>[^;,)]+).*?"
+            r"Context=(?P<Context>.+?)\)$"
+        ),
+        "active_master_keyword": "",
+        "board_restart_indicator": "",
+        "board_restart_whitelist": [],
+        "process_name_mapping": {},
+        "journal": {
+            "line_pattern": "",
+            "line_pattern2": "",
+            "identifying_keyword": "EXAMPLE",
+        },
+        "sequence_pattern": r"No\[(\d+)\]",
+        "lifecycle_split": {
+            "enabled": True,
+            "reliable_processes": {"board": ["dhcp"], "cpu": []},
+        },
+    }
+
+
+def _timestamp_extractor() -> TimestampExtractor:
+    return TimestampExtractor(
+        re.compile(r"(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?")
+    )
 
 
 def test_test_pattern_reads_nested_mechanism_config(sample_config, tmp_path):
@@ -194,10 +230,29 @@ def test_print_summary_writes_compact_result_by_default(tmp_path):
         end_time=ts,
         processes=[process],
     )
+    issue = MechBoundaryIssue(
+        kind="unsafe_cycle_split",
+        severity="error",
+        conflicts=[
+            {
+                "before_log": {"raw_excerpt": "before raw excerpt"},
+                "after_log": {"raw_excerpt": "after raw excerpt"},
+            },
+        ],
+        evidence=[
+            {"raw_excerpt": "evidence raw excerpt"},
+        ],
+    )
     mech_result = MechResult(
         module_name="EXAMPLE",
         module_key="module1",
-        slots=[MechSlotOutput(slot_id="1", board_cycles=[cycle])],
+        slots=[
+            MechSlotOutput(
+                slot_id="1",
+                board_cycles=[cycle],
+                boundary_issues=[issue],
+            ),
+        ],
         diag_entry_count=1,
     )
     result = ParseResult(
@@ -217,7 +272,71 @@ def test_print_summary_writes_compact_result_by_default(tmp_path):
     assert proc["total_count"] == 1
     assert proc["missing_sequences"] == [2]
     assert "logs" not in proc
-    assert "raw line that should only live" not in json.dumps(data, ensure_ascii=False)
+    serialized = json.dumps(data, ensure_ascii=False)
+    assert "raw line that should only live" not in serialized
+    assert "raw_excerpt" not in serialized
+    assert "before raw excerpt" not in serialized
+
+
+def test_lifecycle_split_v2_survives_serializer_query_and_cli(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        "\n".join([
+            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-100; Context=old)",
+            "2026-01-03T01:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-200; Context=new)",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    parse_result = ParseResult(
+        task_id="task",
+        package_name="package.zip",
+        diagnostic_slots=[slot],
+    )
+    plugin = Module1Plugin(
+        _module1_v2_test_config(),
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+    mech = plugin.parse(parse_result)
+    assert mech is not None
+    parse_result.mech_results.append(mech)
+
+    _print_summary(parse_result, tmp_path)
+
+    svc = ResultQueryService(tmp_path)
+    groups = svc.mech_lifecycles("task", slot_id="1", module_name="EXAMPLE")
+    v2 = groups[0]["lifecycle_split_result"]
+    assert v2["lifecycle_reliable"] is True
+    assert v2["boundaries"][0]["origin_scope"] == "board"
+    assert v2["scopes"][0]["effective_boundaries"][0]["scope"] == "board"
+    assert v2["cycles"][0]["cycle_index"] == 0
+    assert v2["evidence"][0]["support_type"] == "tight_support"
+    assert v2["issues"] == []
+
+    cli_result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+    assert cli_result.exit_code == 0, cli_result.output
+    assert "lifecycle_split_v2: reliable=true boundaries=1 evidence=1 issues=0" in cli_result.output
+    assert "boundary reliable_process_pid_changed scope=board" in cli_result.output
+    assert "evidence reliable_process_pid_changed scope=board support=tight_support covered=1" in cli_result.output
 
 
 def test_test_pattern_journal_without_sequence(sample_config, tmp_path):
@@ -429,6 +548,87 @@ def test_mech_lifecycles_show_boundaries(tmp_path):
     assert "before diagnostic|slot_1/diag.log seq=0 raw=before raw" in result.output
     assert "evidence diagnostic|slot_1/diag.log" not in result.output
     assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p other-500 -m EXAMPLE" in result.output
+
+
+def test_mech_lifecycles_show_boundaries_displays_lifecycle_split_v2(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "lifecycle_split_result": {
+                                    "lifecycle_reliable": False,
+                                    "boundaries": [
+                                        {
+                                            "origin_scope": "board",
+                                            "timestamp": "2026-01-03T00:01:00+08:00",
+                                            "type": "journal_sequence_wrapped",
+                                            "support_evidence": [{"type": "journal_sequence_wrapped"}],
+                                        },
+                                    ],
+                                    "evidence": [
+                                        {
+                                            "scope": "board",
+                                            "type": "journal_sequence_wrapped",
+                                            "support_type": "tight_support",
+                                            "covered_boundaries": [{"id": "b1"}],
+                                        },
+                                    ],
+                                    "issues": [
+                                        {
+                                            "type": "same_pid_single_boundary_conflict",
+                                            "severity": "error",
+                                            "scope": "cpu",
+                                            "cpu_id": "1",
+                                            "title_zh": "same PID conflict",
+                                        },
+                                    ],
+                                },
+                                "board_cycles": [
+                                    {
+                                        "dir_name": "c1",
+                                        "processes": [],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "lifecycle_split_v2: reliable=false boundaries=1 evidence=1 issues=1" in result.output
+    assert "[ERROR] same_pid_single_boundary_conflict scope=cpu_1 title=same PID conflict" in result.output
+    assert "boundary journal_sequence_wrapped scope=board time=2026-01-03T00:01:00+08:00 support=1" in result.output
+    assert "evidence journal_sequence_wrapped scope=board support=tight_support covered=1" in result.output
 
 
 def test_mech_lifecycles_compact_other_dfx_events_are_human_readable(tmp_path):

@@ -112,9 +112,10 @@ def _mech_to_dict(mech: MechResult) -> dict[str, Any]:
                 "slot_id": slot.slot_id,
                 "lifecycle_reliable": slot.lifecycle_reliable,
                 "boundary_issues": [
-                    issue.model_dump(mode="json")
+                    _omit_raw_fields(issue.model_dump(mode="json"))
                     for issue in slot.boundary_issues
                 ],
+                "lifecycle_split_result": _model_to_json(slot.lifecycle_split_result),
                 "board_cycles": [
                     _board_cycle_to_dict(cycle) for cycle in slot.board_cycles
                 ],
@@ -122,6 +123,26 @@ def _mech_to_dict(mech: MechResult) -> dict[str, Any]:
             for slot in mech.slots
         ],
     }
+
+
+def _model_to_json(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return value
+
+
+def _omit_raw_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _omit_raw_fields(item)
+            for key, item in value.items()
+            if key not in {"raw", "raw_excerpt", "old_raw", "new_raw"}
+        }
+    if isinstance(value, list):
+        return [_omit_raw_fields(item) for item in value]
+    return value
 
 
 def _board_cycle_to_dict(cycle: MechBoardCycle) -> dict[str, Any]:
