@@ -140,8 +140,8 @@ def main():
     slot2_varlog_zip = base / "_tmp_varlog_slot2.zip"
     create_zip_with_content(slot2_varlog_zip, slot2_varlog_files)
 
-    # slot_1_cpu_0 的 journal 日志（slot_1 的 CPU 子卡）
-    slot1_cpu0_journal = "2026-01-03T00:00:01 [CPU0] cpu service started\n2026-01-03T06:00:00 [CPU0] cpu health OK\n"
+    # slot_1_cpu_0 is a legacy-style directory sample; cpu_id 0 is treated as board-level.
+    slot1_cpu0_journal = "2026-01-03T00:00:01 [BOARD0] board service started\n2026-01-03T06:00:00 [BOARD0] board health OK\n"
     slot1_cpu0_varlog_files = {"slot_1_cpu_0/varlog/journal.log": slot1_cpu0_journal}
     slot1_cpu0_varlog_zip = base / "_tmp_varlog_slot1_cpu0.zip"
     create_zip_with_content(slot1_cpu0_varlog_zip, slot1_cpu0_varlog_files)
@@ -196,7 +196,7 @@ def main():
     print("  slot_2: ACTIVE, ActivePeriod 1 段 [06:30:00 ~ 07:55:00]")
     print("  私有日志 slot_1: 2 个 journal 文件 (当前 + 历史#1)")
     print("  私有日志 slot_2: 1 个 journal 文件 (当前)")
-    print("  私有日志 slot_1_cpu_0: 1 个 journal 文件 (CPU 子卡)")
+    print("  私有日志 slot_1_cpu_0: 1 个 journal 文件 (cpu_id 0 => board-level)")
     print("  机制模块 EXAMPLE 日志: slot_1 诊断3条 + journal2条, slot_2 诊断2条 + journal1条")
 
 

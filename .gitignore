@@ -1,5 +1,6 @@
 .claude/
 .superpowers/
+.codex-pydeps/
 __pycache__/
 output/
 .venv/

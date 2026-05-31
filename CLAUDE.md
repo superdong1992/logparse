@@ -1,5 +1,19 @@
 # CLAUDE.md
 
+## Rule preflight is mandatory
+
+Before repo analysis or code edits, run the local rule preflight for the files
+you will inspect or change:
+
+```bash
+python scripts/rule_preflight.py --paths backend/parsing/lifecycle_splitter.py
+python scripts/rule_preflight.py --changed
+```
+
+Read every returned rule source before making claims or edits, and mention the
+rule ids you used in the final answer. In particular, do not infer CPU scope:
+`CPU_Id=0 is board-level`; only non-zero CPU ids are nested CPU lifecycles.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 项目概述
