@@ -4,7 +4,7 @@
 
 ## 快速入口
 
-`parse` 命令默认不再逐条打印生命周期切分 raw error，而是输出数量汇总：
+`parse` 命令默认 `--lifecycle-dfx errors`，不再逐条打印生命周期切分 raw error，而是输出数量汇总：
 
 ```bash
 生命周期切分诊断: ERROR=1 WARNING=1 INFO=1
@@ -17,13 +17,55 @@
 python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries
 ```
 
-默认输出是 compact 视图，只保留“主问题对象 + 关键证据 + 一条 hint”。如果需要查看完整 `protected_boundaries`、`evidence` 和全部 hint，再执行：
+`mech-lifecycles --show-boundaries` 默认 `--lifecycle-dfx summary`。如果要看 V3 为什么先切开、为什么又聚合或保留切分，执行：
 
 ```bash
-python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --boundary-detail full
+python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx decisions
 ```
 
-`result.json` 仍然保留完整结构化证据，终端只是默认收敛展示。
+如果需要查看完整 `protected_boundaries`、`evidence`、raw 摘要和全部 hint，再执行：
+
+```bash
+python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx full
+```
+
+`--boundary-detail full` 仍兼容旧 V2/旧 CycleDetector 视图；新的生命周期聚合/切分说明优先用 `--lifecycle-dfx`。`result.json` 仍然保留完整结构化证据，终端只是默认收敛展示。
+
+## V3 决策视图
+
+V3 的核心是“两阶段”：先按 `>=30 秒` 静默间隔切成候选生命周期，再检查相邻候选段是否可以聚合。
+
+```text
+[候选生命周期]
+#1 board slot_1 2026-01-03T00:00:00+08:00..2026-01-03T00:01:00+08:00 logs=2
+#2 board slot_1 2026-01-03T00:01:30+08:00..2026-01-03T00:02:00+08:00 logs=1
+
+[候选切分]
+候选边界 #1：board slot_1 #1 -> #2
+规则：相邻日志活动之间静默间隔 >=30 秒，先作为候选生命周期边界
+前一段结束：2026-01-03T00:01:00+08:00
+后一段开始：2026-01-03T00:01:30+08:00
+静默间隔：30 秒
+初始决策：先切成两个候选生命周期
+
+[聚合检查]
+聚合检查 #1：候选生命周期 #1 + #2
+可靠边界进程 PID 统计（白名单）：
+- procA：PID=100，数量=1
+结论：所有白名单进程 PID 数均不超过 1，没有白名单进程 PID 冲突，判断为同一生命周期内日志分段打印。
+最终决策：聚合为同一个生命周期
+journal 回绕证据：未发现
+
+[最终生命周期]
+L1 board slot_1 = #1/#2 2026-01-03T00:00:00+08:00..2026-01-03T00:02:00+08:00 reliable=true
+```
+
+如果 `最终决策：保留切分`，优先看 `阻断原因`：
+
+- `reliable_pid_conflict`：合并后白名单进程出现多个 PID，更像跨重启边界。
+- `journal_wrap`：journal 序号回绕前日志在前候选段、回绕后日志在后候选段，这条边界有可靠证据支撑。
+
+如果最终同一生命周期内仍出现白名单进程多个 PID，V3 会记录 error，但不会自动补切；这通常表示初始候选段内部缺少可见的 `>=30 秒` 静默边界，需要回看日志缺失或时间戳质量。
 
 ## 严重级别
 

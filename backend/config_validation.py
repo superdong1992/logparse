@@ -373,6 +373,10 @@ def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
     enabled = raw.get("enabled", False)
     if not isinstance(enabled, bool):
         return [f"{path}.enabled must be a boolean"]
+
+    algorithm = str(raw.get("algorithm", "interval_v2"))
+    if algorithm not in {"interval_v2", "interval_v3"}:
+        return [f"{path}.algorithm must be one of: interval_v2, interval_v3"]
     if enabled is False:
         return []
 

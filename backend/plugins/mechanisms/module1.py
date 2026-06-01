@@ -10,6 +10,7 @@ from backend.config_validation import validate_mechanism_module_config
 from backend.models import MechLogEntry, MechResult, MechSlotOutput, ParseResult
 from backend.parsing.cycle_detector import CycleDetector
 from backend.parsing.lifecycle_splitter import LifecycleSplitConfig, LifecycleSplitter
+from backend.parsing.lifecycle_splitter_v3 import LifecycleSplitterV3
 from backend.parsing.mech_diag_scanner import MechDiagScanner
 from backend.parsing.mech_journal_scanner import MechJournalScanner
 from backend.parsing.process_name_resolver import ProcessNameResolver
@@ -134,7 +135,12 @@ class Module1Plugin(MechanismModulePlugin):
         for slot_id, entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
             if use_lifecycle_split_v2 and split_config is not None:
-                splitter = LifecycleSplitter(
+                splitter_cls = (
+                    LifecycleSplitterV3
+                    if split_config.algorithm == "interval_v3"
+                    else LifecycleSplitter
+                )
+                splitter = splitter_cls(
                     split_config,
                     module_key=self.module_key,
                     module_name=module_name,

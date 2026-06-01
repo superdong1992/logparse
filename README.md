@@ -18,7 +18,7 @@ python cli.py check-config
 
 ```bash
 # 解析
-python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product default|compact]
+python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--lifecycle-dfx errors|summary|decisions|full|off] [--product default|compact]
 python cli.py parse <package_path> -c config.lifecycle-v2.yaml --product default  # 默认产品启用 lifecycle_split v2
 python cli.py parse <package_path> --debug-expand-gz   # 调试用：就地展开普通 .gz 日志
 
@@ -52,19 +52,19 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 
 当前输出模型以板卡周期为顶层生命周期，CPU 周期嵌套在对应板卡周期下。板卡日志写到 `slot_<id>/<board_cycle>/<proc>-<pid>.log`；CPU 日志写到 `slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>-<pid>.log`。`mech-logs` 查询 CPU 日志时需要同时传 `--cpu` 和 `--cpu-cycle`。
 
-生命周期切分报错和 DFX 字段解读见 `docs/lifecycle-dfx-guide.md`。定位边界问题时可使用 `mech-lifecycles --show-boundaries` 查看结构化证据和建议查询命令。
+生命周期切分报错和 DFX 字段解读见 `docs/lifecycle-dfx-guide.md`。`--verbose` 只控制通用调试输出；生命周期聚合/切分说明由 `--lifecycle-dfx` 控制。定位边界问题时可使用 `mech-lifecycles --show-boundaries --lifecycle-dfx decisions` 查看结构化证据和中文决策说明。
 
-`module1` 的新一代生命周期切分 `lifecycle_split` v2 默认关闭，只有显式配置 `enabled: true` 时才启用；未配置或 `enabled: false` 时继续使用旧 `CycleDetector`。仓库提供两份配置文件用于显式切换：`config.yaml` 保持默认产品 v2 关闭，`config.lifecycle-v2.yaml` 在默认产品 `module1` 中开启 v2，并且默认产品示例不再保留旧 `board_restart_indicator`、`board_restart_whitelist`、旧 `process_name_mapping`，避免把旧 CycleDetector 语义误认为 v2 配置。运行时通过 `-c/--config` 指定即可：
+`module1` 的新一代生命周期切分 `lifecycle_split` 默认关闭，只有显式配置 `enabled: true` 时才启用；未配置或 `enabled: false` 时继续使用旧 `CycleDetector`。缺省 `algorithm` 仍是 `interval_v2`；配置 `algorithm: interval_v3` 时启用 V3 的“30 秒候选切分 + 白名单一致性聚合”。仓库提供两份配置文件用于显式切换：`config.yaml` 保持默认产品 lifecycle_split 关闭，`config.lifecycle-v2.yaml` 在默认产品 `module1` 中开启 v2，并且默认产品示例不再保留旧 `board_restart_indicator`、`board_restart_whitelist`、旧 `process_name_mapping`，避免把旧 CycleDetector 语义误认为新配置。运行时通过 `-c/--config` 指定即可：
 
 ```bash
 python cli.py parse diagnostic_information_20260103.zip -c config.yaml --product default
 python cli.py parse diagnostic_information_20260103.zip -c config.lifecycle-v2.yaml --product default
 ```
 
-启用后，compact `result.json` 会在对应 slot 下写入 `lifecycle_split_result`，其中包含 v2 boundaries、evidence 和 issues。这里的 compact 指轻量 `result.json` 输出模式，不是 `--product compact` 产品分支。查看方式：
+启用后，compact `result.json` 会在对应 slot 下写入 `lifecycle_split_result`。V2 结果包含 boundaries、evidence 和 issues；V3 结果包含 `algorithm: interval_v3`、candidate_segments、merge_decisions、lifecycles、journal_evidence、issues 和 lifecycle_reliable。这里的 compact 指轻量 `result.json` 输出模式，不是 `--product compact` 产品分支。查看方式：
 
 ```bash
-python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --boundary-detail full
+python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx decisions
 ```
 
 `module2` 是诊断日志-only 的机制模块示例。它依赖 `module1` 的生命周期切分结果，不自行切周期；解析到的 module2 日志会按 `slot + cpu_id + timestamp` 归入 module1 对应周期。CPU 日志优先匹配嵌套 CPU 周期，找不到 CPU 周期但能匹配板卡周期时写入 `cpu_<id>/unknown/`；无法匹配板卡周期的日志写入 `unknown/`。配置时需要把 `module2` 声明在它依赖的 `module1` 之后。

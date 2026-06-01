@@ -169,6 +169,31 @@ class TestValidateMechanismModuleConfig:
         assert "enabled" in errors[0]
         assert "boolean" in errors[0]
 
+    def test_lifecycle_split_unknown_algorithm_is_rejected_when_enabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "algorithm": "interval_v4",
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "algorithm" in errors[0]
+        assert "interval_v3" in errors[0]
+
+    def test_lifecycle_split_unknown_algorithm_is_rejected_even_when_disabled(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": False,
+                "algorithm": "interval_v4",
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "algorithm" in errors[0]
+
     def test_lifecycle_split_process_name_mapping_must_be_object_when_enabled(self):
         cfg = {
             "module_name": "EXAMPLE",

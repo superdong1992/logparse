@@ -84,7 +84,8 @@ products:
               # 如果要回到旧 CycleDetector，改用默认 config.yaml，或把这里改成 enabled: false。
               # 本文件的默认产品 module1 不再保留旧 CycleDetector 字段：
               #   board_restart_indicator、board_restart_whitelist、旧 process_name_mapping
-              # v2 不兼容旧 indicator/whitelist 语义，生命周期进程分类只看下面这三个字段。
+              # v2 不兼容旧 indicator/whitelist 语义，生命周期进程分类只看下面这些字段。
+              # algorithm 缺省为 interval_v2；改为 interval_v3 会启用“30 秒候选切分 + 白名单一致性聚合”。
               # process_name_mapping 是 v2 专用 canonical alias 表，格式为
               #   canonical_name: [alias_in_diag, alias_in_journal]
               # reliable_processes：生命周期绑定的可靠进程，统一写 canonical_name 列表。
@@ -95,6 +96,7 @@ products:
               # 真正落到产品前，应把能代表生命周期的真实进程名填到 reliable_processes 列表里。
               lifecycle_split:
                 enabled: true
+                algorithm: interval_v2
                 process_name_mapping: {}
                 reliable_processes: []
                 multi_instance_processes: []

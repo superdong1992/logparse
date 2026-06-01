@@ -272,18 +272,23 @@ python cli.py mech-lifecycles diagnostic_information_20260103 \
   --module EXAMPLE
 ```
 
-## lifecycle_split v2
+## lifecycle_split v2 / v3
 
-`module1` 的 `lifecycle_split` v2 默认关闭。只有在机制模块配置里显式写
+`module1` 的 `lifecycle_split` 默认关闭。只有在机制模块配置里显式写
 `enabled: true` 时才启用；未配置 `lifecycle_split` 或写 `enabled: false`
 都会继续使用旧 `CycleDetector`。
+
+缺省 `algorithm` 保持当前 v2 行为，也就是 `interval_v2`。配置
+`algorithm: interval_v3` 时启用 V3：先用 `>=30 秒` 静默间隔生成候选生命周期，
+再从左到右反复尝试聚合相邻候选段。合并后每个白名单进程不同 PID 数 `<=1` 时允许聚合；
+若白名单 PID 冲突或 reliable journal 回绕跨候选段对齐，则保留切分。
 
 仓库提供两份配置文件用于通过 `-c/--config` 切换默认产品的实现：
 
 | 配置文件 | 默认产品 `module1` 行为 | 用法 |
 |---|---|---|
 | `config.yaml` | `lifecycle_split.enabled: false`，继续使用旧 `CycleDetector` | `python cli.py parse <package> -c config.yaml --product default` |
-| `config.lifecycle-v2.yaml` | `lifecycle_split.enabled: true`，默认产品走 v2 | `python cli.py parse <package> -c config.lifecycle-v2.yaml --product default` |
+| `config.lifecycle-v2.yaml` | `lifecycle_split.enabled: true` 且 `algorithm: interval_v2`，默认产品走 v2 | `python cli.py parse <package> -c config.lifecycle-v2.yaml --product default` |
 
 `config.lifecycle-v2.yaml` 的默认产品 `module1` 不保留旧 `board_restart_indicator`、
 `board_restart_whitelist`、旧 `process_name_mapping`。v2 不兼容旧 indicator/whitelist
@@ -299,6 +304,7 @@ python cli.py mech-lifecycles diagnostic_information_20260103 \
 ```yaml
 lifecycle_split:
   enabled: true
+  algorithm: interval_v3   # 缺省 interval_v2；未知 algorithm 会报配置错误
   process_name_mapping:
     canonical_proc:
       - alias_in_diag
@@ -311,13 +317,23 @@ lifecycle_split:
 `reliable_processes` 是统一的 canonical 进程列表，不再拆分 board/cpu。
 日志实际无 `cpu_id` 或 `cpu_id=0` 时，PID changed 生成 board scope 边界证据；
 日志实际带 CPU 编号时，PID changed 生成对应 CPU scope 边界证据。
+journal 回绕在 V3 中只作为候选边界证据：如果回绕前日志在前候选段、回绕后日志在后候选段，
+则保留这条候选切分。
 journal 缺 PID 或缺 `No[]` 序号是正常输入：这些日志会保留到归档中，但不会被当成
 `invalid_lifecycle_evidence`。只有被用于正向边界求解的证据缺必要字段时才会记录
 `invalid_lifecycle_evidence`，并在 DFX 中带中文原因、来源文件和原始日志片段。
 
 启用后，compact `result.json` 会在 slot 下包含 `lifecycle_split_result`，
-记录 v2 boundaries、evidence 和 issues。普通 `parse` 输出会显示 V2 error 摘要；
-查看完整中文 DFX：
+V2 记录 boundaries、evidence 和 issues；V3 记录 `algorithm: interval_v3`、
+candidate_segments、merge_decisions、lifecycles、journal_evidence、issues 和
+lifecycle_reliable。普通 `parse` 默认只显示 error 摘要；`--verbose` 不再展开生命周期
+DFX。查看中文聚合/切分说明：
+
+```bash
+python cli.py parse <package> -c config.yaml --lifecycle-dfx decisions
+```
+
+查看落盘结果里的完整中文 DFX：
 
 ```bash
 python cli.py mech-lifecycles diagnostic_information_20260103 \
@@ -325,7 +341,7 @@ python cli.py mech-lifecycles diagnostic_information_20260103 \
   -s 1 \
   --module EXAMPLE \
   --show-boundaries \
-  --boundary-detail full
+  --lifecycle-dfx full
 ```
 
 ## 查看机制模块日志
