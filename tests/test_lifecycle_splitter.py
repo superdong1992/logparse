@@ -139,6 +139,27 @@ def test_reliable_board_pid_change_creates_v2_result_and_board_cycles():
     assert board_cycles[0].processes[0].process_name == "board_anchor"
 
 
+def test_build_board_cycles_merges_pidless_journal_after_process_name_mapping():
+    cfg = LifecycleSplitConfig.from_mapping({
+        "process_name_mapping": {"svc": ["svc_journal"]},
+    })
+    splitter = LifecycleSplitter(cfg)
+
+    result = splitter.split([
+        _entry("svc", "100", 0, source="diagnostic", context="diag"),
+        _entry("svc_journal", "", 5, source="journal", sequence=1, context="journal"),
+    ])
+    board_cycles = splitter.build_board_cycles(result)
+
+    assert len(board_cycles) == 1
+    assert [(process.process_name, process.pid) for process in board_cycles[0].processes] == [
+        ("svc", "100")
+    ]
+    process = board_cycles[0].processes[0]
+    assert [log.source for log in process.logs] == ["diagnostic", "journal"]
+    assert [log.process_name for log in process.logs] == ["svc", "svc"]
+
+
 def test_cpu_reliable_pid_change_only_creates_cpu_local_boundary():
     cfg = LifecycleSplitConfig.from_mapping({
         "reliable_processes": ["board_anchor", "cpu_anchor"],

@@ -248,6 +248,50 @@ def test_build_board_cycles_archives_each_log_once_and_nests_nonzero_cpu_logs():
     } == {"cpuworker-10 ", "cpuworker-10 "}
 
 
+def test_build_board_cycles_merges_pidless_journal_after_process_name_mapping():
+    splitter = LifecycleSplitterV3(
+        LifecycleSplitConfig.from_mapping({
+            "enabled": True,
+            "algorithm": "interval_v3",
+            "process_name_mapping": {"svc": ["svc_journal"]},
+        })
+    )
+    result = splitter.split([
+        _entry("svc", "100", 0, source="diagnostic", context="diag"),
+        _entry("svc_journal", "", 5, source="journal", sequence=1, context="journal"),
+    ])
+
+    board_cycles = splitter.build_board_cycles(result)
+
+    assert len(board_cycles) == 1
+    assert [(process.process_name, process.pid) for process in board_cycles[0].processes] == [
+        ("svc", "100")
+    ]
+    process = board_cycles[0].processes[0]
+    assert [log.source for log in process.logs] == ["diagnostic", "journal"]
+    assert [log.process_name for log in process.logs] == ["svc", "svc"]
+
+
+def test_build_board_cycles_keeps_pidless_journal_separate_when_multiple_pid_targets():
+    splitter = _splitter()
+    result = splitter.split([
+        _entry("svc", "100", 0, source="diagnostic", context="diag old"),
+        _entry("svc", "", 5, source="journal", sequence=1, context="journal"),
+        _entry("svc", "200", 10, source="diagnostic", context="diag new"),
+    ])
+
+    board_cycles = splitter.build_board_cycles(result)
+
+    assert len(board_cycles) == 1
+    assert [(process.process_name, process.pid) for process in board_cycles[0].processes] == [
+        ("svc", ""),
+        ("svc", "100"),
+        ("svc", "200"),
+    ]
+    pidless = board_cycles[0].processes[0]
+    assert [log.source for log in pidless.logs] == ["journal"]
+
+
 def test_build_board_cycles_logs_lifecycle_process_group_counts(caplog):
     splitter = _splitter(reliable=["anchor"])
     result = splitter.split([

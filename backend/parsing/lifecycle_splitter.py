@@ -1464,12 +1464,14 @@ def _format_cycle_dir(start: datetime | None, end: datetime | None) -> str:
 
 
 def _build_process_lifecycles(entries: list[MechLogEntry]) -> list[MechProcessLifecycle]:
-    by_key: dict[tuple[str, str], list[MechLogEntry]] = defaultdict(list)
+    by_key: dict[tuple[str, str, str], list[MechLogEntry]] = defaultdict(list)
     for entry in entries:
-        by_key[(entry.process_name, entry.pid)].append(entry)
+        by_key[(entry.process_name, entry.pid, entry.cpu_id or "")].append(entry)
+
+    _merge_pidless_journal_entries(by_key)
 
     processes: list[MechProcessLifecycle] = []
-    for (process_name, pid), logs in sorted(by_key.items()):
+    for (process_name, pid, _cpu_id), logs in sorted(by_key.items()):
         logs.sort(key=_entry_sort_key)
         processes.append(MechProcessLifecycle(
             process_name=process_name,
@@ -1479,6 +1481,43 @@ def _build_process_lifecycles(entries: list[MechLogEntry]) -> list[MechProcessLi
             missing_sequences=_missing_sequences(logs),
         ))
     return processes
+
+
+def _merge_pidless_journal_entries(
+    by_key: dict[tuple[str, str, str], list[MechLogEntry]],
+) -> None:
+    no_pid_keys = [key for key in by_key if key[1] == ""]
+    for key in no_pid_keys:
+        if key not in by_key:
+            continue
+        process_name, _pid, cpu_id = key
+        logs = by_key[key]
+        pidless_journal_logs = [
+            entry for entry in logs if entry.source == "journal" and not entry.pid
+        ]
+        if not pidless_journal_logs:
+            continue
+
+        candidate_keys = [
+            candidate
+            for candidate in by_key
+            if (
+                candidate[0] == process_name
+                and candidate[1]
+                and candidate[2] == cpu_id
+            )
+        ]
+        if len(candidate_keys) != 1:
+            continue
+
+        target_key = candidate_keys[0]
+        by_key[target_key].extend(pidless_journal_logs)
+        moved_ids = {id(entry) for entry in pidless_journal_logs}
+        remaining = [entry for entry in logs if id(entry) not in moved_ids]
+        if remaining:
+            by_key[key] = remaining
+        else:
+            del by_key[key]
 
 
 def _missing_sequences(logs: list[MechLogEntry]) -> list[int]:
