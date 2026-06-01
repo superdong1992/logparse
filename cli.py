@@ -138,12 +138,13 @@ def cli(ctx, config):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 @cli.command()
 @click.argument("package_path", type=click.Path(exists=True))
+@click.option("--config", "-c", default=None, help="配置文件路径")
 @click.option("--output", "-o", default="./output", help="输出目录")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
 @click.option("--product", "-p", default="default", help="产品名（default/compact）")
 @click.option("--debug-expand-gz", is_flag=True, default=False, help="调试用：解析过程中将 .gz 文件就地展开")
 @click.pass_context
-def parse(ctx, package_path, output, verbose, product, debug_expand_gz):
+def parse(ctx, package_path, config, output, verbose, product, debug_expand_gz):
     """解析日志压缩包。"""
     if verbose:
         import logging
@@ -154,7 +155,7 @@ def parse(ctx, package_path, output, verbose, product, debug_expand_gz):
             force=True,
         )
 
-    config_path = ctx.obj["config_path"]
+    config_path = config or ctx.obj["config_path"]
     source = Path(package_path)
     output_dir = Path(output)
 

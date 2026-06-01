@@ -192,6 +192,54 @@ def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
     assert "protected_boundaries=dhcp@board role=indicator" not in result.output
 
 
+def test_parse_accepts_config_option_after_subcommand(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.lifecycle-v2.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "pipeline": {"result_json_mode": "compact"},
+                "products": {
+                    "default": {
+                        "discovery": {"plugin": "unused", "config": {}},
+                        "log_parser": {"plugin": "unused", "config": {}},
+                    },
+                },
+                "sentinel": "from-command-option",
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    seen_config = {}
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, config):
+            seen_config.update(config)
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            return ParseResult(task_id="task", package_name=source.name)
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen_config["sentinel"] == "from-command-option"
+
+
 def test_print_summary_writes_compact_result_by_default(tmp_path):
     ts = datetime(2026, 1, 3, tzinfo=timezone.utc)
     diag_entry = LogEntry(
