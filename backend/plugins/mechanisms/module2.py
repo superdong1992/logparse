@@ -33,6 +33,23 @@ class _CycleMatch:
     detail: str = ""
 
 
+@dataclass
+class _ProjectedCycleTarget:
+    board_cycle: MechBoardCycle
+    cpu_cycle: MechCpuCycle | None
+    entries: list[MechLogEntry]
+    start_time: datetime | None
+    end_time: datetime | None
+
+
+@dataclass
+class _BoardProjection:
+    board_cycle: MechBoardCycle
+    entries: list[MechLogEntry]
+    board_entries: list[MechLogEntry] | None = None
+    cpu_unknown_by_id: dict[str, tuple[MechCpuCycle, list[MechLogEntry]]] | None = None
+
+
 class Module2Plugin(MechanismModulePlugin):
     """Diagnostic-only module that reuses another module's board cycles."""
 
@@ -256,6 +273,7 @@ def _assign_entries_to_cycles(
             buckets.append((board_cycle, cpu_cycle, [entry]))
 
     _merge_unknown_entries_into_unique_known_bucket(buckets, matches)
+    _merge_unknown_entries_into_unique_expanded_cycle_bucket(buckets, matches)
     _log_unknown_assignments(module_key, buckets, matches)
     return buckets
 
@@ -465,6 +483,214 @@ def _merge_unknown_entries_into_unique_known_bucket(
             entries[:] = remaining
 
     buckets[:] = [bucket for bucket in buckets if bucket[2]]
+
+
+def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+    matches: dict[int, _CycleMatch],
+) -> None:
+    targets = _projected_cycle_targets(buckets)
+
+    for board_cycle, _cpu_cycle, entries in buckets:
+        if board_cycle.dir_name != "unknown":
+            continue
+
+        remaining: list[MechLogEntry] = []
+        for entry in entries:
+            candidates = _expanded_cycle_targets_for_entry(entry, targets)
+            match = matches.get(id(entry))
+            if len(candidates) == 1:
+                candidates[0].entries.append(entry)
+                continue
+
+            if match is not None:
+                if len(candidates) > 1:
+                    original_reason = match.reason or "unknown"
+                    match.reason = "no_unique_expanded_cycle_target"
+                    match.detail = (
+                        f"original_reason={original_reason} "
+                        f"target_count={len(candidates)} "
+                        f"candidates=[{_format_projected_targets(candidates)}] "
+                        f"{match.detail}"
+                    ).strip()
+                else:
+                    _append_match_detail(match, "expanded_target_count=0")
+            remaining.append(entry)
+        entries[:] = remaining
+
+    buckets[:] = [bucket for bucket in buckets if bucket[2]]
+
+
+def _projected_cycle_targets(
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+) -> list[_ProjectedCycleTarget]:
+    board_projections: dict[int, _BoardProjection] = {}
+    targets: list[_ProjectedCycleTarget] = []
+    unknown_cpu_ids = _top_level_unknown_cpu_ids(buckets)
+    needs_board_target = _has_top_level_board_unknown_entries(buckets)
+
+    for board_cycle, cpu_cycle, entries in buckets:
+        if board_cycle.dir_name == "unknown":
+            continue
+
+        projection = board_projections.get(id(board_cycle))
+        if projection is None:
+            projection = _BoardProjection(
+                board_cycle=board_cycle,
+                entries=[],
+                cpu_unknown_by_id={},
+            )
+            board_projections[id(board_cycle)] = projection
+        projection.entries.extend(entries)
+
+        if cpu_cycle is None:
+            projection.board_entries = entries
+            continue
+
+        if cpu_cycle.dir_name == "unknown":
+            projection.cpu_unknown_by_id[cpu_cycle.cpu_id] = (cpu_cycle, entries)
+            continue
+
+        start_time, end_time = _projected_bounds(
+            cpu_cycle.start_time,
+            cpu_cycle.end_time,
+            entries,
+        )
+        targets.append(_ProjectedCycleTarget(
+            board_cycle=board_cycle,
+            cpu_cycle=cpu_cycle,
+            entries=entries,
+            start_time=start_time,
+            end_time=end_time,
+        ))
+
+    for projection in board_projections.values():
+        board_start, board_end = _projected_bounds(
+            projection.board_cycle.start_time,
+            projection.board_cycle.end_time,
+            projection.entries,
+        )
+
+        board_entries = projection.board_entries
+        if board_entries is None and needs_board_target:
+            board_entries = []
+            buckets.append((projection.board_cycle, None, board_entries))
+        if board_entries is not None:
+            targets.append(_ProjectedCycleTarget(
+                board_cycle=projection.board_cycle,
+                cpu_cycle=None,
+                entries=board_entries,
+                start_time=board_start,
+                end_time=board_end,
+            ))
+
+        cpu_unknown_by_id = projection.cpu_unknown_by_id or {}
+        for cpu_id in sorted(unknown_cpu_ids):
+            cpu_unknown = cpu_unknown_by_id.get(cpu_id)
+            if cpu_unknown is None:
+                cpu_entries = []
+                cpu_cycle = MechCpuCycle(
+                    cpu_id=cpu_id,
+                    dir_name="unknown",
+                    start_time=projection.board_cycle.start_time,
+                    end_time=projection.board_cycle.end_time,
+                )
+                buckets.append((projection.board_cycle, cpu_cycle, cpu_entries))
+            else:
+                cpu_cycle, cpu_entries = cpu_unknown
+            targets.append(_ProjectedCycleTarget(
+                board_cycle=projection.board_cycle,
+                cpu_cycle=cpu_cycle,
+                entries=cpu_entries,
+                start_time=board_start,
+                end_time=board_end,
+            ))
+
+    return targets
+
+
+def _top_level_unknown_cpu_ids(
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+) -> set[str]:
+    return {
+        entry.cpu_id
+        for board_cycle, _cpu_cycle, entries in buckets
+        if board_cycle.dir_name == "unknown"
+        for entry in entries
+        if entry.cpu_id
+    }
+
+
+def _has_top_level_board_unknown_entries(
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+) -> bool:
+    return any(
+        not entry.cpu_id
+        for board_cycle, _cpu_cycle, entries in buckets
+        if board_cycle.dir_name == "unknown"
+        for entry in entries
+    )
+
+
+def _projected_bounds(
+    start_time: datetime | None,
+    end_time: datetime | None,
+    entries: list[MechLogEntry],
+) -> tuple[datetime | None, datetime | None]:
+    times = [entry.timestamp for entry in entries if entry.timestamp]
+    candidates = [time for time in [start_time, end_time, *times] if time]
+    if not candidates:
+        return None, None
+    return min(candidates), max(candidates)
+
+
+def _expanded_cycle_targets_for_entry(
+    entry: MechLogEntry,
+    targets: list[_ProjectedCycleTarget],
+) -> list[_ProjectedCycleTarget]:
+    if entry.timestamp is None:
+        return []
+
+    if not entry.cpu_id:
+        return [
+            target for target in targets
+            if target.cpu_cycle is None
+            and _contains_time(target.start_time, target.end_time, entry.timestamp)
+        ]
+
+    candidates = [
+        target for target in targets
+        if target.cpu_cycle is not None
+        and target.cpu_cycle.cpu_id == entry.cpu_id
+        and _contains_time(target.start_time, target.end_time, entry.timestamp)
+    ]
+    real_cpu_candidates = [
+        target for target in candidates
+        if target.cpu_cycle is not None and target.cpu_cycle.dir_name != "unknown"
+    ]
+    return real_cpu_candidates or candidates
+
+
+def _append_match_detail(match: _CycleMatch, addition: str) -> None:
+    if addition in match.detail:
+        return
+    match.detail = f"{match.detail} {addition}".strip()
+
+
+def _format_projected_targets(targets: list[_ProjectedCycleTarget]) -> str:
+    return "; ".join(_format_projected_target(target) for target in targets[:3])
+
+
+def _format_projected_target(target: _ProjectedCycleTarget) -> str:
+    if target.cpu_cycle is None:
+        scope = "board"
+    else:
+        scope = f"cpu_{target.cpu_cycle.cpu_id}/{target.cpu_cycle.dir_name}"
+    return (
+        f"{target.board_cycle.dir_name}/{scope} "
+        f"projected_start={_format_optional_ts(target.start_time)} "
+        f"projected_end={_format_optional_ts(target.end_time)}"
+    )
 
 
 def _candidate_buckets_by_process_key(

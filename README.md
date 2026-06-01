@@ -20,7 +20,7 @@ python cli.py check-config
 # 解析
 python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--lifecycle-dfx errors|summary|decisions|full|off] [--product default|compact]
 python cli.py parse <package_path> -c config.lifecycle-v2.yaml --product default  # 默认产品启用 lifecycle_split v2
-python cli.py parse <package_path> --debug-expand-gz   # 调试用：就地展开普通 .gz 日志
+python cli.py parse <package_path> --debug-expand-gz   # 强制就地展开普通 .gz 日志
 
 # 查询
 python cli.py info <task_id>
@@ -40,7 +40,7 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 
 ```text
 外层压缩包
-  → Decompressor 统一解压归档包（外层 + 内层 zip/tar/tgz/tar.gz；普通 .gz 默认保留）
+  → Decompressor 统一解压归档包（外层 + 内层 zip/tar/tgz/tar.gz；普通 .gz 默认就地展开）
   → DirectoryDiscoveryPlugin 扫描已解压工作区
   → LogParserPlugin 提取基础时间戳和 ActivePeriod，编排机制模块插件
   → MechanismModulePlugin 解析特殊机制模块日志
@@ -71,7 +71,7 @@ python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-bou
 
 解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用；如需降低磁盘占用，可配置 `pipeline.cleanup_inner_archives: true` 在解析后删除已展开的内层归档副本，或配置 `pipeline.cleanup_extracted: true` 删除整个 `extracted/` 工作区。
 
-普通 `.gz` 日志（如 `journal.log.1.gz`）默认不会展开成独立文件，parser 会直接流式读取，避免批量解析时产生大量重复文件。只有传入 `--debug-expand-gz` 或配置 `pipeline.debug_expand_gz: true` 时，才会额外展开普通 `.gz`，方便人工排查。
+普通 `.gz` 日志（如 `journal.log.1.gz`）默认会在 `extracted/` 内就地展开成同目录明文文件（如 `journal.log.1.gz` → `journal.log.1`），原 `.gz` 保留，方便对 `extracted/` 做全文搜索。若需要降低磁盘占用，可配置 `pipeline.debug_expand_gz: false`，parser 仍可直接流式读取 `.gz`。
 
 `result.json` 默认使用 `pipeline.result_json_mode: "compact"`，只保留查询所需摘要，不再重复写入每条机制日志 raw 内容；需要历史完整对象时可改为 `"full"`。
 
@@ -89,7 +89,7 @@ python -m pytest tests/ -v
 - 2026-05-26：新增 `module2` 机制模块。module2 只扫描诊断日志，复用 module1 生命周期切分结果落盘；未匹配周期的日志写入 `unknown/`。module2 日志中 Slot 字段支持 `框号/slot` 格式（如 `1/2`），当前临时提取 `/` 后的 slot 号匹配 module1 周期，正式方案将保留完整框号语义。
 - 2026-05-26：支持 `module1` 无 `No[n]` 日志格式。诊断日志和 journal 日志不再强制要求序号；journal 会从现有 4 组 `No[n]` pattern 自动派生无序号 fallback，一般无需手动修改 `config.yaml`；按 slot family 的周期判断排序模式，有序号周期继续使用 `No[n]` 排序和缺号检测，无序号周期按时间排序，并对混合状态记录 warning。
 - 2026-05-26：`module1` 机制模块插件化。`ParserPlugin` 只负责编排机制模块插件，module1 自己拥有特殊日志解析、周期切分和主控判定逻辑。
-- 2026-05-26：统一解压职责。`Decompressor` 负责外层和内层归档解压；Scanner 插件只扫描已解压工作区，不再自行解压 `varlog.zip` 或诊断日志内层包；普通 `.gz` 日志默认保留并由 parser 流式读取，调试时可通过 `--debug-expand-gz` 展开。
+- 2026-05-26：统一解压职责。`Decompressor` 负责外层和内层归档解压；Scanner 插件只扫描已解压工作区，不再自行解压 `varlog.zip` 或诊断日志内层包；普通 `.gz` 日志可就地展开，也可由 parser 流式读取。
 
 ## Windows 终端编码
 

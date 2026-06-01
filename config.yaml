@@ -16,7 +16,7 @@ pipeline:
   inner_extraction: true       # [通常不改] 是否解压诊断日志内层 .zip
   generate_metadata: true      # [通常不改] 是否生成 metadata.json
   output_base_dir: "./output"  # [按需修改] 输出根目录
-  debug_expand_gz: false       # [通常不改] 调试用：解析过程中是否将 .gz 文件就地展开
+  debug_expand_gz: true        # [通常不改] 解析过程中将 .gz 日志就地展开，便于全文搜索
   result_json_mode: "compact"  # [按需修改] result.json 模式：compact=轻量摘要，full=完整对象
   cleanup_extracted: false     # [按需修改] 解析完成后是否删除 extracted/ 工作区
   cleanup_inner_archives: false # [按需修改] 保留 extracted/ 时，是否删除已展开的内层 zip/tar 副本

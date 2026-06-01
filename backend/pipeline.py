@@ -77,13 +77,13 @@ class Pipeline:
                 print(f"  {message} [OK]{extra}")
             return r
 
-        # Step 1: unified archive extraction. Plain .gz log files are kept
-        # unless debug_expand_gz is enabled, and parsers can stream them.
+        # Step 1: unified archive extraction. Plain .gz log files are expanded
+        # next to the original .gz by default so extracted/ is searchable.
         extracted = _safe(f"[1/6] 解压 {source.name}",
               lambda: self.decompressor.extract_all(
                   source, extract_dir,
                   recursive=self.pipeline_config.get("recursive_extraction", False),
-                  expand_gz=self.pipeline_config.get("debug_expand_gz", False),
+                  expand_gz=self.pipeline_config.get("debug_expand_gz", True),
               ))
         if verbose and extracted is not None:
             print(f"    解压文件数: {extracted}")
@@ -108,8 +108,7 @@ class Pipeline:
         )
 
         # Step 3 is intentionally absent: all archive extraction happens in
-        # Step 1. Scanners consume the unified extracted workspace and parsers
-        # stream plain .gz log files unless debug_expand_gz was enabled.
+        # Step 1. Scanners consume the unified extracted workspace.
 
         # Step 4: 日志解析
         _safe("[4/6] 日志解析 (时间戳+周期+机制模块+角色)",

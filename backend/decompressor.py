@@ -92,7 +92,8 @@ class Decompressor:
         """
         解压 source 到 dest_dir。
         recursive=False 时只解压一层，不递归处理内部压缩包。
-        expand_gz=False 时递归阶段跳过普通 .gz 文件（保留 .tar.gz / .tgz）。
+        expand_gz=False 时递归阶段跳过普通 .gz 文件（保留 .tar.gz / .tgz）；
+        expand_gz=True 时将普通 .gz 解压成同目录去掉 .gz 后缀的明文文件。
         返回所有被解压过的文件路径列表。
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -115,17 +116,31 @@ class Decompressor:
                 for f in files:
                     lower_name = f.lower()
 
-                    # Archive formats are expanded here, but plain .gz log files
-                    # such as journal.log.1.gz are kept by default and read
-                    # streamingly by the parser. Set expand_gz=True only for
-                    # debug/manual inspection workflows.
+                    # Archive formats use *_extracted directories. Plain .gz log
+                    # files such as journal.log.1.gz expand in place when enabled
+                    # so the extracted/ workspace remains easy to full-text search.
                     # 跳过普通 .gz 但保留 .tar.gz / .tgz
                     is_plain_gz = (
                         lower_name.endswith(".gz")
                         and not lower_name.endswith(".tar.gz")
                         and not lower_name.endswith(".tgz")
                     )
-                    if is_plain_gz and not expand_gz:
+                    if is_plain_gz:
+                        file_path = Path(root) / f
+                        if not expand_gz:
+                            continue
+                        output_path = file_path.parent / file_path.stem
+                        if output_path.exists():
+                            continue
+                        try:
+                            self._extract_single(file_path, file_path.parent, extracted_files)
+                        except Exception as e:
+                            logger.warning("解压失败 %s: %s", file_path, e)
+                            if output_path.is_file():
+                                output_path.unlink()
+                            continue
+                        this_pass.append(str(file_path.relative_to(dest_dir)))
+                        changed = True
                         continue
 
                     if self.is_compressed(f):

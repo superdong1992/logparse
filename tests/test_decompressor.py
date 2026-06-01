@@ -216,6 +216,7 @@ class TestRecursiveGzGate:
         decompressor.extract_all(zip_path, out, recursive=True, expand_gz=False)
 
         assert (out / "journal.log.1.gz").exists()
+        assert not (out / "journal.log.1").exists()
         assert not (out / "journal.log.1.gz_extracted").exists()
 
     def test_recursive_expands_plain_gz_when_enabled(self, decompressor, tmp_path):
@@ -231,7 +232,8 @@ class TestRecursiveGzGate:
         decompressor.extract_all(zip_path, out, recursive=True, expand_gz=True)
 
         assert (out / "journal.log.1.gz").exists()
-        assert (out / "journal.log.1.gz_extracted").exists()
+        assert (out / "journal.log.1").read_text(encoding="utf-8") == "hello\n"
+        assert not (out / "journal.log.1.gz_extracted").exists()
 
 
 class TestTarNoDeprecationWarning:

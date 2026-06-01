@@ -145,7 +145,7 @@ def cli(ctx, config):
 @click.option("--output", "-o", default="./output", help="输出目录")
 @click.option("--verbose", "-v", is_flag=True, help="通用详细输出；生命周期 DFX 请用 --lifecycle-dfx")
 @click.option("--product", "-p", default="default", help="产品名（default/compact）")
-@click.option("--debug-expand-gz", is_flag=True, default=False, help="调试用：解析过程中将 .gz 文件就地展开")
+@click.option("--debug-expand-gz", is_flag=True, default=False, help="强制在解析过程中将 .gz 日志就地展开")
 @click.option(
     "--lifecycle-dfx",
     type=click.Choice(["off", "errors", "summary", "decisions", "full"]),

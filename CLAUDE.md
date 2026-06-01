@@ -55,7 +55,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **错误隔离**：每一步失败不终止全流程，继续执行并在最后汇总所有错误
 - **`--verbose`**：输出每步耗时、处理项数、机制模块 诊断/journal 条数对比、同名进程多实例检测；排查 module2 unknown 归属时会输出 `reason/detail`；不展开生命周期聚合/切分详情
 - **`--lifecycle-dfx`**：控制生命周期中文 DFX 输出，`parse` 默认 `errors`，`mech-lifecycles --show-boundaries` 默认 `summary`；`decisions/full` 展开 V3 候选切分和聚合原因
-- **`--debug-expand-gz`**：调试用，将普通 `.gz` 日志就地展开（如 `journal.log.1.gz` → `journal.log.1.gz_extracted/`），正式批量解析不建议开启
+- **`--debug-expand-gz`**：强制将普通 `.gz` 日志就地展开（如 `journal.log.1.gz` → `journal.log.1`），便于全文搜索 `extracted/`
 - **`--module` / `-m`**：`mech-slots` / `mech-lifecycles` 不传时展示全部模块；`mech-logs` 不传时默认取第一个机制模块
 - **`--cpu` / `--cpu-cycle`**：`mech-logs` 查询嵌套 CPU 周期日志时使用；路径为 `.../<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>.log`
 - **Windows 编码**：CLI 入口自动将 stdout/stderr 切换为 UTF-8，避免 GBK 编码下 Unicode 符号报错
@@ -70,7 +70,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 ### 数据流
 
 ```
-外层压缩包 → Decompressor(按配置统一解压外层和内层归档；普通 .gz 默认保留)
+外层压缩包 → Decompressor(按配置统一解压外层和内层归档；普通 .gz 默认就地展开)
 → DirectoryDiscoveryPlugin(发现 slot+文件，产品插件)
 → LogParserPlugin(时间戳→ActivePeriod→机制模块→角色判定，产品插件)
 → MechOutputWriter(板卡周期 + 嵌套 CPU 周期落盘) → MetadataGenerator(JSON输出)
@@ -78,7 +78,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 
 关键设计决策：
 - **解压与扫描分离**：`Pipeline` 在 Step 1 通过 `Decompressor.extract_all()` 统一处理外层和内层归档；`config.yaml` 默认 `recursive_extraction: true`。Scanner 插件只扫描统一解压后的工作区，不再承担中间内层解压阶段。
-- **普通 `.gz` 流式读取**：默认不展开普通 `.gz` 日志（如 `journal.log.1.gz`），parser 直接流式读取；仅 `--debug-expand-gz` 或配置 `debug_expand_gz: true` 时才展开。`.tar.gz` / `.tgz` 归档不受此控制
+- **普通 `.gz` 就地展开**：默认将普通 `.gz` 日志（如 `journal.log.1.gz`）展开成同目录明文文件（如 `journal.log.1`），原 `.gz` 保留；配置 `debug_expand_gz: false` 时不展开，parser 仍可流式读取。`.tar.gz` / `.tgz` 归档不受此控制
 - **机制模块优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界
 - **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。从全部条目中检测时区并归一化所有 naive timestamp
 - **journal 双正则 fallback**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式；`line_pattern2_required_substrings` 可对 `line_pattern2` / 自动无序号 fallback 增加大小写敏感整行字符串约束
@@ -184,7 +184,7 @@ output/{task_id}/mech_modules/{module_name}/
 
 所有匹配规则在 `config.yaml` 的 `products.{name}` 下配置，代码不做硬编码：
 - `pipeline.recursive_extraction` — 外层包是否递归解压
-- `pipeline.debug_expand_gz` — 是否调试展开普通 `.gz` 日志
+- `pipeline.debug_expand_gz` — 是否就地展开普通 `.gz` 日志，默认开启以便全文搜索 `extracted/`
 - `discovery.config.diagnostic_dir` / `private_dir` — 目录名
 - `discovery.config.slot_dir_pattern` — slot 目录匹配 (glob)
 - `discovery.config.diag_file_patterns` — 诊断日志文件名匹配 (glob)
@@ -224,7 +224,7 @@ slot_1_cpu_2/    ← slot_1 的 2 号 CPU 子卡
 Source Archive
   → [Decompressor]              通用
   → [DirectoryDiscoveryPlugin]   产品插件：找到 slot、文件
-  → [No middle extraction]       内层归档已由统一解压阶段处理；普通 .gz 由 parser 流式读取
+  → [No middle extraction]       内层归档已由统一解压阶段处理；普通 .gz 默认就地展开，关闭后由 parser 流式读取
   → [LogParserPlugin]            产品插件：解析内容、构建周期、判定角色
   → [MechOutputWriter]           通用：板卡周期 + 嵌套 CPU 周期落盘
   → [MetadataGenerator]          通用：输出 metadata.json
@@ -266,7 +266,7 @@ Source Archive
 | 日期 | 变更 |
 |------|------|
 | 2026-05-29 | **生命周期嵌套输出**：`MechCpuCycle`、`lifecycle_reliable`、`boundary_issues` 进入模型和元数据；CPU 日志落盘到 `slot/<board_cycle>/cpu_N/<cpu_cycle>/`；`module2` 按 `slot + cpu_id + timestamp` 优先匹配嵌套 CPU 周期；`mech-logs` 支持 `--cpu` / `--cpu-cycle`；240 个测试可收集 |
-| 2026-05-24 | **v0.3.1**：`--module`/`-m` 参数支持按机制模块过滤查询结果；`--debug-expand-gz` 控制普通 `.gz` 展开；默认流式读取 `.gz`；`check-config` 新增插件类继承和方法校验；167 个单元测试 |
+| 2026-05-24 | **v0.3.1**：`--module`/`-m` 参数支持按机制模块过滤查询结果；`--debug-expand-gz` 控制普通 `.gz` 展开；`check-config` 新增插件类继承和方法校验；167 个单元测试 |
 | 2026-05-24 | **v0.2 演进完成**：9 步渐进式重构，123 个单元测试。修复解压安全路径 bug、配置校验前置化、CycleDetector split trace、ParserPlugin 拆为 5 组件、流式文件读取、保守角色判定、查询服务从 CLI 提取 |
 | 2026-05-18 | **P0-P3 重构完成**：93 个单元测试、新管道默认化、删除旧管道 5 模块 (-1123 行)、ParserPlugin 拆为 4 组件 |
 | 2026-05-18 | **Phase 2+3 完成**：ScannerPlugin + ParserPlugin 创建，config.yaml products 段 |

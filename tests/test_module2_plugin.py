@@ -203,6 +203,44 @@ def _module1_reused_pid_result() -> MechResult:
     )
 
 
+def _module1_two_pid_expansion_result() -> MechResult:
+    return MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[
+            MechSlotOutput(
+                slot_id="2",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="20260103T000000-20260103T001000",
+                        start_time=_ts(0),
+                        end_time=_ts(0, 10),
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="left",
+                                pid="100",
+                                total_count=0,
+                            )
+                        ],
+                    ),
+                    MechBoardCycle(
+                        dir_name="20260103T010000-20260103T011000",
+                        start_time=_ts(1),
+                        end_time=_ts(1, 10),
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="right",
+                                pid="200",
+                                total_count=0,
+                            )
+                        ],
+                    ),
+                ],
+            )
+        ],
+    )
+
+
 def test_module2_scans_diag_logs_and_parses_bracket_pid(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -566,6 +604,7 @@ def test_module2_logs_unknown_reason_when_no_board_cycle_contains_timestamp(tmp_
     assert "source=slot_2/diag.log" in caplog.text
     assert "board_cycles=1" in caplog.text
     assert "20260103T000000-20260103T010000" in caplog.text
+    assert "expanded_target_count=0" in caplog.text
     assert "raw=\"2026-01-03T02:10:00+08:00 xxx Slot=2" in caplog.text
 
 
@@ -796,6 +835,84 @@ def test_module2_logs_unknown_reason_when_unknown_merge_target_is_ambiguous(tmp_
     assert "original_reason=no_board_cycle_contains_timestamp" in caplog.text
     assert "target_count=2" in caplog.text
     assert "ambiguous outside" in caplog.text
+
+
+def test_module2_merges_top_level_unknown_into_unique_projected_board_cycle(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T02:10:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="late pid extender"\n'
+        '2026-01-03T01:30:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=other[999],Context="between projected bounds"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_board_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    cycles = mech.slots[0].board_cycles
+    assert [cycle.dir_name for cycle in cycles] == ["20260103T000000-20260103T021000"]
+    processes = {
+        (process.process_name, process.pid): process
+        for process in cycles[0].processes
+    }
+    assert sorted(processes) == [("other", "999"), ("svc", "100")]
+    assert [log.context for log in processes[("other", "999")].logs] == [
+        "between projected bounds"
+    ]
+    assert "归属到unknown" not in caplog.text
+
+
+def test_module2_keeps_unknown_when_projected_cycle_target_is_ambiguous(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:50:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=left[100],Context="left extender"\n'
+        '2026-01-03T00:20:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=right[200],Context="right extender"\n'
+        '2026-01-03T00:30:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=other[999],Context="ambiguous projected target"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_two_pid_expansion_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
+    assert sorted(cycles) == [
+        "20260103T000000-20260103T005000",
+        "20260103T002000-20260103T011000",
+        "unknown",
+    ]
+    assert cycles["unknown"].processes[0].logs[0].context == "ambiguous projected target"
+    assert "reason=no_unique_expanded_cycle_target" in caplog.text
+    assert "original_reason=no_board_cycle_contains_timestamp" in caplog.text
+    assert "target_count=2" in caplog.text
+    assert "ambiguous projected target" in caplog.text
 
 
 def test_module2_extracts_slot_from_slash_format(tmp_path):
