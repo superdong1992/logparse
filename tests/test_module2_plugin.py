@@ -105,6 +105,104 @@ def _module1_nested_result() -> MechResult:
     )
 
 
+def _module1_board_pid_result() -> MechResult:
+    return MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[
+            MechSlotOutput(
+                slot_id="2",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="20260103T000000-20260103T010000",
+                        start_time=_ts(0),
+                        end_time=_ts(1),
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="svc",
+                                pid="100",
+                                total_count=0,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def _module1_nested_pid_result() -> MechResult:
+    return MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[
+            MechSlotOutput(
+                slot_id="2",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="20260103T000000-20260103T001000",
+                        start_time=_ts(0),
+                        end_time=_ts(0, 10),
+                        cpu_cycles=[
+                            MechCpuCycle(
+                                cpu_id="3",
+                                dir_name="20260103T000500-20260103T000700",
+                                start_time=_ts(0, 5),
+                                end_time=_ts(0, 7),
+                                processes=[
+                                    MechProcessLifecycle(
+                                        process_name="hellokitty",
+                                        pid="123",
+                                        total_count=0,
+                                    )
+                                ],
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def _module1_reused_pid_result() -> MechResult:
+    return MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[
+            MechSlotOutput(
+                slot_id="2",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="20260103T000000-20260103T001000",
+                        start_time=_ts(0),
+                        end_time=_ts(0, 10),
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="svc",
+                                pid="100",
+                                total_count=0,
+                            )
+                        ],
+                    ),
+                    MechBoardCycle(
+                        dir_name="20260103T010000-20260103T011000",
+                        start_time=_ts(1),
+                        end_time=_ts(1, 10),
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="svc",
+                                pid="100",
+                                total_count=0,
+                            )
+                        ],
+                    ),
+                ],
+            )
+        ],
+    )
+
+
 def test_module2_scans_diag_logs_and_parses_bracket_pid(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -175,6 +273,64 @@ def test_module2_logs_outside_module1_cycle_go_to_unknown(tmp_path):
     assert cycle.cpu_cycles[0].processes[0].logs[0].context == "outside cycle"
 
 
+def test_module2_board_entry_before_module1_window_uses_pid_match_and_expands_start(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-02T23:50:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="early pid match"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_board_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    cycle = mech.slots[0].board_cycles[0]
+    assert cycle.dir_name == "20260102T235000-20260103T010000"
+    assert cycle.start_time == datetime(2026, 1, 2, 23, 50, 0, tzinfo=timezone(timedelta(hours=8)))
+    assert cycle.end_time == _ts(1)
+    assert cycle.processes[0].logs[0].context == "early pid match"
+
+
+def test_module2_board_entry_after_module1_window_uses_pid_match_and_expands_end(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T02:10:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="late pid match"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_board_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    cycle = mech.slots[0].board_cycles[0]
+    assert cycle.dir_name == "20260103T000000-20260103T021000"
+    assert cycle.start_time == _ts(0)
+    assert cycle.end_time == _ts(2, 10)
+    assert cycle.processes[0].logs[0].context == "late pid match"
+
+
 def test_module2_cpu_entry_matches_nested_cpu_cycle_before_board_cycle(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -205,6 +361,91 @@ def test_module2_cpu_entry_matches_nested_cpu_cycle_before_board_cycle(tmp_path)
     assert cpu_cycle.cpu_id == "3"
     assert cpu_cycle.dir_name == "20260103T000500-20260103T000700"
     assert cpu_cycle.processes[0].logs[0].context == "nested cpu cycle"
+
+
+def test_module2_cpu_entry_after_module1_cpu_window_uses_pid_match_and_expands_cycles(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:12:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="late nested pid match"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_nested_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    board_cycle = mech.slots[0].board_cycles[0]
+    assert board_cycle.dir_name == "20260103T000000-20260103T001200"
+    assert board_cycle.end_time == _ts(0, 12)
+    cpu_cycle = board_cycle.cpu_cycles[0]
+    assert cpu_cycle.cpu_id == "3"
+    assert cpu_cycle.dir_name == "20260103T000500-20260103T001200"
+    assert cpu_cycle.end_time == _ts(0, 12)
+    assert cpu_cycle.processes[0].logs[0].context == "late nested pid match"
+
+
+def test_module2_reused_pid_uses_timestamp_to_choose_matching_cycle(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="second pid generation"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_reused_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    cycle = mech.slots[0].board_cycles[0]
+    assert cycle.dir_name == "20260103T010000-20260103T011000"
+    assert cycle.processes[0].logs[0].context == "second pid generation"
+
+
+def test_module2_entry_without_timestamp_stays_unknown_even_when_pid_matches(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        'xxx Slot=2,CPU-Id=0,ProcessName=svc[100],Context="no timestamp"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_board_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    cycle = mech.slots[0].board_cycles[0]
+    assert cycle.dir_name == "unknown"
+    assert cycle.processes[0].logs[0].context == "no timestamp"
 
 
 def test_module2_missing_dependency_records_error(tmp_path):
