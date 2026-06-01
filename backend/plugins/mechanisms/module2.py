@@ -235,6 +235,7 @@ def _assign_entries_to_cycles(
         else:
             buckets.append((board_cycle, cpu_cycle, [entry]))
 
+    _merge_unknown_entries_into_unique_known_bucket(buckets)
     return buckets
 
 
@@ -387,6 +388,62 @@ def _time_distance(
     if start is not None and end is not None:
         return 0.0
     return float("inf")
+
+
+def _merge_unknown_entries_into_unique_known_bucket(
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+) -> None:
+    for specificity in (1, 0):
+        candidates = _candidate_buckets_by_process_key(
+            buckets,
+            min_specificity=specificity + 1,
+        )
+        for board_cycle, cpu_cycle, entries in buckets:
+            if _bucket_specificity(board_cycle, cpu_cycle) != specificity:
+                continue
+
+            remaining: list[MechLogEntry] = []
+            for entry in entries:
+                targets = candidates.get(_entry_process_key(entry), [])
+                if len(targets) == 1:
+                    targets[0].append(entry)
+                else:
+                    remaining.append(entry)
+            entries[:] = remaining
+
+    buckets[:] = [bucket for bucket in buckets if bucket[2]]
+
+
+def _candidate_buckets_by_process_key(
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+    min_specificity: int,
+) -> dict[tuple[str, str, str], list[list[MechLogEntry]]]:
+    candidates: dict[tuple[str, str, str], list[list[MechLogEntry]]] = defaultdict(list)
+    for board_cycle, cpu_cycle, entries in buckets:
+        if _bucket_specificity(board_cycle, cpu_cycle) < min_specificity:
+            continue
+
+        seen: set[tuple[str, str, str]] = set()
+        for entry in entries:
+            key = _entry_process_key(entry)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates[key].append(entries)
+
+    return candidates
+
+
+def _bucket_specificity(board_cycle: MechBoardCycle, cpu_cycle: MechCpuCycle | None) -> int:
+    if board_cycle.dir_name == "unknown":
+        return 0
+    if cpu_cycle is not None and cpu_cycle.dir_name == "unknown":
+        return 1
+    return 2
+
+
+def _entry_process_key(entry: MechLogEntry) -> tuple[str, str, str]:
+    return entry.process_name, entry.pid, entry.cpu_id or ""
 
 
 def _build_cycles(

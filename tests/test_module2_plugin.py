@@ -533,6 +533,92 @@ def test_module2_unknown_output_uses_existing_mech_layout(tmp_path):
     assert "outside cycle" in out_file.read_text(encoding="utf-8")
 
 
+def test_module2_merges_unknown_entries_into_unique_same_process_lifecycle(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="inside cycle"\n'
+        '2026-01-03T02:10:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="outside cycle"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == [
+        "20260103T000000-20260103T021000"
+    ]
+    cpu_cycle = mech.slots[0].board_cycles[0].cpu_cycles[0]
+    proc = cpu_cycle.processes[0]
+    assert proc.process_name == "hellokitty"
+    assert proc.pid == "123"
+    assert [log.context for log in proc.logs] == ["inside cycle", "outside cycle"]
+
+    mech_dir = MechOutputWriter().write(mech, tmp_path / "output")
+    merged_file = (
+        mech_dir
+        / "slot_2"
+        / "20260103T000000-20260103T021000"
+        / "cpu_3"
+        / "unknown"
+        / "hellokitty-123.log"
+    )
+    unknown_file = (
+        mech_dir / "slot_2" / "unknown" / "cpu_3" / "unknown" / "hellokitty-123.log"
+    )
+    assert merged_file.is_file()
+    assert "inside cycle" in merged_file.read_text(encoding="utf-8")
+    assert "outside cycle" in merged_file.read_text(encoding="utf-8")
+    assert not unknown_file.exists()
+
+
+def test_module2_keeps_unknown_entries_when_same_process_lifecycle_is_ambiguous(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="first cycle"\n'
+        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="second cycle"\n'
+        '2026-01-03T02:00:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="ambiguous outside"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_reused_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
+    assert sorted(cycles) == [
+        "20260103T000000-20260103T001000",
+        "20260103T010000-20260103T011000",
+        "unknown",
+    ]
+    assert cycles["unknown"].processes[0].logs[0].context == "ambiguous outside"
+
+
 def test_module2_extracts_slot_from_slash_format(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
