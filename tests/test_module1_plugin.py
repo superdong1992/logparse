@@ -112,6 +112,66 @@ def test_module1_plugin_parses_journal_entries_without_no(tmp_path):
     assert proc.logs[0].context == "EXAMPLE started without sequence"
 
 
+def test_module1_plugin_filters_line_pattern2_by_required_substrings(tmp_path):
+    journal_file = tmp_path / "journal.log"
+    journal_file.write_text(
+        "\n".join([
+            "2026-01-03T00:01:00 host SERVICE-12345: EXAMPLE MODULE1 keep",
+            "2026-01-03T00:02:00 host SERVICE-12345: EXAMPLE module1 lower",
+            "2026-01-03T00:03:00 host SERVICE-12345: EXAMPLE other",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    private_slot = PrivateSlotInfo(
+        dir_name="slot_1",
+        slot_id="1",
+        path=str(tmp_path),
+        journal_logs=[JournalLogFile(path=str(journal_file), name="journal.log")],
+    )
+    result = ParseResult(private_slots=[private_slot])
+    cfg = _module1_journal_no_sequence_config()
+    cfg["journal"]["line_pattern2_required_substrings"] = ["MODULE1"]
+    plugin = Module1Plugin(
+        cfg,
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert mech.journal_entry_count == 1
+    proc = mech.slots[0].board_cycles[0].processes[0]
+    assert [log.context for log in proc.logs] == ["EXAMPLE MODULE1 keep"]
+
+
+def test_module1_plugin_empty_line_pattern2_required_substrings_preserves_behavior(tmp_path):
+    journal_file = tmp_path / "journal.log"
+    journal_file.write_text(
+        "2026-01-03T00:01:00 host SERVICE-12345: EXAMPLE no extra constraint\n",
+        encoding="utf-8",
+    )
+    private_slot = PrivateSlotInfo(
+        dir_name="slot_1",
+        slot_id="1",
+        path=str(tmp_path),
+        journal_logs=[JournalLogFile(path=str(journal_file), name="journal.log")],
+    )
+    result = ParseResult(private_slots=[private_slot])
+    cfg = _module1_journal_no_sequence_config()
+    cfg["journal"]["line_pattern2_required_substrings"] = []
+    plugin = Module1Plugin(
+        cfg,
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert mech.journal_entry_count == 1
+
+
 def test_module1_plugin_parses_diag_entries_without_no(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(

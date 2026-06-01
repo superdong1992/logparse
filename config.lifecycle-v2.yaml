@@ -113,6 +113,9 @@ products:
                 # [按需修改] journal 格式2正则（无元数据块，PID 可选，fallback）
                 # 支持 4 组（进程名、PID、序号、上下文）或 3 组（进程名、PID、上下文）
                 line_pattern2: '^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$'
+                # [可选] line_pattern2 / auto_no_sequence 命中后的大小写敏感整行字符串约束。
+                # 为空列表时不启用；配置后原始 journal 行必须包含其中任一字符串。
+                line_pattern2_required_substrings: []
 
                 # [按需修改] journal Stage1 关键字预过滤（小写）
                 # journal 行必须包含此关键字才会进入正则匹配，加速过滤
@@ -177,5 +180,6 @@ products:
                 journal:
                   line_pattern: ''
                   line_pattern2: '^\S+\s+\S+\s+(\S+)(?:-(\d+))?:\s+COMPACT\s+No\[(\d+)\](.+)$'
+                  line_pattern2_required_substrings: []
                   identifying_keyword: "COMPACT"
                 sequence_pattern: 'No\[(\d+)\]'

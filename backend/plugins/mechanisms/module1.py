@@ -44,6 +44,9 @@ class Module1Plugin(MechanismModulePlugin):
             if jnl_cfg.get("identifying_keyword")
             else None
         )
+        line_pattern2_required_substrings = (
+            jnl_cfg.get("line_pattern2_required_substrings") or []
+        )
         seq_re = re.compile(cfg.get("sequence_pattern", r"No\[(\d+)\]"))
         master_keyword = (
             re.compile(cfg["active_master_keyword"])
@@ -106,6 +109,7 @@ class Module1Plugin(MechanismModulePlugin):
                 journal_re2,
                 journal_keyword,
                 seq_re,
+                line_pattern2_required_substrings,
                 master_keyword,
                 resolver,
                 indicator,

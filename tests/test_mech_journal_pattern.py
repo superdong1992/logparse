@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+import backend.parsing.mech_journal_pattern as journal_pattern
 from backend.parsing.mech_journal_pattern import JournalPatternMatcher
 
 
@@ -63,3 +64,35 @@ def test_manual_three_group_pattern_still_matches():
     assert result.auto_no_sequence is False
     assert result.sequence == 0
     assert result.context == "EXAMPLE manual"
+
+
+def test_line_pattern2_required_substrings_allow_matching_case():
+    assert journal_pattern.passes_line_pattern2_required_substrings(
+        "journal.line_pattern2",
+        "2026-01-03T00:01:00 host SERVICE-12345: No[7] EXAMPLE ok",
+        ["EXAMPLE"],
+    )
+
+
+def test_line_pattern2_required_substrings_are_case_sensitive():
+    assert not journal_pattern.passes_line_pattern2_required_substrings(
+        "journal.line_pattern2",
+        "2026-01-03T00:01:00 host SERVICE-12345: No[7] example lower",
+        ["EXAMPLE"],
+    )
+
+
+def test_line_pattern_required_substrings_do_not_affect_line_pattern():
+    assert journal_pattern.passes_line_pattern2_required_substrings(
+        "journal.line_pattern",
+        "2026-01-03T00:01:00 host SERVICE-12345: No[7] unrelated",
+        ["EXAMPLE"],
+    )
+
+
+def test_auto_no_sequence_line_pattern2_uses_required_substrings():
+    assert not journal_pattern.passes_line_pattern2_required_substrings(
+        "journal.line_pattern2.auto_no_sequence",
+        "2026-01-03T00:01:00 host SERVICE-12345: example lower",
+        ["EXAMPLE"],
+    )

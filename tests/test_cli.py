@@ -1033,6 +1033,87 @@ def test_test_pattern_journal_with_sequence(sample_config, tmp_path):
     assert "EXAMPLE with sequence" in result.output
 
 
+def test_test_pattern_journal_line_pattern2_required_substrings_pass(sample_config, tmp_path):
+    sample_config["mechanism_modules"]["module1"]["config"]["journal"][
+        "line_pattern2_required_substrings"
+    ] = ["MODULE1"]
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "products": {
+                    "default": {
+                        "log_parser": {
+                            "config": sample_config,
+                        },
+                    },
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    line = "2026-01-03T00:01:00 host SERVICE-12345: No[7] EXAMPLE MODULE1 with sequence"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "test-pattern",
+            "-c",
+            str(config_path),
+            "-m",
+            "module1",
+            "-t",
+            "journal",
+            line,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "line_pattern2_required_substrings" in result.output
+    assert "MODULE1" in result.output
+
+
+def test_test_pattern_journal_line_pattern2_required_substrings_fail(sample_config, tmp_path):
+    sample_config["mechanism_modules"]["module1"]["config"]["journal"][
+        "line_pattern2_required_substrings"
+    ] = ["MODULE1"]
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "products": {
+                    "default": {
+                        "log_parser": {
+                            "config": sample_config,
+                        },
+                    },
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    line = "2026-01-03T00:01:00 host SERVICE-12345: No[7] EXAMPLE module1 lower"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "test-pattern",
+            "-c",
+            str(config_path),
+            "-m",
+            "module1",
+            "-t",
+            "journal",
+            line,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "line_pattern2_required_substrings 未命中" in result.output
+
+
 def test_mech_lifecycles_show_boundaries(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()

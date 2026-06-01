@@ -48,7 +48,7 @@ python cli.py test-pattern -m module1 -t journal "日志行"
   → MetadataGenerator 生成 metadata.json，CLI 写出轻量 result.json
 ```
 
-机制模块通过 `MechanismModulePlugin` 扩展。`module1` 是机制模块插件，拥有自己的日志扫描、周期切分和主控角色信号；其他模块如果没有周期切分或主控判定需求，可以只实现自己的解析逻辑。`module1` 支持日志行缺少 `No[n]` 的旧版本格式：同一个 slot family（slot 本体及其 CPU 子卡）的同一周期内，若所有 module1 日志都没有 `No[n]`，则按时间排序输出；若都有 `No[n]`，则保留按序号排序、缺号检测和 journal 序号回绕辅助切分。
+机制模块通过 `MechanismModulePlugin` 扩展。`module1` 是机制模块插件，拥有自己的日志扫描、周期切分和主控角色信号；其他模块如果没有周期切分或主控判定需求，可以只实现自己的解析逻辑。`module1` 支持日志行缺少 `No[n]` 的旧版本格式：同一个 slot family（slot 本体及其 CPU 子卡）的同一周期内，若所有 module1 日志都没有 `No[n]`，则按时间排序输出；若都有 `No[n]`，则保留按序号排序、缺号检测和 journal 序号回绕辅助切分。`journal.line_pattern2_required_substrings` 可对 `line_pattern2` 及其自动无序号 fallback 增加大小写敏感的整行字符串约束。
 
 当前输出模型以板卡周期为顶层生命周期，CPU 周期嵌套在对应板卡周期下。板卡日志写到 `slot_<id>/<board_cycle>/<proc>-<pid>.log`；CPU 日志写到 `slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>-<pid>.log`。`mech-logs` 查询 CPU 日志时需要同时传 `--cpu` 和 `--cpu-cycle`。
 
@@ -83,6 +83,7 @@ python -m pytest tests/ -v
 
 ## 变更记录
 
+- 2026-06-01：`module1` journal `line_pattern2` 支持 `line_pattern2_required_substrings`，在原有 `identifying_keyword` 粗过滤和正则匹配后，要求原始行大小写敏感命中配置字符串列表中的任一项；默认空列表保持兼容。
 - 2026-05-29：新增大包资源占用优化配置。`result.json` 默认改为 compact 摘要；`pipeline.cleanup_extracted` 可在解析完成后删除 `extracted/`；`pipeline.cleanup_inner_archives` 可删除已展开的内层归档副本。
 - 2026-05-29：生命周期输出改为板卡周期内嵌套 CPU 周期，`MechCpuCycle`、`lifecycle_reliable` 和 `boundary_issues` 已进入模型/元数据；`module2` 按 `slot + cpu_id + timestamp` 优先匹配嵌套 CPU 周期；`mech-logs` 支持 `--cpu` / `--cpu-cycle` 查询嵌套 CPU 日志。
 - 2026-05-26：新增 `module2` 机制模块。module2 只扫描诊断日志，复用 module1 生命周期切分结果落盘；未匹配周期的日志写入 `unknown/`。module2 日志中 Slot 字段支持 `框号/slot` 格式（如 `1/2`），当前临时提取 `/` 后的 slot 号匹配 module1 周期，正式方案将保留完整框号语义。

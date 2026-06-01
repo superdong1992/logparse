@@ -51,7 +51,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 ### 调试能力
 
 - **`check-config`**：检查所有正则可编译、glob 有效、模块配置完整、插件类继承基类、关键方法存在，错误和警告分开
-- **`test-pattern`**：用配置正则测试实际日志行，显示提取字段、Stage1 预过滤结果、时间戳、主控关键字命中
+- **`test-pattern`**：用配置正则测试实际日志行，显示提取字段、Stage1 预过滤结果、`line_pattern2_required_substrings` 命中结果、时间戳、主控关键字命中
 - **错误隔离**：每一步失败不终止全流程，继续执行并在最后汇总所有错误
 - **`--verbose`**：输出每步耗时、处理项数、机制模块 诊断/journal 条数对比、同名进程多实例检测；不展开生命周期聚合/切分详情
 - **`--lifecycle-dfx`**：控制生命周期中文 DFX 输出，`parse` 默认 `errors`，`mech-lifecycles --show-boundaries` 默认 `summary`；`decisions/full` 展开 V3 候选切分和聚合原因
@@ -81,7 +81,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **普通 `.gz` 流式读取**：默认不展开普通 `.gz` 日志（如 `journal.log.1.gz`），parser 直接流式读取；仅 `--debug-expand-gz` 或配置 `debug_expand_gz: true` 时才展开。`.tar.gz` / `.tgz` 归档不受此控制
 - **机制模块优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界
 - **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。从全部条目中检测时区并归一化所有 naive timestamp
-- **journal 双正则 fallback**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式
+- **journal 双正则 fallback**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式；`line_pattern2_required_substrings` 可对 `line_pattern2` / 自动无序号 fallback 增加大小写敏感整行字符串约束
 - **嵌套生命周期输出**：`MechBoardCycle` 是顶层板卡生命周期；`MechCpuCycle` 嵌套在对应板卡周期下，保存 CPU-local 重启周期、split trace 和进程生命周期。
 
 ### 模块分工
@@ -192,6 +192,7 @@ output/{task_id}/mech_modules/{module_name}/
 - `log_parser.config.active_period_gap_threshold` — ActivePeriod 切分阈值（秒）
 - `log_parser.config.mechanism_modules` — 机制模块配置
   - `journal.line_pattern` / `line_pattern2` — 双正则 fallback
+  - `journal.line_pattern2_required_substrings` — 可选字符串列表，仅约束 `line_pattern2` 及其自动无序号 fallback，按原始整行大小写敏感匹配
   - `board_restart_indicator` — 板卡重启标识进程名（非独立重启）
   - `board_restart_whitelist` — 切分计算白名单进程列表（不重名、不支持独立重启）
   - `sequence_pattern` — 序号提取正则

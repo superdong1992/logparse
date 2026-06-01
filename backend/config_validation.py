@@ -315,6 +315,21 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
                 )
 
     journal_cfg = cfg.get("journal", {})
+    required_substrings = journal_cfg.get("line_pattern2_required_substrings")
+    if required_substrings is not None:
+        if not isinstance(required_substrings, list):
+            errors.append(
+                f"mechanism_modules.{module_key}.journal.line_pattern2_required_substrings "
+                "必须是字符串列表"
+            )
+        else:
+            for idx, value in enumerate(required_substrings):
+                if not isinstance(value, str) or not value:
+                    errors.append(
+                        f"mechanism_modules.{module_key}.journal."
+                        f"line_pattern2_required_substrings[{idx}] 必须是非空字符串"
+                    )
+
     for field in ("line_pattern", "line_pattern2"):
         pattern = journal_cfg.get(field)
         if pattern:

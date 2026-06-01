@@ -10,7 +10,10 @@ from typing import Any
 
 from backend.models import MechLogEntry, PrivateSlotInfo
 from backend.parsing.file_iter import iter_text_file_lines
-from backend.parsing.mech_journal_pattern import JournalPatternMatcher
+from backend.parsing.mech_journal_pattern import (
+    JournalPatternMatcher,
+    passes_line_pattern2_required_substrings,
+)
 from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.timestamp_extractor import TimestampExtractor
 
@@ -20,10 +23,11 @@ logger = logging.getLogger(__name__)
 class MechJournalScanner:
     def __init__(
         self,
-        journal_re: re.Pattern,
+        journal_re: re.Pattern | None,
         journal_re2: re.Pattern | None,
         journal_keyword: str,
         seq_re: re.Pattern,
+        line_pattern2_required_substrings: list[str] | None,
         master_keyword: re.Pattern | None,
         resolver: ProcessNameResolver,
         indicator: str | None,
@@ -33,6 +37,7 @@ class MechJournalScanner:
         self._journal_re = journal_re
         self._journal_re2 = journal_re2
         self._journal_keyword = journal_keyword
+        self._line_pattern2_required_substrings = line_pattern2_required_substrings or []
         self._seq_re = seq_re
         self._matcher = JournalPatternMatcher(journal_re, journal_re2, seq_re)
         self._master_keyword = master_keyword
@@ -57,6 +62,12 @@ class MechJournalScanner:
 
                 match = self._matcher.match(line)
                 if not match:
+                    continue
+                if not passes_line_pattern2_required_substrings(
+                    match.pattern_name,
+                    line,
+                    self._line_pattern2_required_substrings,
+                ):
                     continue
 
                 raw_name = match.raw_name

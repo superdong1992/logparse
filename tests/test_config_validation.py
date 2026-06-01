@@ -346,6 +346,40 @@ class TestValidateMechanismModuleConfig:
         assert errors
         assert "包含序号格式时需要 4 个捕获组" in errors[0]
 
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "MODULE1",
+            ["MODULE1", 123],
+            ["MODULE1", ""],
+        ],
+    )
+    def test_line_pattern2_required_substrings_must_be_non_empty_string_list(self, value):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "journal": {
+                "line_pattern2": r"(\S+?)(?:-(\d+))?:\s+(.+)",
+                "line_pattern2_required_substrings": value,
+            },
+        }
+
+        errors = validate_mechanism_module_config("module1", cfg)
+
+        assert any("line_pattern2_required_substrings" in error for error in errors)
+
+    def test_line_pattern2_required_substrings_accepts_string_list(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "journal": {
+                "line_pattern2": r"(\S+?)(?:-(\d+))?:\s+(.+)",
+                "line_pattern2_required_substrings": ["MODULE1", "module1-alt"],
+            },
+        }
+
+        errors = validate_mechanism_module_config("module1", cfg)
+
+        assert not any("line_pattern2_required_substrings" in error for error in errors)
+
 
 # ── 使用实际插件路径的 fixture ──────────────────────
 

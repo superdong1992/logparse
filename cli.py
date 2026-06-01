@@ -26,7 +26,10 @@ from pathlib import Path
 import click
 
 from backend.config_validation import validate_config
-from backend.parsing.mech_journal_pattern import JournalPatternMatcher
+from backend.parsing.mech_journal_pattern import (
+    JournalPatternMatcher,
+    passes_line_pattern2_required_substrings,
+)
 from backend.query import ResultQueryService
 from backend.result_serializer import result_to_dict
 from backend.utils import glob_to_regex
@@ -1764,6 +1767,17 @@ def test_pattern(config, module, log_type, line):
         if not match:
             click.echo("✗ 不匹配 journal.line_pattern 及 line_pattern2")
             sys.exit(1)
+        required_substrings = jnl.get("line_pattern2_required_substrings") or []
+        if not passes_line_pattern2_required_substrings(
+            match.pattern_name,
+            line,
+            required_substrings,
+        ):
+            click.echo(
+                "✗ line_pattern2_required_substrings 未命中: "
+                f"{required_substrings}"
+            )
+            sys.exit(1)
         click.echo(f"✓ 匹配 {match.pattern_name}")
         click.echo(f"  进程名: {match.raw_name}")
         if match.raw_pid:
@@ -1773,6 +1787,11 @@ def test_pattern(config, module, log_type, line):
         else:
             click.echo("  序号: 无")
         click.echo(f"  Context: {match.context}")
+        if required_substrings and match.pattern_name.startswith("journal.line_pattern2"):
+            click.echo(
+                "  line_pattern2_required_substrings: "
+                f"✓ {required_substrings}"
+            )
         keyword = jnl.get("identifying_keyword", "")
         if keyword:
             click.echo(f"  识别关键字 '{keyword}': {'✓' if keyword in line.lower() else '✗ (Stage1 会被过滤)'}")

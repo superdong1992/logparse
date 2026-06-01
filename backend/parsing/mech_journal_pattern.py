@@ -97,6 +97,18 @@ def _has_sequence(regex: re.Pattern | None) -> bool:
     return bool(regex and regex.groups >= 4)
 
 
+def passes_line_pattern2_required_substrings(
+    pattern_name: str,
+    line: str,
+    required_substrings: list[str] | None,
+) -> bool:
+    if not required_substrings:
+        return True
+    if not pattern_name.startswith("journal.line_pattern2"):
+        return True
+    return any(substring in line for substring in required_substrings)
+
+
 def _derive_no_sequence_candidate(
     candidate: _PatternCandidate,
     seq_re: re.Pattern,
