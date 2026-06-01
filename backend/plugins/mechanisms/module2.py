@@ -244,29 +244,161 @@ def _find_matching_cycle(
 ) -> tuple[MechBoardCycle | None, MechCpuCycle | None]:
     if upstream_slot is None or entry.timestamp is None:
         return None, None
+
+    pid_match = _find_pid_matching_cycle(entry, upstream_slot)
+    if pid_match != (None, None):
+        return pid_match
+
+    return _find_time_matching_cycle(entry, upstream_slot)
+
+
+def _find_pid_matching_cycle(
+    entry: MechLogEntry,
+    upstream_slot: MechSlotOutput,
+) -> tuple[MechBoardCycle | None, MechCpuCycle | None]:
+    if not entry.pid:
+        return None, None
+
+    exact_matches: list[tuple[MechBoardCycle, MechCpuCycle | None]] = []
+    pid_matches: list[tuple[MechBoardCycle, MechCpuCycle | None]] = []
+
     for cycle in upstream_slot.board_cycles:
-        if cycle.start_time is None or cycle.end_time is None:
+        if entry.cpu_id:
+            for cpu_cycle in cycle.cpu_cycles:
+                if cpu_cycle.cpu_id != entry.cpu_id:
+                    continue
+                for process in cpu_cycle.processes:
+                    if process.pid != entry.pid:
+                        continue
+                    match = (cycle, cpu_cycle)
+                    if process.process_name == entry.process_name:
+                        exact_matches.append(match)
+                    else:
+                        pid_matches.append(match)
+        else:
+            for process in cycle.processes:
+                if process.pid != entry.pid:
+                    continue
+                match = (cycle, None)
+                if process.process_name == entry.process_name:
+                    exact_matches.append(match)
+                else:
+                    pid_matches.append(match)
+
+    matches = exact_matches or pid_matches
+    return _select_match_by_timestamp(entry, matches)
+
+
+def _find_time_matching_cycle(
+    entry: MechLogEntry,
+    upstream_slot: MechSlotOutput,
+) -> tuple[MechBoardCycle | None, MechCpuCycle | None]:
+    for cycle in upstream_slot.board_cycles:
+        if not _contains_time(cycle.start_time, cycle.end_time, entry.timestamp):
             continue
-        if cycle.start_time <= entry.timestamp <= cycle.end_time:
-            if entry.cpu_id:
-                for cpu_cycle in cycle.cpu_cycles:
-                    if cpu_cycle.cpu_id != entry.cpu_id:
-                        continue
-                    if cpu_cycle.start_time is None or cpu_cycle.end_time is None:
-                        continue
-                    if cpu_cycle.start_time <= entry.timestamp <= cpu_cycle.end_time:
-                        return cycle, cpu_cycle
+        if entry.cpu_id:
+            for cpu_cycle in cycle.cpu_cycles:
+                if cpu_cycle.cpu_id != entry.cpu_id:
+                    continue
+                if _contains_time(cpu_cycle.start_time, cpu_cycle.end_time, entry.timestamp):
+                    return cycle, cpu_cycle
             return cycle, None
+        return cycle, None
     return None, None
+
+
+def _select_match_by_timestamp(
+    entry: MechLogEntry,
+    matches: list[tuple[MechBoardCycle, MechCpuCycle | None]],
+) -> tuple[MechBoardCycle | None, MechCpuCycle | None]:
+    if not matches or entry.timestamp is None:
+        return None, None
+
+    unique_matches: list[tuple[MechBoardCycle, MechCpuCycle | None]] = []
+    seen: set[tuple[int, int]] = set()
+    for board_cycle, cpu_cycle in matches:
+        key = (id(board_cycle), id(cpu_cycle) if cpu_cycle else 0)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_matches.append((board_cycle, cpu_cycle))
+
+    if len(unique_matches) == 1:
+        return unique_matches[0]
+
+    containing = [
+        match for match in unique_matches
+        if _match_contains_timestamp(match, entry.timestamp)
+    ]
+    if len(containing) == 1:
+        return containing[0]
+    if len(containing) > 1:
+        return None, None
+
+    scored = [
+        (_match_time_distance(match, entry.timestamp), index, match)
+        for index, match in enumerate(unique_matches)
+    ]
+    scored.sort(key=lambda item: (item[0], item[1]))
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None, None
+    return scored[0][2]
+
+
+def _match_contains_timestamp(
+    match: tuple[MechBoardCycle, MechCpuCycle | None],
+    timestamp: datetime,
+) -> bool:
+    board_cycle, cpu_cycle = match
+    if cpu_cycle is not None:
+        return _contains_time(cpu_cycle.start_time, cpu_cycle.end_time, timestamp)
+    return _contains_time(board_cycle.start_time, board_cycle.end_time, timestamp)
+
+
+def _match_time_distance(
+    match: tuple[MechBoardCycle, MechCpuCycle | None],
+    timestamp: datetime,
+) -> float:
+    board_cycle, cpu_cycle = match
+    if cpu_cycle is not None:
+        return _time_distance(cpu_cycle.start_time, cpu_cycle.end_time, timestamp)
+    return _time_distance(board_cycle.start_time, board_cycle.end_time, timestamp)
+
+
+def _contains_time(
+    start: datetime | None,
+    end: datetime | None,
+    timestamp: datetime,
+) -> bool:
+    if start is None or end is None:
+        return False
+    return start <= timestamp <= end
+
+
+def _time_distance(
+    start: datetime | None,
+    end: datetime | None,
+    timestamp: datetime,
+) -> float:
+    if start is not None and timestamp < start:
+        return abs((start - timestamp).total_seconds())
+    if end is not None and timestamp > end:
+        return abs((timestamp - end).total_seconds())
+    if start is not None and end is not None:
+        return 0.0
+    return float("inf")
 
 
 def _build_cycles(
     grouped: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
 ) -> list[MechBoardCycle]:
     cycles: list[MechBoardCycle] = []
+    board_by_key: dict[int, MechBoardCycle] = {}
+    cpu_by_key: dict[tuple[int, int], MechCpuCycle] = {}
 
     for board_template, cpu_template, entries in grouped:
-        board_cycle = next((c for c in cycles if c.dir_name == board_template.dir_name), None)
+        board_key = id(board_template)
+        board_cycle = board_by_key.get(board_key)
         if board_cycle is None:
             board_cycle = MechBoardCycle(
                 dir_name=board_template.dir_name,
@@ -274,18 +406,15 @@ def _build_cycles(
                 end_time=board_template.end_time,
             )
             cycles.append(board_cycle)
+            board_by_key[board_key] = board_cycle
+        _extend_cycle_bounds(board_cycle, entries)
 
         if cpu_template is None:
             board_cycle.processes.extend(_build_processes(entries))
             continue
 
-        cpu_cycle = next(
-            (
-                c for c in board_cycle.cpu_cycles
-                if c.cpu_id == cpu_template.cpu_id and c.dir_name == cpu_template.dir_name
-            ),
-            None,
-        )
+        cpu_key = (board_key, id(cpu_template))
+        cpu_cycle = cpu_by_key.get(cpu_key)
         if cpu_cycle is None:
             cpu_cycle = MechCpuCycle(
                 cpu_id=cpu_template.cpu_id,
@@ -294,9 +423,36 @@ def _build_cycles(
                 end_time=cpu_template.end_time,
             )
             board_cycle.cpu_cycles.append(cpu_cycle)
+            cpu_by_key[cpu_key] = cpu_cycle
+        _extend_cycle_bounds(cpu_cycle, entries)
         cpu_cycle.processes.extend(_build_processes(entries))
 
     return cycles
+
+
+def _extend_cycle_bounds(
+    cycle: MechBoardCycle | MechCpuCycle,
+    entries: list[MechLogEntry],
+) -> None:
+    if cycle.dir_name == "unknown":
+        return
+
+    times = [entry.timestamp for entry in entries if entry.timestamp]
+    candidates = [time for time in [cycle.start_time, cycle.end_time, *times] if time]
+    if not candidates:
+        return
+
+    cycle.start_time = min(candidates)
+    cycle.end_time = max(candidates)
+    cycle.dir_name = _format_cycle_dir(cycle.start_time, cycle.end_time)
+
+
+def _format_cycle_dir(start: datetime | None, end: datetime | None) -> str:
+    if start and end:
+        return f"{start.strftime('%Y%m%dT%H%M%S')}-{end.strftime('%Y%m%dT%H%M%S')}"
+    if start:
+        return start.strftime("%Y%m%dT%H%M%S")
+    return "unknown"
 
 
 def _build_processes(entries: list[MechLogEntry]) -> list[MechProcessLifecycle]:
