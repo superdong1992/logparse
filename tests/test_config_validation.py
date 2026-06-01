@@ -80,23 +80,58 @@ class TestValidateMechanismModuleConfig:
         assert errors
         assert "dhcp" in errors[0].lower()
 
-    def test_lifecycle_split_reliable_sets_must_be_disjoint(self):
+    def test_lifecycle_split_reliable_processes_accepts_flat_list(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
                 "enabled": True,
                 "process_name_mapping": {"board_anchor": ["boardd"]},
-                "reliable_processes": {
-                    "board": ["board_anchor"],
-                    "cpu": ["board_anchor"],
-                },
+                "reliable_processes": ["board_anchor"],
                 "multi_instance_processes": ["multi"],
             },
         }
         errors = validate_mechanism_module_config("module1", cfg)
+        assert errors == []
+
+    def test_lifecycle_split_legacy_reliable_board_cpu_lists_are_merged(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": {
+                    "board": ["anchor"],
+                    "cpu": ["anchor"],
+                },
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors == []
+
+    def test_lifecycle_split_legacy_reliable_rejects_unknown_keys(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": {
+                    "boad": ["anchor"],
+                },
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
         assert errors
-        assert "lifecycle_split" in errors[0]
-        assert "board_anchor" in errors[0]
+        assert "unsupported legacy keys" in errors[0]
+        assert "boad" in errors[0]
+
+    def test_lifecycle_split_reliable_processes_none_means_empty(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": None,
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors == []
 
     def test_lifecycle_split_conflict_is_checked_after_name_mapping(self):
         cfg = {
@@ -104,7 +139,7 @@ class TestValidateMechanismModuleConfig:
             "lifecycle_split": {
                 "enabled": True,
                 "process_name_mapping": {"canonical_proc": ["alias_proc"]},
-                "reliable_processes": {"board": ["alias_proc"], "cpu": []},
+                "reliable_processes": ["alias_proc"],
                 "multi_instance_processes": ["canonical_proc"],
             },
         }
@@ -147,18 +182,18 @@ class TestValidateMechanismModuleConfig:
         assert "process_name_mapping" in errors[0]
         assert "object" in errors[0]
 
-    def test_lifecycle_split_reliable_processes_must_be_object_when_enabled(self):
+    def test_lifecycle_split_reliable_processes_rejects_non_list_non_object_when_enabled(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
                 "enabled": True,
-                "reliable_processes": [],
+                "reliable_processes": "worker",
             },
         }
         errors = validate_mechanism_module_config("module1", cfg)
         assert errors
         assert "reliable_processes" in errors[0]
-        assert "object" in errors[0]
+        assert "list" in errors[0]
 
     def test_lifecycle_split_reliable_processes_lists_are_required_when_enabled(self):
         cfg = {
@@ -167,6 +202,22 @@ class TestValidateMechanismModuleConfig:
                 "enabled": True,
                 "reliable_processes": {
                     "board": "board_anchor",
+                    "cpu": [],
+                },
+            },
+        }
+        errors = validate_mechanism_module_config("module1", cfg)
+        assert errors
+        assert "reliable_processes.board" in errors[0]
+        assert "list" in errors[0]
+
+    def test_lifecycle_split_reliable_processes_numeric_legacy_value_is_reported(self):
+        cfg = {
+            "module_name": "EXAMPLE",
+            "lifecycle_split": {
+                "enabled": True,
+                "reliable_processes": {
+                    "board": 123,
                     "cpu": [],
                 },
             },
@@ -205,15 +256,13 @@ class TestValidateMechanismModuleConfig:
         assert "multi_instance_processes" in errors[0]
         assert "list" in errors[0]
 
-    def test_lifecycle_split_conflict_is_case_insensitive(self):
+    def test_lifecycle_split_reliable_multi_conflict_is_case_insensitive(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
                 "enabled": True,
-                "reliable_processes": {
-                    "board": ["Proc"],
-                    "cpu": ["proc"],
-                },
+                "reliable_processes": ["Proc"],
+                "multi_instance_processes": ["proc"],
             },
         }
         errors = validate_mechanism_module_config("module1", cfg)

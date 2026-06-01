@@ -396,14 +396,45 @@ def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
         for alias in alias_iterable:
             alias_to_canonical[_norm_name(str(alias))] = canonical_name
 
-    reliable = raw.get("reliable_processes", {})
-    if not isinstance(reliable, dict):
-        return [f"{path}.reliable_processes must be an object"]
+    reliable_raw = raw.get("reliable_processes", [])
+    reliable_names: list[Any]
+    if reliable_raw is None:
+        reliable_names = []
+        reliable_list_error = None
+    elif isinstance(reliable_raw, list):
+        reliable_names = reliable_raw
+        reliable_list_error = None
+    elif isinstance(reliable_raw, dict):
+        unknown_keys = sorted(str(key) for key in reliable_raw if key not in {"board", "cpu"})
+        if unknown_keys:
+            reliable_names = []
+            reliable_list_error = (
+                f"{path}.reliable_processes has unsupported legacy keys: "
+                f"{unknown_keys}; expected board/cpu"
+            )
+        else:
+            board_value = reliable_raw.get("board", [])
+            cpu_value = reliable_raw.get("cpu", [])
+            board_error = _validate_name_list(
+                f"{path}.reliable_processes.board",
+                board_value,
+            )
+            cpu_error = _validate_name_list(
+                f"{path}.reliable_processes.cpu",
+                cpu_value,
+            )
+            reliable_list_error = board_error or cpu_error
+            reliable_names = []
+            if reliable_list_error is None:
+                reliable_names = list(board_value or [])
+                reliable_names.extend(list(cpu_value or []))
+    else:
+        reliable_names = []
+        reliable_list_error = f"{path}.reliable_processes must be a list or legacy object"
 
     list_errors = [
         error for error in (
-            _validate_name_list(f"{path}.reliable_processes.board", reliable.get("board", [])),
-            _validate_name_list(f"{path}.reliable_processes.cpu", reliable.get("cpu", [])),
+            reliable_list_error,
             _validate_name_list(f"{path}.multi_instance_processes", raw.get("multi_instance_processes", [])),
         )
         if error
@@ -411,14 +442,11 @@ def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
     if list_errors:
         return list_errors
 
-    board = _canonical_name_set(reliable.get("board", []), alias_to_canonical)
-    cpu = _canonical_name_set(reliable.get("cpu", []), alias_to_canonical)
+    reliable = _canonical_name_set(reliable_names, alias_to_canonical)
     multi = _canonical_name_set(raw.get("multi_instance_processes", []), alias_to_canonical)
 
     conflicts = {
-        "reliable_processes.board/reliable_processes.cpu": board & cpu,
-        "reliable_processes.board/multi_instance_processes": board & multi,
-        "reliable_processes.cpu/multi_instance_processes": cpu & multi,
+        "reliable_processes/multi_instance_processes": reliable & multi,
     }
     active = {
         name: sorted(values)
@@ -429,7 +457,9 @@ def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
         return []
 
     return [
-        f"{path} has mutually exclusive process conflicts: {active}"
+        f"{path} 配置冲突：同一个 canonical 进程只能出现在 "
+        "reliable_processes、multi_instance_processes "
+        f"中的一个列表；冲突项: {active}"
     ]
 
 

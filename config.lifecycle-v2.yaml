@@ -87,17 +87,16 @@ products:
               # v2 不兼容旧 indicator/whitelist 语义，生命周期进程分类只看下面这三个字段。
               # process_name_mapping 是 v2 专用 canonical alias 表，格式为
               #   canonical_name: [alias_in_diag, alias_in_journal]
-              # reliable_processes.board：PID 变化代表整板生命周期边界的可靠进程。
-              # reliable_processes.cpu：PID 变化只代表对应 CPU 生命周期边界的可靠进程。
+              # reliable_processes：生命周期绑定的可靠进程，统一写 canonical_name 列表。
+              #   日志实际无 cpu_id / cpu_id=0 时生成 board 边界证据；
+              #   日志实际带 CPU 编号时生成对应 CPU 边界证据。
               # multi_instance_processes：允许同名多实例的进程，不参与 same PID 一致性校验，也不作为边界证据。
               # 提醒：开启 v2 但 reliable_processes 为空时，解析器会走 v2，但不会从可靠进程 PID 变化生成边界。
-              # 真正落到产品前，应把能代表生命周期的真实进程名填到 board/cpu 列表里。
+              # 真正落到产品前，应把能代表生命周期的真实进程名填到 reliable_processes 列表里。
               lifecycle_split:
                 enabled: true
                 process_name_mapping: {}
-                reliable_processes:
-                  board: []
-                  cpu: []
+                reliable_processes: []
                 multi_instance_processes: []
 
               journal:
@@ -166,14 +165,12 @@ products:
                 # 默认仍关闭，避免 compact 示例产品在未填写可靠进程前改变切分行为。
                 # 如需启用，改成 enabled: true，并按 compact 日志里的真实进程名填写：
                 #   process_name_mapping: canonical_name -> [diag/journal aliases]
-                #   reliable_processes.board/cpu: 可作为生命周期边界证据的 canonical_name
+                #   reliable_processes: 可作为生命周期边界证据的 canonical_name 列表
                 #   multi_instance_processes: 同名多实例、不要参与一致性校验的 canonical_name
                 lifecycle_split:
                   enabled: false
                   process_name_mapping: {}
-                  reliable_processes:
-                    board: []
-                    cpu: []
+                  reliable_processes: []
                   multi_instance_processes: []
                 journal:
                   line_pattern: ''

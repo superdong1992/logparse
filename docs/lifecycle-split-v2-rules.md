@@ -46,15 +46,14 @@ process_universe
 
 - `reliable_processes` 必须是唯一进程子集。
 - `reliable_processes` 与 `multi_instance_processes` 必须互斥。
-- `reliable_processes.board` 与 `reliable_processes.cpu` 必须互斥。
-- 同一个 canonical process 同时出现在上述互斥集合中时，配置非法。
-- 如果同一个展示名确实需要同时作为 board 与 CPU 可靠进程，应通过 `process_name_mapping` 映射成两个不同 canonical name。
+- `reliable_processes` 不再区分 board/cpu；边界 scope 由日志实际 scope 决定。
+- 同一个 canonical process 同时出现在 `reliable_processes` 和 `multi_instance_processes` 时，配置非法。
 - 普通唯一进程是 `process_universe - reliable_processes - multi_instance_processes`。
 - 可靠进程也参与 same PID 一致性校验。
 
 | 分类 | PID changed 生成边界 | 参与 same PID 一致性校验 | 可多 PID 并存 |
 | --- | --- | --- | --- |
-| 可靠进程 | 是 | 是 | 否 |
+| 可靠进程 | 是，按日志实际 scope 生成 board 或 CPU 边界 | 是 | 否 |
 | 普通唯一进程 | 否 | 是 | 否 |
 | 同名多实例进程 | 否 | 否 | 是 |
 
@@ -65,6 +64,7 @@ process_universe
 规则：
 
 - 可靠进程不会在同一个生命周期内独立重启。
+- 可靠进程不分 board/cpu 配置；无 `cpu_id` 或 `cpu_id=0` 的观测属于 board scope，其他 `cpu_id` 属于对应 CPU scope。
 - 如果一次生命周期重启前后该可靠进程两边都拉起，则 PID 必须不同。
 - 非相邻生命周期允许 PID 复用，例如 `cycle1 pid=100`、`cycle2 pid=200`、`cycle3 pid=100`。
 - 可靠进程不是必现进程。某个生命周期没出现可靠进程，或某种设备形态上某些可靠进程一直不存在，都不算冲突。
@@ -100,15 +100,10 @@ lifecycle_split:
 
   # 生命周期绑定的可靠进程。
   # 这些进程不是必现列表；缺席不代表冲突。
-  # reliable_processes.board、reliable_processes.cpu、multi_instance_processes 必须两两互斥。
+  # reliable_processes 与 multi_instance_processes 必须互斥。
+  # 边界 scope 由日志实际 scope 决定，不在配置里拆 board/cpu。
   reliable_processes:
-    # board 级可靠进程：PID changed 生成 board-scope 边界约束。
-    board:
-      - canonical_board_proc
-
-    # CPU 级可靠进程：PID changed 生成对应 CPU-scope 边界约束。
-    cpu:
-      - canonical_cpu_proc
+    - canonical_lifecycle_proc
 
   # 同名多实例进程。
   # 这些进程不参与 same PID 一致性校验，也不作为可靠边界证据。
@@ -153,8 +148,8 @@ CpuScopeKey   = (slot, "cpu", cpu_id)
 
 以下证据生成 `must-have-boundary` 约束：
 
-- board 可靠进程 PID changed。
-- CPU 可靠进程 PID changed。
+- board scope 中可靠进程 PID changed。
+- CPU scope 中可靠进程 PID changed。
 - board journal 序号回绕。
 - CPU journal 序号回绕。
 
@@ -338,6 +333,30 @@ inherited board boundary 不是 CPU-local candidate；它只作为 CPU scope 的
 - 如果缺候选点来自缺 timestamp、缺必要 PID、时间顺序非法等结构性问题，生成 `invalid_lifecycle_evidence`。
 - 如果有效约束在求解时仍找不到候选点，说明实现 invariant 被破坏，应抛 `LifecycleSolverInvariantError` 或等价内部错误，不作为正常生命周期 issue 输出。
 
+## 可靠进程同 lifecycle 多 PID 校验
+
+该校验基于最终 effective boundaries 生成的 cycle index。
+
+步骤：
+
+1. 对每个 scope，用 effective boundaries 给可靠进程日志分配 `cycle_index`。
+2. 对每个 key 收集同一 cycle 内出现过的 PID：
+
+```text
+(slot, effective_scope, cpu_id, canonical_reliable_process_name, cycle_index)
+```
+
+3. 如果同一个 key 内 PID 集合数量大于 1，记录 `reliable_process_multiple_pid_in_cycle`。
+4. issue 必须携带 `observed_pids`、`pid_runs`、`cycle_window`、`expected_boundary_intervals`、`covered_boundaries`，用于解释“为什么同一 lifecycle 里会有多个 PID”。
+5. 对应 scope 和受影响 cycle 标记 `lifecycle_reliable=false`。
+
+冲突处理：
+
+- 不自动删除边界。
+- 不自动新增边界。
+- 不移动边界。
+- 只记录 error-level issue，并输出中文 DFX。
+
 ## same PID 一致性校验
 
 same PID 一致性校验基于最终 effective boundaries 生成的 cycle index，不基于任意两条日志之间直接数 boundary。
@@ -407,6 +426,7 @@ inherited board boundaries + CPU-local boundaries
 
 传播规则：
 
+- `reliable_process_multiple_pid_in_cycle` 是 error-level lifecycle issue。
 - `same_pid_single_boundary_conflict` 是 error-level lifecycle issue。
 - `invalid_lifecycle_evidence` 是 error-level issue。
 - error-level issue 会导致其所在 `scope.lifecycle_reliable=false`。
@@ -517,6 +537,17 @@ LifecycleSplitResult:
 - `related_boundaries`
 - `affected_cycles`
 - `conflicting_cycle_pairs`
+- `observed_pids`
+- `cycle_window`
+- `pid_runs`
+- `expected_boundary_intervals`
+- `covered_boundaries`
+- `rule_zh`
+- `facts_zh`
+- `current_result_zh`
+- `conflict_reason_zh`
+- `impact_zh`
+- `action_zh`
 - `title_zh`
 - `explanation_zh`
 
@@ -524,6 +555,7 @@ LifecycleSplitResult:
 
 - 英文枚举字段可以保留给机器读取，但必须同时提供中文 label。
 - `explanation_zh` 必须写出证据类型、作用域、支持类型、可靠性状态的中文含义。
+- 每个 issue 必须能回答：适用规则、观测事实、当前切分结果、矛盾原因、影响范围、处理结果。
 - 用户不需要理解 `origin_scope`、`effective_scope`、`wide_support` 等英文枚举也能判断结果。
 
 ### boundary 解释模板
@@ -612,7 +644,7 @@ LifecycleSplitResult:
 生命周期配置非法
 
 适用规则：
-reliable_processes.board、reliable_processes.cpu、multi_instance_processes 必须两两互斥，且配置进程名必须使用 canonical name。
+reliable_processes 与 multi_instance_processes 必须互斥，且配置进程名必须使用 canonical name。
 
 观测事实：
 列出冲突的 canonical process 和所在配置项。
@@ -621,7 +653,7 @@ reliable_processes.board、reliable_processes.cpu、multi_instance_processes 必
 同一个进程被配置成互斥类别。
 
 矛盾原因：
-同一个进程不能同时作为可靠进程和同名多实例进程，也不能同时作为 board 与 CPU 可靠进程。
+同一个进程不能同时作为可靠进程和同名多实例进程。
 
 影响范围：
 说明影响 lifecycle_split 配置解析。

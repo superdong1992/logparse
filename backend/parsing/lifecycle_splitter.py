@@ -28,17 +28,10 @@ class LifecycleSolverInvariantError(RuntimeError):
     """Raised when valid constraints cannot be satisfied by their candidates."""
 
 
-class LifecycleReliableProcesses(BaseModel):
-    board: list[str] = Field(default_factory=list)
-    cpu: list[str] = Field(default_factory=list)
-
-
 class LifecycleSplitConfig(BaseModel):
     enabled: bool = False
     process_name_mapping: dict[str, list[str]] = Field(default_factory=dict)
-    reliable_processes: LifecycleReliableProcesses = Field(
-        default_factory=LifecycleReliableProcesses
-    )
+    reliable_processes: list[str] = Field(default_factory=list)
     multi_instance_processes: list[str] = Field(default_factory=list)
 
     @classmethod
@@ -68,31 +61,20 @@ class LifecycleSplitConfig(BaseModel):
                         f"lifecycle_split.process_name_mapping.{canonical} must be a list"
                     ) from exc
 
-        reliable_raw = raw.get("reliable_processes", {})
-        if not isinstance(reliable_raw, dict):
-            raise ValueError("lifecycle_split.reliable_processes must be an object")
-        board_raw = reliable_raw.get("board", [])
-        cpu_raw = reliable_raw.get("cpu", [])
-        multi_raw = raw.get("multi_instance_processes", [])
-        for field_path, value in (
-            ("lifecycle_split.reliable_processes.board", board_raw),
-            ("lifecycle_split.reliable_processes.cpu", cpu_raw),
-            ("lifecycle_split.multi_instance_processes", multi_raw),
-        ):
-            if value is not None and not isinstance(value, list):
-                raise ValueError(f"{field_path} must be a list")
-        reliable = LifecycleReliableProcesses(
-            board=[str(name) for name in (board_raw or [])],
-            cpu=[str(name) for name in (cpu_raw or [])],
+        reliable_raw = raw.get("reliable_processes", [])
+        reliable_processes = _parse_reliable_processes(
+            reliable_raw,
+            base_path="lifecycle_split.reliable_processes",
         )
+        multi_raw = raw.get("multi_instance_processes", [])
+        if multi_raw is not None and not isinstance(multi_raw, list):
+            raise ValueError("lifecycle_split.multi_instance_processes must be a list")
 
         return cls(
             enabled=enabled,
             process_name_mapping=mapping,
-            reliable_processes=reliable,
-            multi_instance_processes=[
-                str(name) for name in (multi_raw or [])
-            ],
+            reliable_processes=reliable_processes,
+            multi_instance_processes=[str(name) for name in (multi_raw or [])],
         )
 
 
@@ -157,6 +139,14 @@ class LifecycleEvidence(BaseModel):
     slot: str
     cpu_id: str | None = None
     process_name: str = ""
+    old_pid: str = ""
+    new_pid: str = ""
+    old_sequence: int = 0
+    new_sequence: int = 0
+    old_observed_time: datetime | None = None
+    new_observed_time: datetime | None = None
+    old_raw: str = ""
+    new_raw: str = ""
     support_type: str
     support_type_label_zh: str
     covered_boundaries: list[dict[str, Any]] = Field(default_factory=list)
@@ -177,6 +167,18 @@ class LifecycleIssue(BaseModel):
     related_boundaries: list[dict[str, Any]] = Field(default_factory=list)
     affected_cycles: list[dict[str, Any]] = Field(default_factory=list)
     conflicting_cycle_pairs: list[dict[str, Any]] = Field(default_factory=list)
+    observed_pids: list[str] = Field(default_factory=list)
+    observed_time: datetime | None = None
+    cycle_window: dict[str, Any] = Field(default_factory=dict)
+    pid_runs: list[dict[str, Any]] = Field(default_factory=list)
+    expected_boundary_intervals: list[dict[str, Any]] = Field(default_factory=list)
+    covered_boundaries: list[dict[str, Any]] = Field(default_factory=list)
+    rule_zh: str = ""
+    facts_zh: str = ""
+    current_result_zh: str = ""
+    conflict_reason_zh: str = ""
+    impact_zh: str = ""
+    action_zh: str = ""
     title_zh: str
     explanation_zh: str
 
@@ -223,6 +225,7 @@ _SUPPORT_TYPE_LABEL_ZH = {
 }
 _ISSUE_TYPE_LABEL_ZH = {
     "invalid_lifecycle_evidence": "生命周期证据结构无效",
+    "reliable_process_multiple_pid_in_cycle": "可靠进程同一生命周期内出现多个 PID",
     "same_pid_single_boundary_conflict": "唯一进程 same PID 跨相邻生命周期",
 }
 _SEVERITY_LABEL_ZH = {
@@ -245,11 +248,8 @@ class LifecycleSplitter:
         self.module_key = module_key
         self.module_name = module_name
         self._alias_to_canonical = self._build_alias_map(config)
-        self._board_reliable = {
-            self._canonicalize(name) for name in config.reliable_processes.board
-        }
-        self._cpu_reliable = {
-            self._canonicalize(name) for name in config.reliable_processes.cpu
+        self._reliable_processes = {
+            self._canonicalize(name) for name in config.reliable_processes
         }
         self._multi_instance = {
             self._canonicalize(name) for name in config.multi_instance_processes
@@ -296,6 +296,12 @@ class LifecycleSplitter:
         scopes = self._build_scope_results(scope_keys, boundaries, effective_by_scope)
         cycles = self._build_lifecycle_cycles(canonical_entries, effective_by_scope)
         evidence = self._build_evidence(constraints, boundaries, effective_by_scope)
+        self._attach_invalid_evidence_cycles(issues, effective_by_scope)
+        issues.extend(self._find_reliable_multi_pid_issues(
+            canonical_entries,
+            effective_by_scope,
+            cycles,
+        ))
         issues.extend(self._find_same_pid_issues(canonical_entries, effective_by_scope))
 
         result = LifecycleSplitResult(
@@ -409,20 +415,19 @@ class LifecycleSplitter:
         return canonical_entries
 
     def _validate_config(self) -> None:
-        board = {_norm(name) for name in self._board_reliable}
-        cpu = {_norm(name) for name in self._cpu_reliable}
+        reliable = {_norm(name) for name in self._reliable_processes}
         multi = {_norm(name) for name in self._multi_instance}
         conflicts = {
-            "reliable_processes.board/reliable_processes.cpu": board & cpu,
-            "reliable_processes.board/multi_instance_processes": board & multi,
-            "reliable_processes.cpu/multi_instance_processes": cpu & multi,
+            "reliable_processes/multi_instance_processes": reliable & multi,
         }
         active_conflicts = {
             name: sorted(values) for name, values in conflicts.items() if values
         }
         if active_conflicts:
             raise ValueError(
-                f"invalid lifecycle_split config: mutually exclusive process sets overlap: {active_conflicts}"
+                "invalid lifecycle_split config: each canonical process may appear in only one of "
+                "reliable_processes, multi_instance_processes; "
+                f"conflicts={active_conflicts}"
             )
 
     def _scope_keys(self, entries: list[MechLogEntry]) -> list[ScopeKey]:
@@ -448,17 +453,9 @@ class LifecycleSplitter:
             scope = "cpu" if entry.cpu_id else "board"
             cpu_id = entry.cpu_id if entry.cpu_id else None
             by_scope[(scope, entry.slot, cpu_id)].append(entry)
-            if entry.process_name in self._cpu_reliable and not entry.cpu_id:
-                issues.append(self._invalid_evidence_issue(
-                    entry,
-                    scope="cpu",
-                    reason="CPU 可靠进程缺少 cpu_id，无法形成 CPU 作用域证据。",
-                ))
-
         for key, scope_entries in by_scope.items():
             scope, _slot, _cpu_id = key
-            reliable = self._board_reliable if scope == "board" else self._cpu_reliable
-            for process_name in sorted(reliable):
+            for process_name in sorted(self._reliable_processes):
                 process_entries = [
                     entry for entry in scope_entries if entry.process_name == process_name
                 ]
@@ -477,6 +474,8 @@ class LifecycleSplitter:
                 for old_entry, new_entry in zip(runs, runs[1:]):
                     if old_entry.pid == new_entry.pid:
                         continue
+                    if old_entry.timestamp >= new_entry.timestamp:
+                        continue
                     constraint = PositiveBoundaryConstraint(
                         scope=scope,
                         slot=new_entry.slot,
@@ -485,6 +484,8 @@ class LifecycleSplitter:
                         process_name=process_name,
                         old_pid=old_entry.pid,
                         new_pid=new_entry.pid,
+                        old_sequence=old_entry.sequence,
+                        new_sequence=new_entry.sequence,
                         old_observed_time=old_entry.timestamp,
                         new_observed_time=new_entry.timestamp,
                         candidate_time=new_entry.timestamp,
@@ -511,9 +512,16 @@ class LifecycleSplitter:
                     ))
                     continue
                 journal_observations.append(entry)
-            journal_observations.sort(key=_entry_sort_key)
+            journal_observations.sort(key=_entry_timestamp_key)
             for old_entry, new_entry in zip(journal_observations, journal_observations[1:]):
                 if new_entry.sequence >= old_entry.sequence:
+                    continue
+                if old_entry.timestamp >= new_entry.timestamp:
+                    issues.append(self._invalid_evidence_issue(
+                        new_entry,
+                        scope=scope,
+                        reason="journal 序号回绕证据时间顺序非法，无法定位到正向边界区间。",
+                    ))
                     continue
                 constraint = PositiveBoundaryConstraint(
                     scope=scope,
@@ -635,6 +643,8 @@ class LifecycleSplitter:
             "new_sequence": constraint.new_sequence,
             "old_observed_time": constraint.old_observed_time,
             "new_observed_time": constraint.new_observed_time,
+            "old_raw": constraint.old_raw,
+            "new_raw": constraint.new_raw,
         }
 
     def _fill_effective_scopes(
@@ -813,6 +823,14 @@ class LifecycleSplitter:
                 slot=constraint.slot,
                 cpu_id=constraint.cpu_id,
                 process_name=constraint.process_name,
+                old_pid=constraint.old_pid,
+                new_pid=constraint.new_pid,
+                old_sequence=constraint.old_sequence,
+                new_sequence=constraint.new_sequence,
+                old_observed_time=constraint.old_observed_time,
+                new_observed_time=constraint.new_observed_time,
+                old_raw=constraint.old_raw,
+                new_raw=constraint.new_raw,
                 support_type=support_type,
                 support_type_label_zh=_SUPPORT_TYPE_LABEL_ZH[support_type],
                 covered_boundaries=covered,
@@ -856,6 +874,118 @@ class LifecycleSplitter:
             f"支撑类型为 {_SUPPORT_TYPE_LABEL_ZH[support_type]}。"
         )
 
+    def _find_reliable_multi_pid_issues(
+        self,
+        entries: list[MechLogEntry],
+        effective_by_scope: dict[ScopeKey, list[tuple[LifecycleBoundary, bool]]],
+        cycles: list[LifecycleCycle],
+    ) -> list[LifecycleIssue]:
+        issues: list[LifecycleIssue] = []
+        cycle_lookup = {
+            (cycle.scope, cycle.slot, cycle.cpu_id, cycle.cycle_index): cycle
+            for cycle in cycles
+        }
+        for key, boundary_items in effective_by_scope.items():
+            scope, slot, cpu_id = key
+            boundaries = [boundary.timestamp for boundary, _ in boundary_items]
+            by_process_cycle: dict[tuple[str, int], list[MechLogEntry]] = defaultdict(list)
+            for entry in entries:
+                entry_scope = "cpu" if entry.cpu_id else "board"
+                if (
+                    entry_scope != scope
+                    or entry.slot != slot
+                    or (entry.cpu_id or None) != cpu_id
+                    or entry.process_name not in self._reliable_processes
+                    or entry.process_name in self._multi_instance
+                    or not entry.pid
+                    or entry.timestamp is None
+                ):
+                    continue
+                cycle_index = self._cycle_index(entry.timestamp, boundaries)
+                by_process_cycle[(entry.process_name, cycle_index)].append(entry)
+
+            for (process_name, cycle_index), cycle_entries in sorted(by_process_cycle.items()):
+                pid_runs = _pid_run_payloads(cycle_entries)
+                observed_pids = _ordered_unique([run["pid"] for run in pid_runs])
+                if len(observed_pids) <= 1:
+                    continue
+
+                interval_payloads: list[dict[str, Any]] = []
+                covered_refs: list[dict[str, Any]] = []
+                for old_run, new_run in zip(pid_runs, pid_runs[1:]):
+                    if old_run["pid"] == new_run["pid"]:
+                        continue
+                    left_time = old_run["last_seen"]
+                    right_time = new_run["first_seen"]
+                    covered = [
+                        _boundary_ref(
+                            boundary,
+                            inherited=inherited,
+                            target_scope=scope,
+                            target_cpu_id=cpu_id,
+                            include_support=True,
+                        )
+                        for boundary, inherited in boundary_items
+                        if left_time < boundary.timestamp <= right_time
+                    ]
+                    covered_refs.extend(covered)
+                    interval_payloads.append({
+                        "old_pid": old_run["pid"],
+                        "new_pid": new_run["pid"],
+                        "left_open_time": left_time,
+                        "right_closed_time": right_time,
+                        "covered_boundaries": covered,
+                    })
+
+                cycle = cycle_lookup.get((scope, slot, cpu_id, cycle_index))
+                cycle_window = {
+                    "start_time": cycle.start_time if cycle else None,
+                    "end_time": cycle.end_time if cycle else None,
+                    "next_boundary_time": cycle.next_boundary_time if cycle else None,
+                }
+                pids_text = ",".join(observed_pids)
+                scope_text = _format_scope_text(scope, cpu_id)
+                cycle_ref = _cycle_ref(scope, slot, cpu_id, cycle_index)
+                issues.append(LifecycleIssue(
+                    type="reliable_process_multiple_pid_in_cycle",
+                    type_label_zh=_ISSUE_TYPE_LABEL_ZH["reliable_process_multiple_pid_in_cycle"],
+                    severity="error",
+                    severity_label_zh=_SEVERITY_LABEL_ZH["error"],
+                    scope=scope,
+                    scope_label_zh=_scope_label(scope),
+                    slot=slot,
+                    cpu_id=cpu_id,
+                    related_process=process_name,
+                    related_boundaries=covered_refs,
+                    affected_cycles=[cycle_ref],
+                    observed_pids=observed_pids,
+                    cycle_window=cycle_window,
+                    pid_runs=pid_runs,
+                    expected_boundary_intervals=interval_payloads,
+                    covered_boundaries=covered_refs,
+                    title_zh="可靠进程同一生命周期内出现多个 PID",
+                    rule_zh="可靠进程不会在同一个生命周期内独立重启。",
+                    facts_zh=(
+                        f"{process_name} 在 slot={slot} {scope_text} cycle={cycle_index} "
+                        f"内出现 PID {pids_text}。"
+                    ),
+                    current_result_zh=(
+                        "final effective boundaries 没有把这些 PID run 切到不同生命周期。"
+                    ),
+                    conflict_reason_zh=(
+                        "同一生命周期内可靠进程只能有一个 PID；多个 PID 表示该切分结果不可靠。"
+                    ),
+                    impact_zh=(
+                        f"slot={slot} {scope_text} cycle={cycle_index} 标记 lifecycle_reliable=false。"
+                    ),
+                    action_zh="仅标记不可靠，不自动补切、删除或移动边界。",
+                    explanation_zh=(
+                        f"可靠进程 {process_name} 在同一个生命周期 cycle={cycle_index} "
+                        f"内出现多个 PID ({pids_text})，与 v2 可靠进程生命周期绑定规则冲突。"
+                    ),
+                ))
+        return issues
+
     def _find_same_pid_issues(
         self,
         entries: list[MechLogEntry],
@@ -867,7 +997,9 @@ class LifecycleSplitter:
             boundaries = [boundary.timestamp for boundary, _ in boundary_items]
             if not boundaries:
                 continue
-            by_process_pid: dict[tuple[str, str], set[int]] = defaultdict(set)
+            by_process_pid: dict[tuple[str, str], dict[int, list[MechLogEntry]]] = defaultdict(
+                lambda: defaultdict(list)
+            )
             for entry in entries:
                 entry_scope = "cpu" if entry.cpu_id else "board"
                 if (
@@ -879,20 +1011,36 @@ class LifecycleSplitter:
                     or entry.process_name in self._multi_instance
                 ):
                     continue
-                by_process_pid[(entry.process_name, entry.pid)].add(
-                    self._cycle_index(entry.timestamp, boundaries)
-                )
+                cycle_index = self._cycle_index(entry.timestamp, boundaries)
+                by_process_pid[(entry.process_name, entry.pid)][cycle_index].append(entry)
 
-            for (process_name, pid), cycle_indices in sorted(by_process_pid.items()):
-                ordered = sorted(cycle_indices)
+            for (process_name, pid), by_cycle in sorted(by_process_pid.items()):
+                ordered = sorted(by_cycle)
                 pairs = []
                 for left, right in zip(ordered, ordered[1:]):
                     if right == left + 1:
+                        left_entry = max(by_cycle[left], key=_entry_sort_key)
+                        right_entry = min(by_cycle[right], key=_entry_sort_key)
+                        boundary_ref = None
+                        if left < len(boundary_items):
+                            boundary, inherited = boundary_items[left]
+                            boundary_ref = _boundary_ref(
+                                boundary,
+                                inherited=inherited,
+                                target_scope=scope,
+                                target_cpu_id=cpu_id,
+                                include_support=True,
+                            )
                         pairs.append({
                             "scope_key": _scope_key_dict(scope, slot, cpu_id),
                             "left_cycle_index": left,
                             "right_cycle_index": right,
                             "boundary_timestamp": boundaries[left],
+                            "before_seen": left_entry.timestamp,
+                            "after_seen": right_entry.timestamp,
+                            "before_raw": left_entry.raw,
+                            "after_raw": right_entry.raw,
+                            "boundary": boundary_ref,
                         })
                 if not pairs:
                     continue
@@ -912,17 +1060,54 @@ class LifecycleSplitter:
                     cpu_id=cpu_id,
                     related_process=f"{process_name}-{pid}",
                     related_boundaries=[
-                        {"timestamp": pair["boundary_timestamp"]} for pair in pairs
+                        pair["boundary"] or {"timestamp": pair["boundary_timestamp"]}
+                        for pair in pairs
                     ],
                     affected_cycles=_dedupe_dicts(affected_cycles),
                     conflicting_cycle_pairs=pairs,
                     title_zh="唯一进程 same PID 跨相邻生命周期",
+                    rule_zh="唯一进程同 PID 不允许跨相邻生命周期。",
+                    facts_zh=(
+                        f"{process_name}-{pid} 出现在 slot={slot} "
+                        f"{_format_scope_text(scope, cpu_id)} 的相邻 cycle。"
+                    ),
+                    current_result_zh="final effective boundaries 将同一 PID 分到了相邻生命周期。",
+                    conflict_reason_zh="同一次生命周期重启前后，唯一进程如果两边都被拉起，PID 必须不同。",
+                    impact_zh=(
+                        f"slot={slot} {_format_scope_text(scope, cpu_id)} "
+                        "相关 cycle 标记 lifecycle_reliable=false。"
+                    ),
+                    action_zh="仅标记不可靠，不自动新增、删除或移动边界。",
                     explanation_zh=(
                         f"唯一进程 {process_name}-{pid} 出现在相邻 cycle，"
                         "与 v2 same PID 一致性规则冲突；系统只标记不可靠，不自动补切或移动边界。"
                     ),
                 ))
         return issues
+
+    def _attach_invalid_evidence_cycles(
+        self,
+        issues: list[LifecycleIssue],
+        effective_by_scope: dict[ScopeKey, list[tuple[LifecycleBoundary, bool]]],
+    ) -> None:
+        for issue in issues:
+            if (
+                issue.type != "invalid_lifecycle_evidence"
+                or issue.observed_time is None
+                or issue.affected_cycles
+            ):
+                continue
+            key = (issue.scope, issue.slot, issue.cpu_id)
+            if key not in effective_by_scope:
+                continue
+            boundaries = [
+                boundary.timestamp
+                for boundary, _inherited in effective_by_scope.get(key, [])
+            ]
+            cycle_index = self._cycle_index(issue.observed_time, boundaries)
+            issue.affected_cycles.append(
+                _cycle_ref(issue.scope, issue.slot, issue.cpu_id, cycle_index)
+            )
 
     def _invalid_evidence_issue(
         self,
@@ -932,6 +1117,8 @@ class LifecycleSplitter:
         reason: str,
     ) -> LifecycleIssue:
         cpu_id = entry.cpu_id or None
+        scope_text = _format_scope_text(scope, cpu_id)
+        timestamp_text = entry.timestamp.isoformat() if entry.timestamp else "<空>"
         return LifecycleIssue(
             type="invalid_lifecycle_evidence",
             type_label_zh=_ISSUE_TYPE_LABEL_ZH["invalid_lifecycle_evidence"],
@@ -942,10 +1129,20 @@ class LifecycleSplitter:
             slot=entry.slot,
             cpu_id=cpu_id,
             related_process=entry.process_name,
+            observed_time=entry.timestamp,
             title_zh="生命周期证据结构无效",
+            rule_zh="正向边界证据必须包含可解析 timestamp、必要 PID 或 journal 序号，并形成 old_observed < boundary <= new_observed 的有效区间。",
+            facts_zh=(
+                f"{reason} slot={entry.slot} {scope_text} 进程={entry.process_name} "
+                f"PID={entry.pid or '<空>'} sequence={entry.sequence} timestamp={timestamp_text}。"
+            ),
+            current_result_zh="该日志无法构造成可求解的正向生命周期边界约束。",
+            conflict_reason_zh="输入或解析结果缺少生命周期切分所需字段，或边界证据的时间区间不满足正向顺序。",
+            impact_zh=f"slot={entry.slot} {scope_text} 标记 lifecycle_reliable=false；若能定位到 cycle，则同步标记该 cycle 不可靠。",
+            action_zh="记录 invalid_lifecycle_evidence，不进入正常边界求解，不自动补切或移动边界。",
             explanation_zh=(
                 f"{reason} 进程={entry.process_name} PID={entry.pid or '<空>'}，"
-                f"timestamp={entry.timestamp.isoformat() if entry.timestamp else '<空>'}。"
+                f"timestamp={timestamp_text}。"
             ),
         )
 
@@ -1049,6 +1246,47 @@ def _norm(value: str) -> str:
     return value.casefold()
 
 
+def _parse_reliable_processes(raw: Any, *, base_path: str) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(name) for name in raw]
+    if isinstance(raw, dict):
+        unknown_keys = sorted(str(key) for key in raw if key not in {"board", "cpu"})
+        if unknown_keys:
+            raise ValueError(
+                f"{base_path} has unsupported legacy keys: {unknown_keys}; expected board/cpu"
+            )
+        merged: list[str] = []
+        for key in ("board", "cpu"):
+            value = raw.get(key, [])
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                raise ValueError(f"{base_path}.{key} must be a list")
+            merged.extend(str(name) for name in value)
+        return _ordered_unique(merged)
+    raise ValueError(f"{base_path} must be a list or legacy object")
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        marker = _norm(value)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(value)
+    return result
+
+
+def _format_scope_text(scope: str, cpu_id: str | None) -> str:
+    if scope == "cpu" and cpu_id:
+        return f"cpu_{cpu_id}"
+    return scope
+
+
 def _scope_label(scope: str) -> str:
     return _SCOPE_LABEL_ZH.get(scope, scope)
 
@@ -1078,10 +1316,11 @@ def _boundary_ref(
     inherited: bool,
     target_scope: str | None = None,
     target_cpu_id: str | None = None,
+    include_support: bool = False,
 ) -> dict[str, Any]:
     scope = target_scope if inherited else boundary.origin_scope
     cpu_id = target_cpu_id if inherited else boundary.cpu_id
-    return {
+    payload = {
         "id": boundary.id,
         "origin_scope": boundary.origin_scope,
         "scope": scope,
@@ -1091,6 +1330,9 @@ def _boundary_ref(
         "inherited": inherited,
         "type": boundary.type,
     }
+    if include_support:
+        payload["support_evidence"] = list(boundary.support_evidence)
+    return payload
 
 
 def _cycle_ref(
@@ -1116,6 +1358,10 @@ def _entry_sort_key(entry: MechLogEntry) -> tuple[Any, ...]:
     )
 
 
+def _entry_timestamp_key(entry: MechLogEntry) -> datetime:
+    return entry.timestamp or datetime.min
+
+
 def _compress_pid_runs(entries: list[MechLogEntry]) -> list[MechLogEntry]:
     runs: list[MechLogEntry] = []
     for entry in entries:
@@ -1123,6 +1369,23 @@ def _compress_pid_runs(entries: list[MechLogEntry]) -> list[MechLogEntry]:
             runs.append(entry)
         else:
             runs[-1] = entry
+    return runs
+
+
+def _pid_run_payloads(entries: list[MechLogEntry]) -> list[dict[str, Any]]:
+    runs: list[dict[str, Any]] = []
+    for entry in sorted(entries, key=_entry_sort_key):
+        if not runs or runs[-1]["pid"] != entry.pid:
+            runs.append({
+                "pid": entry.pid,
+                "first_seen": entry.timestamp,
+                "last_seen": entry.timestamp,
+                "first_raw": entry.raw,
+                "last_raw": entry.raw,
+            })
+        else:
+            runs[-1]["last_seen"] = entry.timestamp
+            runs[-1]["last_raw"] = entry.raw
     return runs
 
 

@@ -11,6 +11,7 @@ import yaml
 
 from cli import cli
 from cli import _print_summary
+from backend.parsing.lifecycle_splitter import LifecycleSplitConfig, LifecycleSplitter
 from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.plugins.mechanisms.module1 import Module1Plugin
 from backend.query import ResultQueryService
@@ -48,7 +49,7 @@ def _module1_v2_test_config() -> dict:
         "sequence_pattern": r"No\[(\d+)\]",
         "lifecycle_split": {
             "enabled": True,
-            "reliable_processes": {"board": ["dhcp"], "cpu": []},
+            "reliable_processes": ["dhcp"],
         },
     }
 
@@ -57,6 +58,33 @@ def _timestamp_extractor() -> TimestampExtractor:
     return TimestampExtractor(
         re.compile(r"(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?")
     )
+
+
+def _valid_parse_config(extra: dict | None = None) -> dict:
+    cfg = {
+        "products": {
+            "default": {
+                "discovery": {
+                    "plugin": "backend.plugins.default.scanner.ScannerPlugin",
+                    "config": {
+                        "diagnostic_dir": "diag",
+                        "private_dir": "varlog",
+                        "slot_dir_pattern": "slot_*",
+                        "diag_file_patterns": ["diag.zip"],
+                    },
+                },
+                "log_parser": {
+                    "plugin": "backend.plugins.default.parser.ParserPlugin",
+                    "config": {
+                        "timestamp_regex": r"(\d{4}-\d{2}-\d{2})([+-]\d{2}:\d{2})?",
+                    },
+                },
+            },
+        },
+    }
+    if extra:
+        cfg.update(extra)
+    return cfg
 
 
 def test_test_pattern_reads_nested_mechanism_config(sample_config, tmp_path):
@@ -107,14 +135,7 @@ def test_parse_prints_result_errors_without_verbose(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
-            {
-                "products": {
-                    "default": {
-                        "discovery": {"plugin": "unused", "config": {}},
-                        "log_parser": {"plugin": "unused", "config": {}},
-                    },
-                },
-            },
+            _valid_parse_config(),
             allow_unicode=True,
         ),
         encoding="utf-8",
@@ -198,16 +219,10 @@ def test_parse_accepts_config_option_after_subcommand(tmp_path, monkeypatch):
     config_path = tmp_path / "config.lifecycle-v2.yaml"
     config_path.write_text(
         yaml.safe_dump(
-            {
+            _valid_parse_config({
                 "pipeline": {"result_json_mode": "compact"},
-                "products": {
-                    "default": {
-                        "discovery": {"plugin": "unused", "config": {}},
-                        "log_parser": {"plugin": "unused", "config": {}},
-                    },
-                },
                 "sentinel": "from-command-option",
-            },
+            }),
             allow_unicode=True,
         ),
         encoding="utf-8",
@@ -238,6 +253,234 @@ def test_parse_accepts_config_option_after_subcommand(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert seen_config["sentinel"] == "from-command-option"
+
+
+def test_parse_validates_config_before_running_pipeline(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "products": {
+                    "default": {
+                        "discovery": {
+                            "plugin": "backend.plugins.default.scanner.ScannerPlugin",
+                            "config": {
+                                "diagnostic_dir": "diag",
+                                "private_dir": "varlog",
+                                "slot_dir_pattern": "slot_*",
+                                "diag_file_patterns": ["diag.zip"],
+                            },
+                        },
+                        "log_parser": {
+                            "plugin": "backend.plugins.default.parser.ParserPlugin",
+                            "config": {
+                                "timestamp_regex": r"(\d{4}-\d{2}-\d{2})([+-]\d{2}:\d{2})?",
+                                "mechanism_modules": {
+                                    "module1": {
+                                        "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+                                        "enabled": True,
+                                        "config": {
+                                            "module_name": "EXAMPLE",
+                                            "lifecycle_split": {
+                                                "enabled": True,
+                                                "reliable_processes": ["anchor"],
+                                                "multi_instance_processes": ["anchor"],
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, _config):
+            raise AssertionError("Pipeline should not run when config is invalid")
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "配置检查失败" in result.output
+    assert "reliable_processes/multi_instance_processes" in result.output
+    assert "anchor" in result.output
+
+
+def test_parse_prints_v2_lifecycle_errors_without_verbose(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, _config):
+            pass
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            split_result = LifecycleSplitter(
+                LifecycleSplitConfig.from_mapping({"reliable_processes": ["anchor"]})
+            ).split([
+                MechLogEntry(
+                    timestamp=datetime(2026, 1, 3, 0, 0, 10, tzinfo=timezone.utc),
+                    source="diagnostic",
+                    slot="1",
+                    process_name="anchor",
+                    pid="10",
+                    raw="anchor-10 old",
+                ),
+                MechLogEntry(
+                    timestamp=datetime(2026, 1, 3, 0, 0, 10, tzinfo=timezone.utc),
+                    source="diagnostic",
+                    slot="1",
+                    process_name="anchor",
+                    pid="11",
+                    raw="anchor-11 new",
+                ),
+            ])
+            return ParseResult(
+                task_id="task",
+                package_name=source.name,
+                mech_results=[
+                    MechResult(
+                        module_name="EXAMPLE",
+                        module_key="module1",
+                        slots=[
+                            MechSlotOutput(
+                                slot_id="1",
+                                lifecycle_reliable=False,
+                                lifecycle_split_result=split_result,
+                            ),
+                        ],
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "生命周期切分诊断: ERROR=1 WARNING=0 INFO=0" in result.output
+    assert "python cli.py mech-lifecycles task -s 1 -m EXAMPLE --show-boundaries" in result.output
+    assert "[ERROR] reliable_process_multiple_pid_in_cycle scope=board process=anchor pids=10,11" in result.output
+
+
+def test_parse_verbose_prints_v2_compact_dfx_without_issues(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, _config):
+            pass
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            return ParseResult(
+                task_id="task",
+                package_name=source.name,
+                mech_results=[
+                    MechResult(
+                        module_name="EXAMPLE",
+                        module_key="module1",
+                        slots=[
+                            MechSlotOutput(
+                                slot_id="1",
+                                lifecycle_reliable=True,
+                                lifecycle_split_result={
+                                    "lifecycle_reliable": True,
+                                    "boundaries": [
+                                        {
+                                            "id": "b1",
+                                            "origin_scope": "board",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "cpu_id": None,
+                                            "timestamp": "2026-01-03T00:01:00+08:00",
+                                            "type": "reliable_process_pid_changed",
+                                            "support_evidence": [
+                                                {
+                                                    "process_name": "anchor",
+                                                    "old_pid": "10",
+                                                    "new_pid": "11",
+                                                }
+                                            ],
+                                        },
+                                    ],
+                                    "evidence": [
+                                        {
+                                            "type": "reliable_process_pid_changed",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "support_type": "tight_support",
+                                            "covered_boundaries": [{"id": "b1"}],
+                                        },
+                                    ],
+                                    "issues": [],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "--verbose",
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "生命周期切分 V2 compact DFX:" in result.output
+    assert "module=EXAMPLE slot=1" in result.output
+    assert "lifecycle_split_v2: reliable=true boundaries=1 evidence=1 issues=0" in result.output
+    assert "boundary reliable_process_pid_changed scope=board time=2026-01-03T00:01:00+08:00 support=1" in result.output
+    assert "evidence reliable_process_pid_changed scope=board support=tight_support covered=1" in result.output
 
 
 def test_print_summary_writes_compact_result_by_default(tmp_path):
@@ -363,6 +606,11 @@ def test_lifecycle_split_v2_survives_serializer_query_and_cli(tmp_path):
     assert v2["scopes"][0]["effective_boundaries"][0]["scope"] == "board"
     assert v2["cycles"][0]["cycle_index"] == 0
     assert v2["evidence"][0]["support_type"] == "tight_support"
+    serialized = json.dumps(v2, ensure_ascii=False)
+    assert "old_raw" not in serialized
+    assert "new_raw" not in serialized
+    assert "dhcp-100 old" not in serialized
+    assert "dhcp-200 new" not in serialized
     assert v2["issues"] == []
 
     cli_result = CliRunner().invoke(
@@ -615,10 +863,20 @@ def test_mech_lifecycles_show_boundaries_displays_lifecycle_split_v2(tmp_path):
                                     "lifecycle_reliable": False,
                                     "boundaries": [
                                         {
+                                            "id": "b1",
                                             "origin_scope": "board",
                                             "timestamp": "2026-01-03T00:01:00+08:00",
                                             "type": "journal_sequence_wrapped",
-                                            "support_evidence": [{"type": "journal_sequence_wrapped"}],
+                                            "support_evidence": [
+                                                {
+                                                    "type": "journal_sequence_wrapped",
+                                                    "process_name": "journal",
+                                                    "old_sequence": 99,
+                                                    "new_sequence": 1,
+                                                    "old_observed_time": "2026-01-03T00:00:30+08:00",
+                                                    "new_observed_time": "2026-01-03T00:01:00+08:00",
+                                                }
+                                            ],
                                         },
                                     ],
                                     "evidence": [
@@ -635,7 +893,44 @@ def test_mech_lifecycles_show_boundaries_displays_lifecycle_split_v2(tmp_path):
                                             "severity": "error",
                                             "scope": "cpu",
                                             "cpu_id": "1",
+                                            "slot": "1",
+                                            "related_process": "worker-500",
                                             "title_zh": "same PID conflict",
+                                            "rule_zh": "唯一进程同 PID 不允许跨相邻生命周期。",
+                                            "facts_zh": "worker-500 出现在相邻两个 cycle。",
+                                            "current_result_zh": "final effective boundary 将观测分到 cycle 0 和 cycle 1。",
+                                            "conflict_reason_zh": "同一次生命周期重启前后 PID 应该变化。",
+                                            "impact_zh": "cpu_1 lifecycle_reliable=false。",
+                                            "action_zh": "仅标记不可靠，不自动移动边界。",
+                                            "conflicting_cycle_pairs": [
+                                                {
+                                                    "left_cycle_index": 0,
+                                                    "right_cycle_index": 1,
+                                                    "boundary_timestamp": "2026-01-03T00:01:00+08:00",
+                                                    "before_seen": "2026-01-03T00:00:30+08:00",
+                                                    "after_seen": "2026-01-03T00:01:30+08:00",
+                                                    "boundary": {
+                                                        "id": "b1",
+                                                        "type": "journal_sequence_wrapped",
+                                                        "origin_scope": "board",
+                                                        "scope": "cpu",
+                                                        "cpu_id": "1",
+                                                        "inherited": True,
+                                                        "timestamp": "2026-01-03T00:01:00+08:00",
+                                                        "support_evidence": [
+                                                            {
+                                                                "process_name": "journal",
+                                                                "old_sequence": 99,
+                                                                "new_sequence": 1,
+                                                                "old_observed_time": "2026-01-03T00:00:30+08:00",
+                                                                "new_observed_time": "2026-01-03T00:01:00+08:00",
+                                                                "old_raw": "journal No[99]",
+                                                                "new_raw": "journal No[1]",
+                                                            },
+                                                        ],
+                                                    },
+                                                }
+                                            ],
                                         },
                                     ],
                                 },
@@ -674,9 +969,186 @@ def test_mech_lifecycles_show_boundaries_displays_lifecycle_split_v2(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "lifecycle_split_v2: reliable=false boundaries=1 evidence=1 issues=1" in result.output
-    assert "[ERROR] same_pid_single_boundary_conflict scope=cpu_1 title=same PID conflict" in result.output
+    assert "[ERROR] same_pid_single_boundary_conflict scope=cpu_1 process=worker-500" in result.output
+    assert "cycle 0->1 boundary=2026-01-03T00:01:00+08:00" in result.output
     assert "boundary journal_sequence_wrapped scope=board time=2026-01-03T00:01:00+08:00 support=1" in result.output
     assert "evidence journal_sequence_wrapped scope=board support=tight_support covered=1" in result.output
+    assert "适用规则: 唯一进程同 PID 不允许跨相邻生命周期。" in result.output
+    assert "观测事实: worker-500 出现在相邻两个 cycle。" in result.output
+    assert "boundary-source journal_sequence_wrapped origin=board effective=cpu_1 inherited=true time=2026-01-03T00:01:00+08:00" in result.output
+    assert "support-evidence process=journal old_seq=99 new_seq=1" in result.output
+    assert "old-raw journal No[99]" in result.output
+
+
+def test_mech_lifecycles_v2_full_falls_back_for_issue_without_zh_sections(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "lifecycle_split_result": {
+                                    "lifecycle_reliable": False,
+                                    "boundaries": [],
+                                    "evidence": [],
+                                    "issues": [
+                                        {
+                                            "type": "invalid_lifecycle_evidence",
+                                            "severity": "error",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "related_process": "anchor",
+                                            "title_zh": "生命周期证据结构无效",
+                                            "explanation_zh": "可靠进程 PID 变化证据缺少 timestamp 或 PID。",
+                                        },
+                                    ],
+                                },
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[ERROR] invalid_lifecycle_evidence scope=board process=anchor" in result.output
+    assert "标题: 生命周期证据结构无效" in result.output
+    assert "说明: 可靠进程 PID 变化证据缺少 timestamp 或 PID。" in result.output
+
+
+def test_mech_lifecycles_v2_full_expands_reliable_multi_pid_issue(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "lifecycle_split_result": {
+                                    "lifecycle_reliable": False,
+                                    "boundaries": [],
+                                    "evidence": [],
+                                    "issues": [
+                                        {
+                                            "type": "reliable_process_multiple_pid_in_cycle",
+                                            "severity": "error",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "related_process": "anchor",
+                                            "observed_pids": ["10", "11"],
+                                            "affected_cycles": [
+                                                {
+                                                    "scope": "board",
+                                                    "slot": "1",
+                                                    "cpu_id": None,
+                                                    "cycle_index": 0,
+                                                }
+                                            ],
+                                            "cycle_window": {
+                                                "start_time": "2026-01-03T00:00:10+08:00",
+                                                "end_time": "2026-01-03T00:00:10+08:00",
+                                            },
+                                            "pid_runs": [
+                                                {
+                                                    "pid": "10",
+                                                    "first_seen": "2026-01-03T00:00:10+08:00",
+                                                    "last_seen": "2026-01-03T00:00:10+08:00",
+                                                    "first_raw": "anchor-10 old",
+                                                    "last_raw": "anchor-10 old",
+                                                },
+                                                {
+                                                    "pid": "11",
+                                                    "first_seen": "2026-01-03T00:00:10+08:00",
+                                                    "last_seen": "2026-01-03T00:00:10+08:00",
+                                                    "first_raw": "anchor-11 new",
+                                                    "last_raw": "anchor-11 new",
+                                                },
+                                            ],
+                                            "expected_boundary_intervals": [
+                                                {
+                                                    "old_pid": "10",
+                                                    "new_pid": "11",
+                                                    "left_open_time": "2026-01-03T00:00:10+08:00",
+                                                    "right_closed_time": "2026-01-03T00:00:10+08:00",
+                                                    "covered_boundaries": [],
+                                                }
+                                            ],
+                                            "covered_boundaries": [],
+                                            "rule_zh": "可靠进程不会在同一个生命周期内独立重启。",
+                                            "facts_zh": "anchor 在 cycle 0 内出现 PID 10,11。",
+                                            "current_result_zh": "final effective boundaries 没有切开这些 PID run。",
+                                            "conflict_reason_zh": "同一生命周期内可靠进程只能有一个 PID。",
+                                            "impact_zh": "board cycle 0 lifecycle_reliable=false。",
+                                            "action_zh": "仅标记不可靠，不自动补切边界。",
+                                        }
+                                    ],
+                                },
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[ERROR] reliable_process_multiple_pid_in_cycle scope=board process=anchor pids=10,11" in result.output
+    assert "affected-cycle board cycle=0 window=2026-01-03T00:00:10+08:00..2026-01-03T00:00:10+08:00" in result.output
+    assert "pid-run anchor-10 first=2026-01-03T00:00:10+08:00 last=2026-01-03T00:00:10+08:00" in result.output
+    assert "expected-boundary (2026-01-03T00:00:10+08:00, 2026-01-03T00:00:10+08:00] old=10 new=11 covered=0" in result.output
+    assert "适用规则: 可靠进程不会在同一个生命周期内独立重启。" in result.output
 
 
 def test_mech_lifecycles_compact_other_dfx_events_are_human_readable(tmp_path):

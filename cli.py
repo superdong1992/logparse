@@ -163,12 +163,21 @@ def parse(ctx, package_path, config, output, verbose, product, debug_expand_gz):
     if Path(config_path).exists():
         import yaml
         raw_config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    else:
+        click.echo(f"✗ 配置文件不存在: {config_path}", err=True)
+        raise click.exceptions.Exit(1)
     if debug_expand_gz:
         raw_config.setdefault("pipeline", {})
         raw_config["pipeline"]["debug_expand_gz"] = True
+    config_errors = validate_config(raw_config)
+    if config_errors:
+        click.echo(f"✗ 配置检查失败: {len(config_errors)} 个错误", err=True)
+        for error in config_errors:
+            click.echo(f"  - {error}", err=True)
+        raise click.exceptions.Exit(1)
     pipeline = Pipeline(raw_config)
     result = pipeline.run(source, output_dir, product=product, verbose=verbose)
-    _print_parse_errors(result)
+    _print_parse_errors(result, verbose=verbose)
 
     # 输出摘要
     result_json_mode = raw_config.get("pipeline", {}).get("result_json_mode", "compact")
@@ -322,11 +331,40 @@ def _format_kind_counts(counts: Counter[str]) -> str:
     return " ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
 
 
+def _as_plain(value):
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump(mode="json")
+        except TypeError:
+            return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return value
+
+
 def _iter_result_boundary_issues(result: ParseResult):
     for mech_result in result.mech_results:
         for slot in mech_result.slots:
             for issue in slot.boundary_issues:
                 yield issue
+
+
+def _iter_result_v2_results(result: ParseResult):
+    for mech_result in result.mech_results:
+        module_name = mech_result.module_name or mech_result.module_key
+        for slot in mech_result.slots:
+            v2 = _as_plain(slot.lifecycle_split_result)
+            if not isinstance(v2, dict):
+                continue
+            yield module_name, slot.slot_id, v2
+
+
+def _iter_result_v2_issues(result: ParseResult):
+    for module_name, slot_id, v2 in _iter_result_v2_results(result):
+        for issue in v2.get("issues") or []:
+            yield module_name, slot_id, issue
 
 
 def _is_lifecycle_dfx_error(message: str) -> bool:
@@ -349,24 +387,47 @@ def _lifecycle_error_severity(message: str) -> str:
     return "WARNING"
 
 
-def _print_parse_errors(result: ParseResult) -> None:
+def _print_parse_errors(result: ParseResult, *, verbose: bool = False) -> None:
     raw_errors = list(result.errors)
     lifecycle_errors = [err for err in raw_errors if _is_lifecycle_dfx_error(err)]
     normal_errors = [err for err in raw_errors if not _is_lifecycle_dfx_error(err)]
 
     issues = list(_iter_result_boundary_issues(result))
+    v2_issues = list(_iter_result_v2_issues(result))
     counts = _boundary_issue_counts(issues)
-    if not issues:
+    for _module_name, _slot_id, issue in v2_issues:
+        counts[_severity_key(_issue_get(issue, "severity"))] += 1
+    if not issues and not v2_issues:
         for err in lifecycle_errors:
             counts[_lifecycle_error_severity(err)] += 1
 
     if sum(counts.values()):
         click.echo(f"\n⚠ 生命周期切分诊断: {_format_issue_counts(counts)}")
-        click.echo(
-            "  定位: "
-            f"python cli.py mech-lifecycles {result.task_id} "
-            "-s <slot_id> -m <module_name> --show-boundaries"
-        )
+        if issues or not v2_issues:
+            click.echo(
+                "  定位: "
+                f"python cli.py mech-lifecycles {result.task_id} "
+                "-s <slot_id> -m <module_name> --show-boundaries"
+            )
+        printed_commands: set[str] = set()
+        for module_name, slot_id, issue in v2_issues:
+            if verbose or _severity_key(_issue_get(issue, "severity")) == "ERROR":
+                _print_v2_issue_compact(issue, indent="  ")
+                command = (
+                    f"python cli.py mech-lifecycles {result.task_id} "
+                    f"-s {slot_id} -m {module_name} --show-boundaries"
+                )
+                if command not in printed_commands:
+                    click.echo(f"    定位: {command}")
+                    printed_commands.add(command)
+
+    if verbose:
+        v2_results = list(_iter_result_v2_results(result))
+        if v2_results:
+            click.echo("\n生命周期切分 V2 compact DFX:")
+            for module_name, slot_id, v2 in v2_results:
+                click.echo(f"  module={module_name} slot={slot_id}")
+                _print_lifecycle_split_v2(v2, detail="compact")
 
     if normal_errors:
         click.echo(f"\n⚠ {len(normal_errors)} 个错误:")
@@ -886,9 +947,9 @@ def _print_boundary_issue_full(issue: dict, task_id: str) -> None:
 
 
 def _print_lifecycle_split_v2(result: dict, detail: str = "compact") -> None:
-    boundaries = result.get("boundaries") or []
-    evidence = result.get("evidence") or []
-    issues = result.get("issues") or []
+    boundaries = [_as_plain(item) for item in (result.get("boundaries") or [])]
+    evidence = [_as_plain(item) for item in (result.get("evidence") or [])]
+    issues = [_as_plain(item) for item in (result.get("issues") or [])]
     reliable = str(result.get("lifecycle_reliable", True)).lower()
     click.echo(
         "  lifecycle_split_v2: "
@@ -897,13 +958,7 @@ def _print_lifecycle_split_v2(result: dict, detail: str = "compact") -> None:
     )
 
     for issue in issues:
-        severity = _severity_key(issue.get("severity"))
-        scope = _format_v2_scope(issue)
-        title = issue.get("title_zh") or issue.get("type") or "-"
-        click.echo(
-            f"    [{severity}] {issue.get('type') or '-'} "
-            f"scope={scope} title={title}"
-        )
+        _print_v2_issue_compact(issue, indent="    ")
 
     for boundary in boundaries:
         scope = _format_v2_scope(boundary, scope_field="origin_scope")
@@ -914,9 +969,6 @@ def _print_lifecycle_split_v2(result: dict, detail: str = "compact") -> None:
             f"support={support_count}"
         )
 
-    if detail != "full":
-        return
-
     for item in evidence:
         scope = _format_v2_scope(item)
         covered = len(item.get("covered_boundaries") or [])
@@ -924,11 +976,187 @@ def _print_lifecycle_split_v2(result: dict, detail: str = "compact") -> None:
             f"    evidence {item.get('type') or '-'} "
             f"scope={scope} support={item.get('support_type') or '-'} covered={covered}"
         )
+        if detail == "full" and item.get("support_type") == "wide_support":
+            click.echo(
+                "      wide_support: 区间内至少发生过重启但无法定位到单一边界，不是天然 error"
+            )
+
+    if detail != "full":
+        return
+
+    for issue in issues:
+        _print_v2_issue_full(issue, indent="    ")
 
 
-def _format_v2_scope(item: dict, *, scope_field: str = "scope") -> str:
-    scope = item.get(scope_field) or item.get("scope") or "-"
-    cpu_id = item.get("cpu_id")
+def _print_v2_issue_compact(issue, *, indent: str = "    ") -> None:
+    issue_type = _issue_get(issue, "type") or "-"
+    severity = _severity_key(_issue_get(issue, "severity"))
+    scope = _format_v2_scope(issue)
+    process = _issue_get(issue, "related_process") or ""
+    observed_pids = _issue_get(issue, "observed_pids") or []
+    parts = [f"{indent}[{severity}] {issue_type}", f"scope={scope}"]
+    if process:
+        parts.append(f"process={process}")
+    if observed_pids:
+        parts.append(f"pids={','.join(str(pid) for pid in observed_pids)}")
+    if not process and not observed_pids:
+        title = _issue_get(issue, "title_zh") or issue_type
+        parts.append(f"title={title}")
+    click.echo(" ".join(parts))
+
+    if issue_type == "same_pid_single_boundary_conflict":
+        for pair in _issue_get(issue, "conflicting_cycle_pairs", []) or []:
+            left = _issue_get(pair, "left_cycle_index")
+            right = _issue_get(pair, "right_cycle_index")
+            boundary_time = _issue_get(pair, "boundary_timestamp")
+            before = _issue_get(pair, "before_seen")
+            after = _issue_get(pair, "after_seen")
+            click.echo(
+                f"{indent}  cycle {left}->{right} "
+                f"boundary={_format_issue_time(boundary_time)} "
+                f"before={_format_issue_time(before)} after={_format_issue_time(after)}"
+            )
+    elif issue_type == "reliable_process_multiple_pid_in_cycle":
+        for cycle in _issue_get(issue, "affected_cycles", []) or []:
+            cycle_scope = _format_v2_scope(cycle)
+            click.echo(
+                f"{indent}  affected-cycle {cycle_scope} "
+                f"cycle={_issue_get(cycle, 'cycle_index')}"
+            )
+
+
+def _print_v2_issue_full(issue, *, indent: str = "    ") -> None:
+    issue_type = _issue_get(issue, "type") or "-"
+    printed = False
+    printed |= _print_zh_field(issue, "rule_zh", "适用规则", indent=indent)
+    printed |= _print_zh_field(issue, "facts_zh", "观测事实", indent=indent)
+    printed |= _print_zh_field(issue, "current_result_zh", "当前切分结果", indent=indent)
+    printed |= _print_zh_field(issue, "conflict_reason_zh", "矛盾原因", indent=indent)
+    printed |= _print_zh_field(issue, "impact_zh", "影响范围", indent=indent)
+    printed |= _print_zh_field(issue, "action_zh", "处理结果", indent=indent)
+    if not printed:
+        title = _issue_get(issue, "title_zh")
+        explanation = _issue_get(issue, "explanation_zh")
+        if title:
+            click.echo(f"{indent}标题: {title}")
+        if explanation:
+            click.echo(f"{indent}说明: {explanation}")
+
+    if issue_type == "reliable_process_multiple_pid_in_cycle":
+        _print_v2_reliable_multi_pid_full(issue, indent=indent)
+    elif issue_type == "same_pid_single_boundary_conflict":
+        _print_v2_same_pid_full(issue, indent=indent)
+
+
+def _print_zh_field(issue, field: str, label: str, *, indent: str) -> bool:
+    value = _issue_get(issue, field)
+    if value:
+        click.echo(f"{indent}{label}: {value}")
+        return True
+    return False
+
+
+def _print_v2_reliable_multi_pid_full(issue, *, indent: str) -> None:
+    process = _issue_get(issue, "related_process") or "-"
+    window = _issue_get(issue, "cycle_window", {}) or {}
+    window_start = _format_issue_time(_issue_get(window, "start_time"))
+    window_end = _format_issue_time(_issue_get(window, "end_time"))
+    for cycle in _issue_get(issue, "affected_cycles", []) or []:
+        cycle_scope = _format_v2_scope(cycle)
+        click.echo(
+            f"{indent}affected-cycle {cycle_scope} cycle={_issue_get(cycle, 'cycle_index')} "
+            f"window={window_start}..{window_end}"
+        )
+
+    for run in _issue_get(issue, "pid_runs", []) or []:
+        pid = _issue_get(run, "pid")
+        click.echo(
+            f"{indent}pid-run {process}-{pid} "
+            f"first={_format_issue_time(_issue_get(run, 'first_seen'))} "
+            f"last={_format_issue_time(_issue_get(run, 'last_seen'))}"
+        )
+        first_raw = _issue_get(run, "first_raw")
+        last_raw = _issue_get(run, "last_raw")
+        if first_raw:
+            click.echo(f"{indent}  first-raw {first_raw}")
+        if last_raw and last_raw != first_raw:
+            click.echo(f"{indent}  last-raw {last_raw}")
+
+    for interval in _issue_get(issue, "expected_boundary_intervals", []) or []:
+        covered = _issue_get(interval, "covered_boundaries", []) or []
+        click.echo(
+            f"{indent}expected-boundary "
+            f"({_format_issue_time(_issue_get(interval, 'left_open_time'))}, "
+            f"{_format_issue_time(_issue_get(interval, 'right_closed_time'))}] "
+            f"old={_issue_get(interval, 'old_pid')} new={_issue_get(interval, 'new_pid')} "
+            f"covered={len(covered)}"
+        )
+        for boundary in covered:
+            _print_v2_boundary_source(boundary, indent=indent + "  ")
+
+
+def _print_v2_same_pid_full(issue, *, indent: str) -> None:
+    for pair in _issue_get(issue, "conflicting_cycle_pairs", []) or []:
+        click.echo(
+            f"{indent}conflict-cycle-pair "
+            f"{_issue_get(pair, 'left_cycle_index')}->{_issue_get(pair, 'right_cycle_index')} "
+            f"boundary={_format_issue_time(_issue_get(pair, 'boundary_timestamp'))} "
+            f"before={_format_issue_time(_issue_get(pair, 'before_seen'))} "
+            f"after={_format_issue_time(_issue_get(pair, 'after_seen'))}"
+        )
+        boundary = _issue_get(pair, "boundary")
+        if boundary:
+            _print_v2_boundary_source(boundary, indent=indent)
+
+
+def _print_v2_boundary_source(boundary, *, indent: str) -> None:
+    boundary = _as_plain(boundary)
+    if not isinstance(boundary, dict):
+        return
+    origin = _format_v2_scope(boundary, scope_field="origin_scope")
+    effective = _format_v2_scope(boundary)
+    inherited = str(bool(boundary.get("inherited"))).lower()
+    click.echo(
+        f"{indent}boundary-source {boundary.get('type') or '-'} "
+        f"origin={origin} effective={effective} inherited={inherited} "
+        f"time={_format_issue_time(boundary.get('timestamp'))}"
+    )
+    for evidence in boundary.get("support_evidence") or []:
+        _print_v2_support_evidence(evidence, indent=indent + "  ")
+
+
+def _print_v2_support_evidence(evidence, *, indent: str) -> None:
+    evidence = _as_plain(evidence)
+    if not isinstance(evidence, dict):
+        return
+    process = evidence.get("process_name") or "-"
+    parts = [f"{indent}support-evidence process={process}"]
+    old_sequence = evidence.get("old_sequence")
+    new_sequence = evidence.get("new_sequence")
+    if old_sequence or new_sequence:
+        parts.append(f"old_seq={old_sequence or '-'} new_seq={new_sequence or '-'}")
+    old_pid = evidence.get("old_pid")
+    new_pid = evidence.get("new_pid")
+    if old_pid or new_pid:
+        parts.append(f"old_pid={old_pid or '-'} new_pid={new_pid or '-'}")
+    old_time = evidence.get("old_observed_time")
+    new_time = evidence.get("new_observed_time")
+    if old_time or new_time:
+        parts.append(
+            f"old={_format_issue_time(old_time)} new={_format_issue_time(new_time)}"
+        )
+    click.echo(" ".join(parts))
+    old_raw = evidence.get("old_raw")
+    new_raw = evidence.get("new_raw")
+    if old_raw:
+        click.echo(f"{indent}  old-raw {old_raw}")
+    if new_raw and new_raw != old_raw:
+        click.echo(f"{indent}  new-raw {new_raw}")
+
+
+def _format_v2_scope(item, *, scope_field: str = "scope") -> str:
+    scope = _issue_get(item, scope_field) or _issue_get(item, "scope") or "-"
+    cpu_id = _issue_get(item, "cpu_id")
     if scope == "cpu" and cpu_id:
         return f"cpu_{cpu_id}"
     return str(scope)
