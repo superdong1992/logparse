@@ -19,6 +19,7 @@ python cli.py check-config
 ```bash
 # 解析
 python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product default|compact]
+python cli.py parse <package_path> -c config.lifecycle-v2.yaml --product default  # 默认产品启用 lifecycle_split v2
 python cli.py parse <package_path> --debug-expand-gz   # 调试用：就地展开普通 .gz 日志
 
 # 查询
@@ -53,7 +54,14 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 
 生命周期切分报错和 DFX 字段解读见 `docs/lifecycle-dfx-guide.md`。定位边界问题时可使用 `mech-lifecycles --show-boundaries` 查看结构化证据和建议查询命令。
 
-`module1` 的新一代生命周期切分 `lifecycle_split` v2 默认关闭，只有显式配置 `enabled: true` 时才启用；未配置或 `enabled: false` 时继续使用旧 `CycleDetector`。启用后，compact `result.json` 会在对应 slot 下写入 `lifecycle_split_result`，其中包含 v2 boundaries、evidence 和 issues。查看方式：
+`module1` 的新一代生命周期切分 `lifecycle_split` v2 默认关闭，只有显式配置 `enabled: true` 时才启用；未配置或 `enabled: false` 时继续使用旧 `CycleDetector`。仓库提供两份配置文件用于显式切换：`config.yaml` 保持默认产品 v2 关闭，`config.lifecycle-v2.yaml` 在默认产品 `module1` 中开启 v2。运行时通过 `-c/--config` 指定即可：
+
+```bash
+python cli.py parse diagnostic_information_20260103.zip -c config.yaml --product default
+python cli.py parse diagnostic_information_20260103.zip -c config.lifecycle-v2.yaml --product default
+```
+
+启用后，compact `result.json` 会在对应 slot 下写入 `lifecycle_split_result`，其中包含 v2 boundaries、evidence 和 issues。这里的 compact 指轻量 `result.json` 输出模式，不是 `--product compact` 产品分支。查看方式：
 
 ```bash
 python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --boundary-detail full

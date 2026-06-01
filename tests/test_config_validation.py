@@ -1,9 +1,15 @@
 """Tests for backend/config_validation.py."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from backend.config_validation import validate_config, validate_mechanism_module_config
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestValidateMechanismModuleConfig:
@@ -473,3 +479,26 @@ class TestPluginSubclassValidation:
         """使用实际插件类时应通过子类校验。"""
         errors = validate_config({"products": {"default": _valid_product_config()}})
         assert not any("子类" in e for e in errors)
+
+
+class TestShippedConfigFiles:
+    def test_default_and_lifecycle_v2_configs_validate_and_toggle_default_product(self):
+        default_cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+        v2_cfg = yaml.safe_load((ROOT / "config.lifecycle-v2.yaml").read_text(encoding="utf-8"))
+
+        assert validate_config(default_cfg) == []
+        assert validate_config(v2_cfg) == []
+
+        default_module = (
+            default_cfg["products"]["default"]["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
+        )
+        v2_module = (
+            v2_cfg["products"]["default"]["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
+        )
+        compact_module = (
+            v2_cfg["products"]["compact"]["log_parser"]["config"]["mechanism_modules"]["ctrl"]["config"]
+        )
+
+        assert default_module["lifecycle_split"]["enabled"] is False
+        assert v2_module["lifecycle_split"]["enabled"] is True
+        assert compact_module["lifecycle_split"]["enabled"] is False

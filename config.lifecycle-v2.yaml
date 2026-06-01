@@ -98,18 +98,20 @@ products:
               process_name_mapping: {}
 
               # [按需修改] lifecycle_split v2（默认产品 module1）
-              # 当前 config.yaml 故意保持 enabled: false，用作旧 CycleDetector/兼容配置。
-              # 若要在默认产品启用 v2，优先使用 config.lifecycle-v2.yaml：
+              # 当前 config.lifecycle-v2.yaml 故意保持 enabled: true，用于通过配置文件切到 v2。
+              # 使用方式：
               #   python cli.py parse <package_path> -c config.lifecycle-v2.yaml --product default
-              # 只有 enabled: true 会启用 v2；未配置 lifecycle_split 或 enabled: false 都走旧 CycleDetector。
+              # 如果要回到旧 CycleDetector，改用默认 config.yaml，或把这里改成 enabled: false。
               # 注意：这里的 process_name_mapping 是 v2 专用别名表，格式为
               #   canonical_name: [alias_in_diag, alias_in_journal]
               # 它不同于上面的旧 process_name_mapping（诊断日志名 -> journal 日志名）。
               # reliable_processes.board：PID 变化代表整板生命周期边界的可靠进程。
               # reliable_processes.cpu：PID 变化只代表对应 CPU 生命周期边界的可靠进程。
               # multi_instance_processes：允许同名多实例的进程，不参与 same PID 一致性校验，也不作为边界证据。
+              # 提醒：开启 v2 但 reliable_processes 为空时，解析器会走 v2，但不会从可靠进程 PID 变化生成边界。
+              # 真正落到产品前，应把能代表生命周期的真实进程名填到 board/cpu 列表里。
               lifecycle_split:
-                enabled: false
+                enabled: true
                 process_name_mapping: {}
                 reliable_processes:
                   board: []

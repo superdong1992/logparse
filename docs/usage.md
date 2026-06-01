@@ -136,6 +136,15 @@ python cli.py parse diagnostic_information_20260103.zip \
   --product default
 ```
 
+默认产品启用 lifecycle_split v2：
+
+```bash
+python cli.py parse diagnostic_information_20260103.zip \
+  --config config.lifecycle-v2.yaml \
+  --output output \
+  --product default
+```
+
 解析 compact 产品：
 
 ```bash
@@ -268,6 +277,17 @@ python cli.py mech-lifecycles diagnostic_information_20260103 \
 `module1` 的 `lifecycle_split` v2 默认关闭。只有在机制模块配置里显式写
 `enabled: true` 时才启用；未配置 `lifecycle_split` 或写 `enabled: false`
 都会继续使用旧 `CycleDetector`。
+
+仓库提供两份配置文件用于通过 `-c/--config` 切换默认产品的实现：
+
+| 配置文件 | 默认产品 `module1` 行为 | 用法 |
+|---|---|---|
+| `config.yaml` | `lifecycle_split.enabled: false`，继续使用旧 `CycleDetector` | `python cli.py parse <package> -c config.yaml --product default` |
+| `config.lifecycle-v2.yaml` | `lifecycle_split.enabled: true`，默认产品走 v2 | `python cli.py parse <package> -c config.lifecycle-v2.yaml --product default` |
+
+注意：配置文件里的 `products.compact` 是 `--product compact` 的产品示例；它和
+`pipeline.result_json_mode: "compact"` 的轻量 `result.json` 输出模式不是一回事。
+默认产品解析只读取 `products.default` 下的机制模块配置。
 
 启用示例：
 
