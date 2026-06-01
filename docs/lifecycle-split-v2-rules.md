@@ -166,7 +166,8 @@ candidate_time = new_observed.timestamp
 - 候选切点是离散 timestamp，来自该证据的 `new_observed.timestamp`。
 - 每条有效正向证据必须自带至少一个区间内候选点。
 - 普通唯一进程 PID changed 不能生成生命周期边界，因为它可能只是进程在同一生命周期内独立重启。
-- 缺 timestamp、缺必要 PID、CPU evidence 缺 `cpu_id`、时间顺序非法、journal 序号缺失导致无法判断回绕，属于 `invalid_lifecycle_evidence` 这类输入/解析异常。
+- 被用于正向边界求解的证据如果缺 timestamp、缺必要 PID、CPU evidence 缺 `cpu_id` 或时间顺序非法，属于 `invalid_lifecycle_evidence` 这类输入/解析异常。
+- journal 缺 PID 或缺 `No[]` 序号是正常日志形态，不属于 `invalid_lifecycle_evidence`；这类 entry 仍保留归档，但不参与可靠进程 PID changed 或 journal 序号回绕求解。
 - gap 小于 30 秒不属于 `invalid_lifecycle_evidence`，应视为实现构造了不可能的生命周期证据。
 
 ### 正向约束生成算法
@@ -619,7 +620,7 @@ LifecycleSplitResult:
 生命周期证据结构无效
 
 适用规则：
-正向边界证据必须包含可解析 timestamp、必要 PID 或 journal 序号，以及 CPU 证据所需的 cpu_id。
+正向边界证据必须包含可解析 timestamp、必要 PID 或 journal 序号，以及 CPU 证据所需的 cpu_id。普通 journal entry 缺 PID 或缺 `No[]` 时不是无效证据，只是不参与正向边界求解。
 
 观测事实：
 列出缺失或非法字段，以及对应原始日志定位信息。
@@ -634,7 +635,7 @@ LifecycleSplitResult:
 说明影响 slot / board / cpu / process。
 
 处理结果：
-记录 invalid_lifecycle_evidence；对应 scope 和 slot 标记 lifecycle_reliable=false。
+记录 invalid_lifecycle_evidence，带上中文原因、source、source_file 和 raw_excerpt；对应 scope 和 slot 标记 lifecycle_reliable=false。
 ```
 
 ### config issue 解释模板

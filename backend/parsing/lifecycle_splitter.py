@@ -169,6 +169,10 @@ class LifecycleIssue(BaseModel):
     conflicting_cycle_pairs: list[dict[str, Any]] = Field(default_factory=list)
     observed_pids: list[str] = Field(default_factory=list)
     observed_time: datetime | None = None
+    source: str = ""
+    source_file: str = ""
+    raw_excerpt: str = ""
+    reason_zh: str = ""
     cycle_window: dict[str, Any] = Field(default_factory=dict)
     pid_runs: list[dict[str, Any]] = Field(default_factory=list)
     expected_boundary_intervals: list[dict[str, Any]] = Field(default_factory=list)
@@ -461,7 +465,16 @@ class LifecycleSplitter:
                 ]
                 observations: list[MechLogEntry] = []
                 for entry in process_entries:
-                    if entry.timestamp is None or not entry.pid:
+                    if not entry.pid:
+                        if entry.source == "journal":
+                            continue
+                        issues.append(self._invalid_evidence_issue(
+                            entry,
+                            scope=scope,
+                            reason="可靠进程 PID 变化证据缺少 timestamp 或 PID。",
+                        ))
+                        continue
+                    if entry.timestamp is None:
                         issues.append(self._invalid_evidence_issue(
                             entry,
                             scope=scope,
@@ -504,11 +517,13 @@ class LifecycleSplitter:
 
             journal_observations: list[MechLogEntry] = []
             for entry in [entry for entry in scope_entries if entry.source == "journal"]:
-                if entry.timestamp is None or entry.sequence <= 0:
+                if entry.sequence <= 0:
+                    continue
+                if entry.timestamp is None:
                     issues.append(self._invalid_evidence_issue(
                         entry,
                         scope=scope,
-                        reason="journal 序号回绕证据缺少 timestamp 或 sequence。",
+                        reason="journal 序号回绕证据缺少 timestamp。",
                     ))
                     continue
                 journal_observations.append(entry)
@@ -1130,6 +1145,10 @@ class LifecycleSplitter:
             cpu_id=cpu_id,
             related_process=entry.process_name,
             observed_time=entry.timestamp,
+            source=entry.source,
+            source_file=entry.source_file,
+            raw_excerpt=entry.raw,
+            reason_zh=reason,
             title_zh="生命周期证据结构无效",
             rule_zh="正向边界证据必须包含可解析 timestamp、必要 PID 或 journal 序号，并形成 old_observed < boundary <= new_observed 的有效区间。",
             facts_zh=(

@@ -292,6 +292,61 @@ def test_module1_plugin_v2_treats_cpu_id_zero_as_board_scope(tmp_path):
     )
 
 
+def test_module1_plugin_v2_ignores_no_pid_no_sequence_journal_for_reliable_process(tmp_path):
+    diag_file = tmp_path / "diag.log"
+    diag_file.write_text(
+        "\n".join([
+            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-100; Context=old)",
+            "2026-01-03T01:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
+            "ProcessName=dhcp-200; Context=new)",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    journal_file = tmp_path / "journal.log"
+    journal_file.write_text(
+        "\n".join([
+            "2026-01-03T00:10:00 host dhcp: EXAMPLE journal without pid",
+            "2026-01-03T00:20:00 host dhcp: EXAMPLE another journal without pid",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(diag_file), name="diag.log"))
+    private_slot = PrivateSlotInfo(
+        dir_name="slot_1",
+        slot_id="1",
+        path=str(tmp_path),
+        journal_logs=[JournalLogFile(path=str(journal_file), name="journal.log")],
+    )
+    result = ParseResult(diagnostic_slots=[slot], private_slots=[private_slot])
+    cfg = _module1_config()
+    cfg["journal"] = {
+        "line_pattern": "",
+        "line_pattern2": r"^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+(.+)$",
+        "identifying_keyword": "example",
+    }
+    cfg["lifecycle_split"] = {
+        "enabled": True,
+        "reliable_processes": ["dhcp"],
+    }
+    plugin = Module1Plugin(
+        cfg,
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    slot_output = mech.slots[0]
+    assert slot_output.lifecycle_reliable is True
+    assert slot_output.lifecycle_split_result is not None
+    assert slot_output.lifecycle_split_result.issues == []
+    assert len(slot_output.lifecycle_split_result.boundaries) == 1
+    assert mech.journal_entry_count == 2
+
+
 def _module1_journal_sequence_config() -> dict:
     cfg = _module1_config()
     cfg["diag_pattern"] = ""

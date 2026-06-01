@@ -149,7 +149,7 @@ candidate_time = new_observed.timestamp
 
 普通唯一进程 PID changed 不生成正向边界约束。
 
-结构性无效证据记录为 `invalid_lifecycle_evidence`，包括缺 timestamp、缺必要 PID、CPU evidence 缺 `cpu_id`、时间顺序非法、journal 序号缺失导致无法判断回绕。gap 小于 30 秒不是该 issue；若出现，视为内部 invariant 失败。
+结构性无效证据记录为 `invalid_lifecycle_evidence`，包括被用于正向边界求解的证据缺 timestamp、缺必要 PID、CPU evidence 缺 `cpu_id` 或时间顺序非法。journal 缺 PID 或缺 `No[]` 序号是正常日志形态，不属于该 issue。gap 小于 30 秒不是该 issue；若出现，视为内部 invariant 失败。
 
 ## 阶段 4：board / CPU 分层求解
 
@@ -400,7 +400,7 @@ CPU scope 必须使用 inherited board boundaries + CPU-local boundaries 进行�
 - 宽区间覆盖多个 boundary 时记录为 `wide_support`，且不挂到单个 boundary。
 - `wide_support` 不合并多个 boundary，也不生成 issue。
 - `tight_support` 和 `wide_support` 都出现在 `result.evidence`。
-- 无 timestamp、缺必要 PID、CPU evidence 缺 cpu_id、journal 序号缺失等结构性无效证据输出 `invalid_lifecycle_evidence`。
+- 被用于正向边界求解的证据缺 timestamp、缺必要 PID、CPU evidence 缺 cpu_id 或时间顺序非法时输出 `invalid_lifecycle_evidence`；普通 journal 缺 PID 或缺 `No[]` 序号不输出该 issue。
 - 有效约束无候选点触发 `LifecycleSolverInvariantError`，不输出正常业务 issue。
 - boundary / issue / evidence 输出中文解释，并符合各自模板。
 - 中文 DFX 中包含进程名、PID、cycle pair、boundary timestamp、support 类型中文说明。

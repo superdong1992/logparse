@@ -1004,7 +1004,11 @@ def _print_v2_issue_compact(issue, *, indent: str = "    ") -> None:
         parts.append(f"title={title}")
     click.echo(" ".join(parts))
 
-    if issue_type == "same_pid_single_boundary_conflict":
+    if issue_type == "invalid_lifecycle_evidence":
+        reason = _issue_get(issue, "reason_zh") or _issue_get(issue, "explanation_zh")
+        if reason:
+            click.echo(f"{indent}  原因: {reason}")
+    elif issue_type == "same_pid_single_boundary_conflict":
         for pair in _issue_get(issue, "conflicting_cycle_pairs", []) or []:
             left = _issue_get(pair, "left_cycle_index")
             right = _issue_get(pair, "right_cycle_index")
@@ -1046,6 +1050,8 @@ def _print_v2_issue_full(issue, *, indent: str = "    ") -> None:
         _print_v2_reliable_multi_pid_full(issue, indent=indent)
     elif issue_type == "same_pid_single_boundary_conflict":
         _print_v2_same_pid_full(issue, indent=indent)
+    elif issue_type == "invalid_lifecycle_evidence":
+        _print_v2_invalid_evidence_full(issue, indent=indent)
 
 
 def _print_zh_field(issue, field: str, label: str, *, indent: str) -> bool:
@@ -1054,6 +1060,22 @@ def _print_zh_field(issue, field: str, label: str, *, indent: str) -> bool:
         click.echo(f"{indent}{label}: {value}")
         return True
     return False
+
+
+def _print_v2_invalid_evidence_full(issue, *, indent: str) -> None:
+    reason = _issue_get(issue, "reason_zh")
+    if reason:
+        click.echo(f"{indent}原因: {reason}")
+
+    source = _issue_get(issue, "source")
+    source_file = _issue_get(issue, "source_file")
+    if source or source_file:
+        parts = [str(item) for item in (source, source_file) if item]
+        click.echo(f"{indent}来源: {' '.join(parts)}")
+
+    raw_excerpt = _issue_get(issue, "raw_excerpt")
+    if raw_excerpt:
+        click.echo(f"{indent}原始日志: {raw_excerpt}")
 
 
 def _print_v2_reliable_multi_pid_full(issue, *, indent: str) -> None:

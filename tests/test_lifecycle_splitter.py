@@ -18,11 +18,13 @@ def _entry(
     cpu_id: str = "",
     context: str = "",
     source: str = "diagnostic",
+    source_file: str = "",
     sequence: int | None = None,
 ) -> MechLogEntry:
     return MechLogEntry(
         timestamp=_ts(minutes) if minutes is not None else None,
         source=source,
+        source_file=source_file,
         slot="1",
         cpu_id=cpu_id,
         process_name=process_name,
@@ -214,16 +216,20 @@ def test_invalid_lifecycle_evidence_marks_scope_and_result_unreliable():
     splitter = LifecycleSplitter(cfg)
 
     result = splitter.split([
-        _entry("board_anchor", "", 10),
+        _entry("board_anchor", "", 10, source_file="slot_1/diag.log"),
         _entry("cpu_anchor", "100", 20),
         _journal(30, 0),
     ])
 
     assert result.lifecycle_reliable is False
     assert {issue.type for issue in result.issues} == {"invalid_lifecycle_evidence"}
-    assert len(result.issues) == 2
-    assert any("PID" in issue.explanation_zh for issue in result.issues)
-    assert any("journal" in issue.explanation_zh for issue in result.issues)
+    assert len(result.issues) == 1
+    issue = result.issues[0]
+    assert "PID" in issue.explanation_zh
+    assert issue.reason_zh == "可靠进程 PID 变化证据缺少 timestamp 或 PID。"
+    assert issue.source == "diagnostic"
+    assert issue.source_file == "slot_1/diag.log"
+    assert issue.raw_excerpt == "board_anchor- "
     assert any(scope.lifecycle_reliable is False for scope in result.scopes)
     assert all(issue.rule_zh for issue in result.issues)
     assert all(issue.facts_zh for issue in result.issues)
@@ -238,6 +244,62 @@ def test_invalid_lifecycle_evidence_marks_scope_and_result_unreliable():
         for issue in result.issues
     )
     assert result.cycles[0].lifecycle_reliable is False
+
+
+def test_reliable_pid_change_ignores_no_pid_journal_observations():
+    cfg = LifecycleSplitConfig.from_mapping({
+        "reliable_processes": ["anchor"],
+    })
+    splitter = LifecycleSplitter(cfg)
+
+    result = splitter.split([
+        _entry("anchor", "10", 10, source_file="slot_1/diag.log"),
+        _entry(
+            "anchor",
+            "",
+            20,
+            source="journal",
+            source_file="slot_1/journal.log",
+            sequence=0,
+            context="journal line without pid or No[]",
+        ),
+        _entry("anchor", "11", 70, source_file="slot_1/diag.log"),
+    ])
+
+    assert result.lifecycle_reliable is True
+    assert result.issues == []
+    assert len(result.boundaries) == 1
+    assert result.boundaries[0].type == "reliable_process_pid_changed"
+    assert result.boundaries[0].timestamp == _ts(70)
+
+
+def test_no_sequence_journal_is_not_invalid_lifecycle_evidence():
+    splitter = LifecycleSplitter(LifecycleSplitConfig.from_mapping({}))
+
+    result = splitter.split([
+        _entry(
+            "journal_proc",
+            "",
+            10,
+            source="journal",
+            source_file="slot_1/journal.log",
+            sequence=0,
+            context="journal line without No[]",
+        ),
+        _entry(
+            "journal_proc",
+            "",
+            20,
+            source="journal",
+            source_file="slot_1/journal.log",
+            sequence=0,
+            context="another journal line without No[]",
+        ),
+    ])
+
+    assert result.lifecycle_reliable is True
+    assert result.issues == []
+    assert result.boundaries == []
 
 
 def test_same_timestamp_journal_sequence_wrap_is_invalid_evidence():

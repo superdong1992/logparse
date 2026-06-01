@@ -1043,6 +1043,139 @@ def test_mech_lifecycles_v2_full_falls_back_for_issue_without_zh_sections(tmp_pa
     assert "说明: 可靠进程 PID 变化证据缺少 timestamp 或 PID。" in result.output
 
 
+def test_mech_lifecycles_v2_compact_prints_invalid_evidence_chinese_reason(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "lifecycle_split_result": {
+                                    "lifecycle_reliable": False,
+                                    "boundaries": [],
+                                    "evidence": [],
+                                    "issues": [
+                                        {
+                                            "type": "invalid_lifecycle_evidence",
+                                            "severity": "error",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "related_process": "anchor",
+                                            "reason_zh": "可靠进程 PID 变化证据缺少 timestamp 或 PID。",
+                                            "source": "diagnostic",
+                                            "source_file": "slot_1/diag.log",
+                                            "raw_excerpt": "anchor without pid",
+                                        },
+                                    ],
+                                },
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[ERROR] invalid_lifecycle_evidence scope=board process=anchor" in result.output
+    assert "原因: 可靠进程 PID 变化证据缺少 timestamp 或 PID。" in result.output
+
+
+def test_mech_lifecycles_v2_full_prints_invalid_evidence_source_and_raw(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "lifecycle_split_result": {
+                                    "lifecycle_reliable": False,
+                                    "boundaries": [],
+                                    "evidence": [],
+                                    "issues": [
+                                        {
+                                            "type": "invalid_lifecycle_evidence",
+                                            "severity": "error",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "related_process": "anchor",
+                                            "reason_zh": "可靠进程 PID 变化证据缺少 timestamp 或 PID。",
+                                            "source": "diagnostic",
+                                            "source_file": "slot_1/diag.log",
+                                            "raw_excerpt": "anchor without pid",
+                                            "rule_zh": "正向边界证据必须包含可解析 timestamp 和必要 PID。",
+                                            "facts_zh": "PID=<空>。",
+                                            "current_result_zh": "该日志无法构造成可求解的正向生命周期边界约束。",
+                                            "conflict_reason_zh": "输入或解析结果缺少生命周期切分所需字段。",
+                                            "impact_zh": "slot=1 board 标记 lifecycle_reliable=false。",
+                                            "action_zh": "记录 invalid_lifecycle_evidence。",
+                                        },
+                                    ],
+                                },
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "原因: 可靠进程 PID 变化证据缺少 timestamp 或 PID。" in result.output
+    assert "来源: diagnostic slot_1/diag.log" in result.output
+    assert "原始日志: anchor without pid" in result.output
+
+
 def test_mech_lifecycles_v2_full_expands_reliable_multi_pid_issue(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()

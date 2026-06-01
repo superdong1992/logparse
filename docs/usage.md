@@ -311,6 +311,9 @@ lifecycle_split:
 `reliable_processes` 是统一的 canonical 进程列表，不再拆分 board/cpu。
 日志实际无 `cpu_id` 或 `cpu_id=0` 时，PID changed 生成 board scope 边界证据；
 日志实际带 CPU 编号时，PID changed 生成对应 CPU scope 边界证据。
+journal 缺 PID 或缺 `No[]` 序号是正常输入：这些日志会保留到归档中，但不会被当成
+`invalid_lifecycle_evidence`。只有被用于正向边界求解的证据缺必要字段时才会记录
+`invalid_lifecycle_evidence`，并在 DFX 中带中文原因、来源文件和原始日志片段。
 
 启用后，compact `result.json` 会在 slot 下包含 `lifecycle_split_result`，
 记录 v2 boundaries、evidence 和 issues。普通 `parse` 输出会显示 V2 error 摘要；
