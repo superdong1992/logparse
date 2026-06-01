@@ -196,7 +196,7 @@ def test_module1_plugin_uses_lifecycle_split_v2_when_enabled(tmp_path):
     cfg = _module1_config()
     cfg["lifecycle_split"] = {
         "enabled": True,
-        "reliable_processes": {"board": ["dhcp"], "cpu": []},
+        "reliable_processes": ["dhcp"],
         "multi_instance_processes": [],
     }
     plugin = Module1Plugin(
@@ -269,7 +269,7 @@ def test_module1_plugin_v2_treats_cpu_id_zero_as_board_scope(tmp_path):
     cfg = _module1_config()
     cfg["lifecycle_split"] = {
         "enabled": True,
-        "reliable_processes": {"board": ["dhcp"], "cpu": []},
+        "reliable_processes": ["dhcp"],
     }
     plugin = Module1Plugin(
         cfg,

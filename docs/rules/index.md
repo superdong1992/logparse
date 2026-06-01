@@ -72,8 +72,11 @@ Checklist:
 - `enabled must be an explicit boolean true to enable v2`.
 - Missing `lifecycle_split.enabled` keeps v2 disabled.
 - `enabled: false` keeps the old `CycleDetector` path.
-- `reliable_processes.board`, `reliable_processes.cpu`, and
-  `multi_instance_processes` must be lists when v2 is enabled.
+- `reliable_processes` is a flat list in the current config shape.
+- Legacy `reliable_processes.board` / `reliable_processes.cpu` objects are accepted
+  as compatibility input and merged.
+- `reliable_processes` and `multi_instance_processes` must be disjoint after
+  process name canonicalization and case folding.
 - Conflict checks happen after process name canonicalization and case folding.
 
 ## rules:lifecycle-v2-split
@@ -88,3 +91,4 @@ Checklist:
 - Inherited board boundaries participate in CPU effective boundaries.
 - `wide_support` is top-level evidence only; it is not attached to one boundary.
 - same-PID checks use final effective cycle indexes.
+- reliable processes must not have multiple PIDs in the same final lifecycle cycle.

@@ -304,15 +304,17 @@ lifecycle_split:
       - alias_in_diag
       - alias_in_journal
   reliable_processes:
-    board:
-      - canonical_board_proc
-    cpu:
-      - canonical_cpu_proc
+    - canonical_lifecycle_proc
   multi_instance_processes: []
 ```
 
+`reliable_processes` 是统一的 canonical 进程列表，不再拆分 board/cpu。
+日志实际无 `cpu_id` 或 `cpu_id=0` 时，PID changed 生成 board scope 边界证据；
+日志实际带 CPU 编号时，PID changed 生成对应 CPU scope 边界证据。
+
 启用后，compact `result.json` 会在 slot 下包含 `lifecycle_split_result`，
-记录 v2 boundaries、evidence 和 issues。查看完整解释：
+记录 v2 boundaries、evidence 和 issues。普通 `parse` 输出会显示 V2 error 摘要；
+查看完整中文 DFX：
 
 ```bash
 python cli.py mech-lifecycles diagnostic_information_20260103 \

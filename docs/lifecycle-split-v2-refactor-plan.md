@@ -73,10 +73,7 @@ lifecycle_split:
       - alias_in_journal
 
   reliable_processes:
-    board:
-      - canonical_board_proc
-    cpu:
-      - canonical_cpu_proc
+    - canonical_lifecycle_proc
 
   multi_instance_processes:
     - canonical_multi_instance_proc
@@ -86,7 +83,8 @@ lifecycle_split:
 
 - 所有 entry 进入求解前先做 process name canonical normalization。
 - 后续可靠进程、多实例进程判断都只使用 canonical name。
-- `reliable_processes.board`、`reliable_processes.cpu`、`multi_instance_processes` 必须两两互斥；冲突配置直接判非法。
+- 当前实现中 `reliable_processes` 是统一列表；旧 `reliable_processes.board` / `reliable_processes.cpu` 兼容输入会合并为统一列表。
+- `reliable_processes` 与 `multi_instance_processes` 必须互斥；冲突配置直接判非法。
 - 普通唯一进程由 `process_universe - reliable_processes - multi_instance_processes` 自动推导。
 - `process_universe` 只包含 v2 输入 entries 中 canonical 后且 PID 非空的 observed process。
 - 30 秒最小重启间隔是业务事实前提，不是配置项，不做用户侧 gap 过短 issue。
@@ -382,7 +380,8 @@ CPU scope 必须使用 inherited board boundaries + CPU-local boundaries 进行�
 - 设备形态中某可靠进程一直不存在，不报冲突。
 - 普通唯一进程 PID changed 不单独切生命周期。
 - reliable 与 multi-instance 配置冲突时报配置非法。
-- reliable_processes.board 与 reliable_processes.cpu 重叠时报配置非法。
+- 旧 `reliable_processes.board` 与 `reliable_processes.cpu` 重叠时兼容合并，不再报配置非法。
+- `reliable_processes` 与 `multi_instance_processes` 重叠时报配置非法。
 - 配置冲突在 canonical mapping 后检查。
 - process_name_mapping 在 reliable 边界生成前生效。
 - process_name_mapping 在 same PID key 生成前生效。

@@ -129,8 +129,8 @@ def _model_to_json(value: Any) -> Any:
     if value is None:
         return None
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    return value
+        return _omit_raw_fields(value.model_dump(mode="json"))
+    return _omit_raw_fields(value)
 
 
 def _omit_raw_fields(value: Any) -> Any:
@@ -138,7 +138,7 @@ def _omit_raw_fields(value: Any) -> Any:
         return {
             key: _omit_raw_fields(item)
             for key, item in value.items()
-            if key not in {"raw", "raw_excerpt", "old_raw", "new_raw"}
+            if key not in {"raw", "raw_excerpt", "old_raw", "new_raw", "first_raw", "last_raw"}
         }
     if isinstance(value, list):
         return [_omit_raw_fields(item) for item in value]

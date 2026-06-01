@@ -52,23 +52,60 @@ def _journal(
 
 
 def test_lifecycle_split_config_rejects_falsey_non_object_fields():
-    for bad_field in ("process_name_mapping", "reliable_processes"):
-        try:
-            LifecycleSplitConfig.from_mapping({
-                "enabled": True,
-                bad_field: [],
-            })
-        except ValueError as exc:
-            assert bad_field in str(exc)
-            assert "object" in str(exc)
-        else:
-            raise AssertionError(f"{bad_field} should be rejected")
+    try:
+        LifecycleSplitConfig.from_mapping({
+            "enabled": True,
+            "process_name_mapping": [],
+        })
+    except ValueError as exc:
+        assert "process_name_mapping" in str(exc)
+        assert "object" in str(exc)
+    else:
+        raise AssertionError("process_name_mapping should be rejected")
+
+    try:
+        LifecycleSplitConfig.from_mapping({
+            "enabled": True,
+            "reliable_processes": "anchor",
+        })
+    except ValueError as exc:
+        assert "reliable_processes" in str(exc)
+        assert "list" in str(exc)
+    else:
+        raise AssertionError("reliable_processes should reject scalar values")
+
+
+def test_lifecycle_split_config_accepts_flat_and_legacy_reliable_processes():
+    flat = LifecycleSplitConfig.from_mapping({
+        "reliable_processes": ["board_anchor", "cpu_anchor"],
+    })
+    legacy = LifecycleSplitConfig.from_mapping({
+        "reliable_processes": {
+            "board": ["board_anchor"],
+            "cpu": ["cpu_anchor", "board_anchor"],
+        },
+    })
+
+    assert flat.reliable_processes == ["board_anchor", "cpu_anchor"]
+    assert legacy.reliable_processes == ["board_anchor", "cpu_anchor"]
+
+
+def test_lifecycle_split_config_rejects_unknown_legacy_reliable_process_keys():
+    try:
+        LifecycleSplitConfig.from_mapping({
+            "reliable_processes": {"boad": ["board_anchor"]},
+        })
+    except ValueError as exc:
+        assert "unsupported legacy keys" in str(exc)
+        assert "boad" in str(exc)
+    else:
+        raise AssertionError("legacy reliable_processes should reject unknown keys")
 
 
 def test_reliable_board_pid_change_creates_v2_result_and_board_cycles():
     cfg = LifecycleSplitConfig.from_mapping({
         "process_name_mapping": {"board_anchor": ["boardd"]},
-        "reliable_processes": {"board": ["board_anchor"], "cpu": []},
+        "reliable_processes": ["board_anchor"],
         "multi_instance_processes": [],
     })
     splitter = LifecycleSplitter(cfg)
@@ -102,7 +139,7 @@ def test_reliable_board_pid_change_creates_v2_result_and_board_cycles():
 
 def test_cpu_reliable_pid_change_only_creates_cpu_local_boundary():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": ["board_anchor"], "cpu": ["cpu_anchor"]},
+        "reliable_processes": ["board_anchor", "cpu_anchor"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -172,7 +209,7 @@ def test_cpu_journal_sequence_wrap_only_creates_cpu_local_boundary():
 
 def test_invalid_lifecycle_evidence_marks_scope_and_result_unreliable():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": ["board_anchor"], "cpu": ["cpu_anchor"]},
+        "reliable_processes": ["board_anchor", "cpu_anchor"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -184,16 +221,63 @@ def test_invalid_lifecycle_evidence_marks_scope_and_result_unreliable():
 
     assert result.lifecycle_reliable is False
     assert {issue.type for issue in result.issues} == {"invalid_lifecycle_evidence"}
-    assert len(result.issues) == 3
+    assert len(result.issues) == 2
     assert any("PID" in issue.explanation_zh for issue in result.issues)
-    assert any("cpu_id" in issue.explanation_zh for issue in result.issues)
     assert any("journal" in issue.explanation_zh for issue in result.issues)
     assert any(scope.lifecycle_reliable is False for scope in result.scopes)
+    assert all(issue.rule_zh for issue in result.issues)
+    assert all(issue.facts_zh for issue in result.issues)
+    assert all(issue.current_result_zh for issue in result.issues)
+    assert all(issue.conflict_reason_zh for issue in result.issues)
+    assert all(issue.impact_zh for issue in result.issues)
+    assert all(issue.action_zh for issue in result.issues)
+    assert all(issue.observed_time is not None for issue in result.issues)
+    assert all(
+        issue.affected_cycles
+        == [{"scope": "board", "slot": "1", "cpu_id": None, "cycle_index": 0}]
+        for issue in result.issues
+    )
+    assert result.cycles[0].lifecycle_reliable is False
 
 
-def test_cpu_reliable_evidence_missing_cpu_id_marks_cpu_scopes_not_board():
+def test_same_timestamp_journal_sequence_wrap_is_invalid_evidence():
+    cfg = LifecycleSplitConfig.from_mapping({})
+    splitter = LifecycleSplitter(cfg)
+
+    result = splitter.split([
+        _journal(10, 98),
+        _journal(10, 3),
+    ])
+
+    assert result.lifecycle_reliable is False
+    assert result.boundaries == []
+    issues = [issue for issue in result.issues if issue.type == "invalid_lifecycle_evidence"]
+    assert len(issues) == 1
+    assert "时间顺序" in issues[0].explanation_zh
+    assert issues[0].affected_cycles == [
+        {"scope": "board", "slot": "1", "cpu_id": None, "cycle_index": 0}
+    ]
+
+
+def test_reliable_pid_change_support_keeps_sequence_numbers():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": [], "cpu": ["cpu_anchor"]},
+        "reliable_processes": ["anchor"],
+    })
+    splitter = LifecycleSplitter(cfg)
+
+    result = splitter.split([
+        _entry("anchor", "10", 10, sequence=100),
+        _entry("anchor", "11", 70, sequence=101),
+    ])
+
+    support = result.boundaries[0].support_evidence[0]
+    assert support["old_sequence"] == 100
+    assert support["new_sequence"] == 101
+
+
+def test_flat_reliable_process_without_cpu_id_uses_board_scope():
+    cfg = LifecycleSplitConfig.from_mapping({
+        "reliable_processes": ["cpu_anchor"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -202,18 +286,14 @@ def test_cpu_reliable_evidence_missing_cpu_id_marks_cpu_scopes_not_board():
         _entry("worker", "500", 20, cpu_id="1"),
     ])
 
-    board_scope = next(scope for scope in result.scopes if scope.scope == "board")
-    cpu_scope = next(scope for scope in result.scopes if scope.scope == "cpu")
-    assert result.lifecycle_reliable is False
-    assert board_scope.lifecycle_reliable is True
-    assert cpu_scope.lifecycle_reliable is False
-    assert all(cycle.lifecycle_reliable is True for cycle in result.cycles if cycle.scope == "board")
-    assert all(cycle.lifecycle_reliable is False for cycle in result.cycles if cycle.scope == "cpu")
+    assert result.lifecycle_reliable is True
+    assert not result.issues
+    assert any(scope.scope == "board" for scope in result.scopes)
 
 
 def test_cpu_evidence_satisfied_by_inherited_board_boundary_is_tight_support():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": ["board_anchor"], "cpu": ["cpu_anchor"]},
+        "reliable_processes": ["board_anchor", "cpu_anchor"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -240,10 +320,7 @@ def test_cpu_evidence_satisfied_by_inherited_board_boundary_is_tight_support():
 
 def test_wide_support_is_not_attached_to_single_boundary():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {
-            "board": ["board_anchor"],
-            "cpu": ["cpu_anchor", "cpu_aux"],
-        },
+        "reliable_processes": ["board_anchor", "cpu_anchor", "cpu_aux"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -268,7 +345,7 @@ def test_wide_support_is_not_attached_to_single_boundary():
 
 def test_multi_instance_process_is_excluded_from_same_pid_check():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": ["board_anchor"]},
+        "reliable_processes": ["board_anchor"],
         "multi_instance_processes": ["worker"],
     })
     splitter = LifecycleSplitter(cfg)
@@ -286,7 +363,7 @@ def test_multi_instance_process_is_excluded_from_same_pid_check():
 
 def test_same_pid_reuse_in_non_adjacent_cycles_is_allowed():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": ["board_anchor"]},
+        "reliable_processes": ["board_anchor"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -305,7 +382,7 @@ def test_same_pid_reuse_in_non_adjacent_cycles_is_allowed():
 
 def test_same_pid_adjacent_pairs_are_merged_into_one_issue():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": ["board_anchor"]},
+        "reliable_processes": ["board_anchor"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -329,7 +406,7 @@ def test_same_pid_adjacent_pairs_are_merged_into_one_issue():
 
 def test_cpu_same_pid_conflict_only_marks_that_cpu_scope_unreliable():
     cfg = LifecycleSplitConfig.from_mapping({
-        "reliable_processes": {"board": ["board_anchor"]},
+        "reliable_processes": ["board_anchor"],
     })
     splitter = LifecycleSplitter(cfg)
 
@@ -349,3 +426,68 @@ def test_cpu_same_pid_conflict_only_marks_that_cpu_scope_unreliable():
     assert board_scope.lifecycle_reliable is True
     assert cpu1_scope.lifecycle_reliable is False
     assert cpu2_scope.lifecycle_reliable is True
+
+
+def test_flat_reliable_process_uses_actual_cpu_scope_for_pid_boundary():
+    cfg = LifecycleSplitConfig.from_mapping({
+        "reliable_processes": ["anchor"],
+    })
+    splitter = LifecycleSplitter(cfg)
+
+    result = splitter.split([
+        _entry("anchor", "10", 10, cpu_id="1"),
+        _entry("anchor", "11", 70, cpu_id="1"),
+    ])
+
+    assert result.lifecycle_reliable is True
+    assert len(result.boundaries) == 1
+    boundary = result.boundaries[0]
+    assert boundary.origin_scope == "cpu"
+    assert boundary.cpu_id == "1"
+    assert boundary.timestamp == _ts(70)
+
+
+def test_reliable_process_multiple_pid_in_same_cycle_is_error_with_dfx_payload():
+    cfg = LifecycleSplitConfig.from_mapping({
+        "reliable_processes": ["anchor"],
+    })
+    splitter = LifecycleSplitter(cfg)
+
+    result = splitter.split([
+        _entry("anchor", "10", 10, context="old"),
+        _entry("anchor", "11", 10, context="new"),
+    ])
+
+    issues = [
+        issue
+        for issue in result.issues
+        if issue.type == "reliable_process_multiple_pid_in_cycle"
+    ]
+    assert len(issues) == 1
+    issue = issues[0]
+    assert result.lifecycle_reliable is False
+    assert issue.related_process == "anchor"
+    assert issue.affected_cycles == [
+        {"scope": "board", "slot": "1", "cpu_id": None, "cycle_index": 0}
+    ]
+    assert issue.observed_pids == ["10", "11"]
+    assert issue.pid_runs == [
+        {
+            "pid": "10",
+            "first_seen": _ts(10),
+            "last_seen": _ts(10),
+            "first_raw": "anchor-10 old",
+            "last_raw": "anchor-10 old",
+        },
+        {
+            "pid": "11",
+            "first_seen": _ts(10),
+            "last_seen": _ts(10),
+            "first_raw": "anchor-11 new",
+            "last_raw": "anchor-11 new",
+        },
+    ]
+    assert issue.expected_boundary_intervals[0]["old_pid"] == "10"
+    assert issue.expected_boundary_intervals[0]["new_pid"] == "11"
+    assert issue.covered_boundaries == []
+    assert "同一个生命周期" in issue.explanation_zh
