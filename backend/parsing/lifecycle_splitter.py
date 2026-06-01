@@ -30,6 +30,7 @@ class LifecycleSolverInvariantError(RuntimeError):
 
 class LifecycleSplitConfig(BaseModel):
     enabled: bool = False
+    algorithm: str = "interval_v2"
     process_name_mapping: dict[str, list[str]] = Field(default_factory=dict)
     reliable_processes: list[str] = Field(default_factory=list)
     multi_instance_processes: list[str] = Field(default_factory=list)
@@ -43,6 +44,11 @@ class LifecycleSplitConfig(BaseModel):
         enabled = raw.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ValueError("lifecycle_split.enabled must be a boolean")
+        algorithm = str(raw.get("algorithm", "interval_v2"))
+        if algorithm not in {"interval_v2", "interval_v3"}:
+            raise ValueError(
+                "lifecycle_split.algorithm must be one of: interval_v2, interval_v3"
+            )
 
         mapping_raw = raw.get("process_name_mapping", {})
         if not isinstance(mapping_raw, dict):
@@ -72,6 +78,7 @@ class LifecycleSplitConfig(BaseModel):
 
         return cls(
             enabled=enabled,
+            algorithm=algorithm,
             process_name_mapping=mapping,
             reliable_processes=reliable_processes,
             multi_instance_processes=[str(name) for name in (multi_raw or [])],
@@ -202,6 +209,7 @@ class LifecycleScopeResult(BaseModel):
 class LifecycleSplitResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    algorithm: str = "interval_v2"
     scopes: list[LifecycleScopeResult] = Field(default_factory=list)
     boundaries: list[LifecycleBoundary] = Field(default_factory=list)
     cycles: list[LifecycleCycle] = Field(default_factory=list)

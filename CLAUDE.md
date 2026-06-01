@@ -27,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -r requirements.txt
 
 # CLI 解析（默认使用 default 产品插件管道）
-python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--product default|compact] [--debug-expand-gz]
+python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--lifecycle-dfx errors|summary|decisions|full|off] [--product default|compact] [--debug-expand-gz]
 python cli.py info <task_id>
 python cli.py list-slots <task_id>
 python cli.py query-diag <task_id> -s <slot_id>
@@ -53,7 +53,8 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **`check-config`**：检查所有正则可编译、glob 有效、模块配置完整、插件类继承基类、关键方法存在，错误和警告分开
 - **`test-pattern`**：用配置正则测试实际日志行，显示提取字段、Stage1 预过滤结果、时间戳、主控关键字命中
 - **错误隔离**：每一步失败不终止全流程，继续执行并在最后汇总所有错误
-- **`--verbose`**：输出每步耗时、处理项数、机制模块 诊断/journal 条数对比、同名进程多实例检测
+- **`--verbose`**：输出每步耗时、处理项数、机制模块 诊断/journal 条数对比、同名进程多实例检测；不展开生命周期聚合/切分详情
+- **`--lifecycle-dfx`**：控制生命周期中文 DFX 输出，`parse` 默认 `errors`，`mech-lifecycles --show-boundaries` 默认 `summary`；`decisions/full` 展开 V3 候选切分和聚合原因
 - **`--debug-expand-gz`**：调试用，将普通 `.gz` 日志就地展开（如 `journal.log.1.gz` → `journal.log.1.gz_extracted/`），正式批量解析不建议开启
 - **`--module` / `-m`**：`mech-slots` / `mech-lifecycles` 不传时展示全部模块；`mech-logs` 不传时默认取第一个机制模块
 - **`--cpu` / `--cpu-cycle`**：`mech-logs` 查询嵌套 CPU 周期日志时使用；路径为 `.../<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>.log`

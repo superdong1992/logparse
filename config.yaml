@@ -100,12 +100,13 @@ products:
               # 示例：{"DHCP": "dhcpd", "AAA": "aaa_svc"}
               process_name_mapping: {}
 
-              # [按需修改] lifecycle_split v2（默认产品 module1）
+              # [按需修改] lifecycle_split（默认产品 module1）
               # 当前 config.yaml 故意保持 enabled: false，用作旧 CycleDetector/兼容配置。
               # 若要在默认产品启用 v2，优先使用 config.lifecycle-v2.yaml：
               #   python cli.py parse <package_path> -c config.lifecycle-v2.yaml --product default
-              # 只有 enabled: true 会启用 v2；未配置 lifecycle_split 或 enabled: false 都走旧 CycleDetector。
-              # 注意：这里的 process_name_mapping 是 v2 专用别名表，格式为
+              # 只有 enabled: true 会启用新 lifecycle_split；未配置或 enabled: false 都走旧 CycleDetector。
+              # algorithm 缺省为 interval_v2；写 interval_v3 会启用“30 秒候选切分 + 白名单一致性聚合”。
+              # 注意：这里的 process_name_mapping 是 lifecycle_split 专用别名表，格式为
               #   canonical_name: [alias_in_diag, alias_in_journal]
               # 它不同于上面的旧 process_name_mapping（诊断日志名 -> journal 日志名）。
               # reliable_processes：生命周期绑定的可靠进程，统一写 canonical_name 列表。
@@ -114,6 +115,7 @@ products:
               # multi_instance_processes：允许同名多实例的进程，不参与 same PID 一致性校验，也不作为边界证据。
               lifecycle_split:
                 enabled: false
+                algorithm: interval_v2
                 process_name_mapping: {}
                 reliable_processes: []
                 multi_instance_processes: []
@@ -183,17 +185,19 @@ products:
                 # [按需修改] 旧 CycleDetector/旧 journal resolver 专用：诊断日志名 → journal 日志名映射。
                 # lifecycle_split v2 的 canonical alias 映射不要写在这里。
                 process_name_mapping: {}
-                # [按需修改] lifecycle_split v2（compact 产品 ctrl 模块）
+                # [按需修改] lifecycle_split（compact 产品 ctrl 模块）
                 # 这里的 compact 是 --product compact 的产品示例，不是 pipeline.result_json_mode: compact。
-                # 它有自己独立的 Module1Plugin 实例和独立的 v2 开关；解析默认产品时不会读取这一段。
+                # 它有自己独立的 Module1Plugin 实例和独立的 lifecycle_split 开关；解析默认产品时不会读取这一段。
                 # 只有执行 `python cli.py parse ... --product compact` 时，这里的 lifecycle_split 才生效。
                 # 默认仍关闭，避免 compact 示例产品在未填写可靠进程前改变切分行为。
                 # 如需启用，改成 enabled: true，并按 compact 日志里的真实进程名填写：
+                #   algorithm: interval_v2 或 interval_v3
                 #   process_name_mapping: canonical_name -> [diag/journal aliases]
                 #   reliable_processes: 可作为生命周期边界证据的 canonical_name 列表
                 #   multi_instance_processes: 同名多实例、不要参与一致性校验的 canonical_name
                 lifecycle_split:
                   enabled: false
+                  algorithm: interval_v2
                   process_name_mapping: {}
                   reliable_processes: []
                   multi_instance_processes: []

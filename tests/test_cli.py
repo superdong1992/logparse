@@ -397,7 +397,7 @@ def test_parse_prints_v2_lifecycle_errors_without_verbose(tmp_path, monkeypatch)
     assert "[ERROR] reliable_process_multiple_pid_in_cycle scope=board process=anchor pids=10,11" in result.output
 
 
-def test_parse_verbose_prints_v2_compact_dfx_without_issues(tmp_path, monkeypatch):
+def test_parse_verbose_does_not_print_lifecycle_dfx_without_lifecycle_dfx(tmp_path, monkeypatch):
     package_path = tmp_path / "package.zip"
     package_path.write_text("placeholder", encoding="utf-8")
     config_path = tmp_path / "config.yaml"
@@ -476,11 +476,291 @@ def test_parse_verbose_prints_v2_compact_dfx_without_issues(tmp_path, monkeypatc
     )
 
     assert result.exit_code == 0, result.output
-    assert "生命周期切分 V2 compact DFX:" in result.output
+    assert "生命周期切分 V2 compact DFX:" not in result.output
+    assert "lifecycle_split_v2:" not in result.output
+
+
+def test_parse_lifecycle_dfx_summary_prints_v2_without_verbose(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, _config):
+            pass
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            return ParseResult(
+                task_id="task",
+                package_name=source.name,
+                mech_results=[
+                    MechResult(
+                        module_name="EXAMPLE",
+                        module_key="module1",
+                        slots=[
+                            MechSlotOutput(
+                                slot_id="1",
+                                lifecycle_reliable=True,
+                                lifecycle_split_result={
+                                    "algorithm": "interval_v2",
+                                    "lifecycle_reliable": True,
+                                    "boundaries": [
+                                        {
+                                            "id": "b1",
+                                            "origin_scope": "board",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "cpu_id": None,
+                                            "timestamp": "2026-01-03T00:01:00+08:00",
+                                            "type": "reliable_process_pid_changed",
+                                            "support_evidence": [
+                                                {
+                                                    "process_name": "anchor",
+                                                    "old_pid": "10",
+                                                    "new_pid": "11",
+                                                }
+                                            ],
+                                        },
+                                    ],
+                                    "evidence": [
+                                        {
+                                            "type": "reliable_process_pid_changed",
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "support_type": "tight_support",
+                                            "covered_boundaries": [{"id": "b1"}],
+                                        },
+                                    ],
+                                    "issues": [],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "--lifecycle-dfx",
+            "summary",
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "生命周期切分 DFX:" in result.output
     assert "module=EXAMPLE slot=1" in result.output
     assert "lifecycle_split_v2: reliable=true boundaries=1 evidence=1 issues=0" in result.output
-    assert "boundary reliable_process_pid_changed scope=board time=2026-01-03T00:01:00+08:00 support=1" in result.output
-    assert "evidence reliable_process_pid_changed scope=board support=tight_support covered=1" in result.output
+
+
+def test_parse_lifecycle_dfx_decisions_prints_v3_chinese_report(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, _config):
+            pass
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            return ParseResult(
+                task_id="task",
+                package_name=source.name,
+                mech_results=[
+                    MechResult(
+                        module_name="EXAMPLE",
+                        module_key="module1",
+                        slots=[
+                            MechSlotOutput(
+                                slot_id="1",
+                                lifecycle_reliable=True,
+                                lifecycle_split_result={
+                                    "algorithm": "interval_v3",
+                                    "lifecycle_reliable": True,
+                                    "candidate_segments": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "candidate_index": 0,
+                                            "start_time": "2026-01-03T00:00:00+08:00",
+                                            "end_time": "2026-01-03T00:01:00+08:00",
+                                            "log_count": 2,
+                                        },
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "candidate_index": 1,
+                                            "start_time": "2026-01-03T00:01:30+08:00",
+                                            "end_time": "2026-01-03T00:02:00+08:00",
+                                            "log_count": 1,
+                                        },
+                                    ],
+                                    "merge_decisions": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "left_candidate_indices": [0],
+                                            "right_candidate_indices": [1],
+                                            "left_end_time": "2026-01-03T00:01:00+08:00",
+                                            "right_start_time": "2026-01-03T00:01:30+08:00",
+                                            "silent_gap_seconds": 30,
+                                            "decision": "merged",
+                                            "blocking_reason": "",
+                                            "whitelist_pid_counts": [
+                                                {
+                                                    "process_name": "procA",
+                                                    "pids": ["100"],
+                                                    "count": 1,
+                                                }
+                                            ],
+                                            "reason_zh": (
+                                                "所有白名单进程 PID 数均不超过 1，没有白名单进程 PID 冲突，"
+                                                "判断为同一生命周期内日志分段打印。"
+                                            ),
+                                        },
+                                    ],
+                                    "lifecycles": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "lifecycle_index": 0,
+                                            "candidate_indices": [0, 1],
+                                            "start_time": "2026-01-03T00:00:00+08:00",
+                                            "end_time": "2026-01-03T00:02:00+08:00",
+                                            "lifecycle_reliable": True,
+                                        },
+                                    ],
+                                    "journal_evidence": [],
+                                    "issues": [],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "--lifecycle-dfx",
+            "decisions",
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[结论摘要]" in result.output
+    assert "最终切成 1 段，可靠性=true" in result.output
+    assert "[候选切分]" in result.output
+    assert "静默间隔：30 秒" in result.output
+    assert "[聚合检查]" in result.output
+    assert "最终决策：聚合为同一个生命周期" in result.output
+    assert "没有白名单进程 PID 冲突" in result.output
+    assert "[最终生命周期]" in result.output
+
+
+def test_parse_verbose_does_not_print_v3_lifecycle_dfx_without_lifecycle_dfx(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    class FakePipeline:
+        def __init__(self, _config):
+            pass
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            return ParseResult(
+                task_id="task",
+                package_name=source.name,
+                mech_results=[
+                    MechResult(
+                        module_name="EXAMPLE",
+                        module_key="module1",
+                        slots=[
+                            MechSlotOutput(
+                                slot_id="1",
+                                lifecycle_reliable=True,
+                                lifecycle_split_result={
+                                    "algorithm": "interval_v3",
+                                    "candidate_segments": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "candidate_index": 0,
+                                            "start_time": "2026-01-03T00:00:00+08:00",
+                                            "end_time": "2026-01-03T00:00:00+08:00",
+                                            "log_count": 1,
+                                        }
+                                    ],
+                                    "merge_decisions": [],
+                                    "lifecycles": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "lifecycle_index": 0,
+                                            "candidate_indices": [0],
+                                            "start_time": "2026-01-03T00:00:00+08:00",
+                                            "end_time": "2026-01-03T00:00:00+08:00",
+                                            "lifecycle_reliable": True,
+                                        }
+                                    ],
+                                    "journal_evidence": [],
+                                    "issues": [],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "--verbose",
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "lifecycle_split_v3:" not in result.output
+    assert "[候选切分]" not in result.output
 
 
 def test_print_summary_writes_compact_result_by_default(tmp_path):
@@ -978,6 +1258,128 @@ def test_mech_lifecycles_show_boundaries_displays_lifecycle_split_v2(tmp_path):
     assert "boundary-source journal_sequence_wrapped origin=board effective=cpu_1 inherited=true time=2026-01-03T00:01:00+08:00" in result.output
     assert "support-evidence process=journal old_seq=99 new_seq=1" in result.output
     assert "old-raw journal No[99]" in result.output
+
+
+def test_mech_lifecycles_show_boundaries_dispatches_lifecycle_split_v3(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": True,
+                                "lifecycle_split_result": {
+                                    "algorithm": "interval_v3",
+                                    "lifecycle_reliable": True,
+                                    "candidate_segments": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "candidate_index": 0,
+                                            "start_time": "2026-01-03T00:00:00+08:00",
+                                            "end_time": "2026-01-03T00:01:00+08:00",
+                                            "log_count": 2,
+                                        },
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "candidate_index": 1,
+                                            "start_time": "2026-01-03T00:01:30+08:00",
+                                            "end_time": "2026-01-03T00:02:00+08:00",
+                                            "log_count": 1,
+                                        },
+                                    ],
+                                    "merge_decisions": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "left_candidate_indices": [0],
+                                            "right_candidate_indices": [1],
+                                            "left_end_time": "2026-01-03T00:01:00+08:00",
+                                            "right_start_time": "2026-01-03T00:01:30+08:00",
+                                            "silent_gap_seconds": 30,
+                                            "decision": "kept_split",
+                                            "blocking_reason": "reliable_pid_conflict",
+                                            "whitelist_pid_counts": [
+                                                {
+                                                    "process_name": "anchor",
+                                                    "pids": ["10", "11"],
+                                                    "count": 2,
+                                                }
+                                            ],
+                                            "reason_zh": "合并后白名单进程出现多个 PID：anchor PID=10,11。保留候选切分。",
+                                        },
+                                    ],
+                                    "lifecycles": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "lifecycle_index": 0,
+                                            "candidate_indices": [0],
+                                            "start_time": "2026-01-03T00:00:00+08:00",
+                                            "end_time": "2026-01-03T00:01:00+08:00",
+                                            "lifecycle_reliable": True,
+                                        },
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "lifecycle_index": 1,
+                                            "candidate_indices": [1],
+                                            "start_time": "2026-01-03T00:01:30+08:00",
+                                            "end_time": "2026-01-03T00:02:00+08:00",
+                                            "lifecycle_reliable": True,
+                                        },
+                                    ],
+                                    "journal_evidence": [],
+                                    "issues": [],
+                                },
+                                "board_cycles": [
+                                    {
+                                        "dir_name": "c1",
+                                        "processes": [],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--lifecycle-dfx",
+            "decisions",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "lifecycle_split_v3: reliable=true candidates=2 merged=0 kept_splits=1 lifecycles=2" in result.output
+    assert "[候选切分]" in result.output
+    assert "[聚合检查]" in result.output
+    assert "候选边界 #1：board slot_1 #1 -> #2" in result.output
+    assert "可靠边界进程 PID 统计（白名单）" in result.output
+    assert "最终决策：保留切分" in result.output
+    assert "保留原因：合并后可靠边界进程会出现多个 PID" in result.output
+    assert "[最终生命周期]" in result.output
 
 
 def test_mech_lifecycles_v2_full_falls_back_for_issue_without_zh_sections(tmp_path):
