@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from backend.models import MechLogEntry
@@ -245,6 +246,25 @@ def test_build_board_cycles_archives_each_log_once_and_nests_nonzero_cpu_logs():
         for process in board_cycles[0].cpu_cycles[0].processes
         for log in process.logs
     } == {"cpuworker-10 ", "cpuworker-10 "}
+
+
+def test_build_board_cycles_logs_lifecycle_process_group_counts(caplog):
+    splitter = _splitter(reliable=["anchor"])
+    result = splitter.split([
+        _entry("anchor", "100", 0),
+        _entry("boardproc", "300", 10),
+        _entry("cpuworker", "10", 20, cpu_id="1"),
+        _entry("cpuworker", "10", 80, cpu_id="1"),
+    ])
+
+    caplog.set_level(logging.INFO, logger="backend.parsing.lifecycle_splitter_v3")
+    splitter.build_board_cycles(result)
+
+    assert "最终切分结果: 1 个周期" in caplog.text
+    assert "周期[0]:" in caplog.text
+    assert "2 个进程组" in caplog.text
+    assert "CPU周期[1/0]:" in caplog.text
+    assert "1 个进程组" in caplog.text
 
 
 def test_cpu_lifecycle_ids_are_unique_across_board_lifecycles():

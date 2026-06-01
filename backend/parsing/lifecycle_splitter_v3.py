@@ -7,6 +7,7 @@ still looks like a single lifecycle.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,6 +32,7 @@ from backend.parsing.lifecycle_splitter import (
 
 
 SILENT_GAP_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 
 class LifecycleV3CandidateSegment(BaseModel):
@@ -283,7 +285,26 @@ class LifecycleSplitterV3:
                 )
             )
 
+        self._log_cycle_summary(board_cycles)
         return board_cycles
+
+    def _log_cycle_summary(self, board_cycles: list[MechBoardCycle]) -> None:
+        logger.info("最终切分结果: %d 个周期", len(board_cycles))
+        for index, cycle in enumerate(board_cycles):
+            logger.info(
+                "  周期[%d]: %s, %d 个进程组",
+                index,
+                cycle.dir_name,
+                len(cycle.processes),
+            )
+            for cpu_index, cpu_cycle in enumerate(cycle.cpu_cycles):
+                logger.info(
+                    "    CPU周期[%s/%d]: %s, %d 个进程组",
+                    cpu_cycle.cpu_id,
+                    cpu_index,
+                    cpu_cycle.dir_name,
+                    len(cpu_cycle.processes),
+                )
 
     def _build_alias_map(self, config: LifecycleSplitConfig) -> dict[str, str]:
         aliases: dict[str, str] = {}
