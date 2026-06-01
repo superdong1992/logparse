@@ -533,6 +533,124 @@ def test_module2_unknown_output_uses_existing_mech_layout(tmp_path):
     assert "outside cycle" in out_file.read_text(encoding="utf-8")
 
 
+def test_module2_logs_unknown_reason_when_no_board_cycle_contains_timestamp(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T02:10:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=other[999],Context="outside board cycle"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    assert "归属到unknown" in caplog.text
+    assert "reason=no_board_cycle_contains_timestamp" in caplog.text
+    assert "slot=2" in caplog.text
+    assert "cpu=<board>" in caplog.text
+    assert "process=other" in caplog.text
+    assert "pid=999" in caplog.text
+    assert "timestamp=2026-01-03T02:10:00+08:00" in caplog.text
+    assert "source=slot_2/diag.log" in caplog.text
+    assert "board_cycles=1" in caplog.text
+    assert "20260103T000000-20260103T010000" in caplog.text
+    assert "raw=\"2026-01-03T02:10:00+08:00 xxx Slot=2" in caplog.text
+
+
+def test_module2_logs_unknown_reason_when_upstream_slot_missing(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00+08:00 xxx Slot=9,CPU-Id=0,'
+        'ProcessName=other[999],Context="unknown slot"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="9", name="slot_9", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    assert "reason=no_upstream_slot" in caplog.text
+    assert "slot=9" in caplog.text
+    assert "available_slots=[2]" in caplog.text
+
+
+def test_module2_logs_unknown_reason_when_timestamp_missing(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        'xxx Slot=2,CPU-Id=0,ProcessName=svc[100],Context="no timestamp"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_board_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    assert "reason=missing_timestamp" in caplog.text
+    assert "timestamp=<none>" in caplog.text
+    assert "process=svc" in caplog.text
+    assert "pid=100" in caplog.text
+
+
+def test_module2_does_not_log_unknown_reason_for_successful_lifecycle_match(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="inside cycle"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    assert "归属到unknown" not in caplog.text
+
+
 def test_module2_merges_unknown_entries_into_unique_same_process_lifecycle(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -584,6 +702,34 @@ def test_module2_merges_unknown_entries_into_unique_same_process_lifecycle(tmp_p
     assert not unknown_file.exists()
 
 
+def test_module2_does_not_log_unknown_reason_after_successful_unknown_merge(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:06:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="inside cycle"\n'
+        '2026-01-03T00:12:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="outside cycle"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_nested_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    assert "归属到unknown" not in caplog.text
+
+
 def test_module2_keeps_unknown_entries_when_same_process_lifecycle_is_ambiguous(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -617,6 +763,39 @@ def test_module2_keeps_unknown_entries_when_same_process_lifecycle_is_ambiguous(
         "unknown",
     ]
     assert cycles["unknown"].processes[0].logs[0].context == "ambiguous outside"
+
+
+def test_module2_logs_unknown_reason_when_unknown_merge_target_is_ambiguous(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="first cycle"\n'
+        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="second cycle"\n'
+        '2026-01-03T02:00:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="ambiguous outside"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_reused_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    assert "reason=no_unique_known_process_target" in caplog.text
+    assert "original_reason=no_board_cycle_contains_timestamp" in caplog.text
+    assert "target_count=2" in caplog.text
+    assert "ambiguous outside" in caplog.text
 
 
 def test_module2_extracts_slot_from_slash_format(tmp_path):

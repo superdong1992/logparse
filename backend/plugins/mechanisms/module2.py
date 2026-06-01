@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,14 @@ from backend.parsing.file_iter import iter_log_entry_lines
 from backend.plugins.mechanisms.base import MechanismModulePlugin
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _CycleMatch:
+    board_cycle: MechBoardCycle | None = None
+    cpu_cycle: MechCpuCycle | None = None
+    reason: str = ""
+    detail: str = ""
 
 
 class Module2Plugin(MechanismModulePlugin):
@@ -171,7 +180,12 @@ class Module2Plugin(MechanismModulePlugin):
         for slot_id, slot_entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
             upstream_slot = _find_upstream_slot(upstream, slot_id)
-            grouped = _assign_entries_to_cycles(slot_entries, upstream_slot)
+            grouped = _assign_entries_to_cycles(
+                slot_entries,
+                upstream_slot,
+                available_slots=[slot.slot_id for slot in upstream.slots],
+                module_key=self.module_key,
+            )
             slot_output.board_cycles = _build_cycles(grouped)
             mech_result.slots.append(slot_output)
 
@@ -208,12 +222,18 @@ def _find_upstream_slot(upstream: MechResult, slot_id: str) -> MechSlotOutput | 
 def _assign_entries_to_cycles(
     entries: list[MechLogEntry],
     upstream_slot: MechSlotOutput | None,
+    available_slots: list[str] | None = None,
+    module_key: str = "module2",
 ) -> list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]]:
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]] = []
+    matches: dict[int, _CycleMatch] = {}
     unknown = MechBoardCycle(dir_name="unknown")
 
     for entry in entries:
-        board_cycle, cpu_cycle = _find_matching_cycle(entry, upstream_slot)
+        match = _find_matching_cycle(entry, upstream_slot, available_slots or [])
+        matches[id(entry)] = match
+        board_cycle = match.board_cycle
+        cpu_cycle = match.cpu_cycle
         if board_cycle is None:
             board_cycle = unknown
         if entry.cpu_id and cpu_cycle is None:
@@ -235,22 +255,33 @@ def _assign_entries_to_cycles(
         else:
             buckets.append((board_cycle, cpu_cycle, [entry]))
 
-    _merge_unknown_entries_into_unique_known_bucket(buckets)
+    _merge_unknown_entries_into_unique_known_bucket(buckets, matches)
+    _log_unknown_assignments(module_key, buckets, matches)
     return buckets
 
 
 def _find_matching_cycle(
     entry: MechLogEntry,
     upstream_slot: MechSlotOutput | None,
-) -> tuple[MechBoardCycle | None, MechCpuCycle | None]:
-    if upstream_slot is None or entry.timestamp is None:
-        return None, None
+    available_slots: list[str],
+) -> _CycleMatch:
+    if upstream_slot is None:
+        return _CycleMatch(
+            reason="no_upstream_slot",
+            detail=f"upstream_slot_found=false available_slots={_format_list(available_slots)}",
+        )
+    if entry.timestamp is None:
+        return _CycleMatch(
+            reason="missing_timestamp",
+            detail=_slot_detail(upstream_slot, available_slots, timestamp=None),
+        )
 
     pid_match = _find_pid_matching_cycle(entry, upstream_slot)
     if pid_match != (None, None):
-        return pid_match
+        board_cycle, cpu_cycle = pid_match
+        return _CycleMatch(board_cycle=board_cycle, cpu_cycle=cpu_cycle, reason="matched_by_pid")
 
-    return _find_time_matching_cycle(entry, upstream_slot)
+    return _find_time_matching_cycle(entry, upstream_slot, available_slots)
 
 
 def _find_pid_matching_cycle(
@@ -293,7 +324,8 @@ def _find_pid_matching_cycle(
 def _find_time_matching_cycle(
     entry: MechLogEntry,
     upstream_slot: MechSlotOutput,
-) -> tuple[MechBoardCycle | None, MechCpuCycle | None]:
+    available_slots: list[str],
+) -> _CycleMatch:
     for cycle in upstream_slot.board_cycles:
         if not _contains_time(cycle.start_time, cycle.end_time, entry.timestamp):
             continue
@@ -302,10 +334,21 @@ def _find_time_matching_cycle(
                 if cpu_cycle.cpu_id != entry.cpu_id:
                     continue
                 if _contains_time(cpu_cycle.start_time, cpu_cycle.end_time, entry.timestamp):
-                    return cycle, cpu_cycle
-            return cycle, None
-        return cycle, None
-    return None, None
+                    return _CycleMatch(
+                        board_cycle=cycle,
+                        cpu_cycle=cpu_cycle,
+                        reason="matched_by_time",
+                    )
+            return _CycleMatch(
+                board_cycle=cycle,
+                reason="no_cpu_cycle_contains_timestamp",
+                detail=_cpu_cycle_detail(upstream_slot, available_slots, cycle, entry),
+            )
+        return _CycleMatch(board_cycle=cycle, reason="matched_by_time")
+    return _CycleMatch(
+        reason="no_board_cycle_contains_timestamp",
+        detail=_slot_detail(upstream_slot, available_slots, timestamp=entry.timestamp),
+    )
 
 
 def _select_match_by_timestamp(
@@ -392,6 +435,7 @@ def _time_distance(
 
 def _merge_unknown_entries_into_unique_known_bucket(
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+    matches: dict[int, _CycleMatch] | None = None,
 ) -> None:
     for specificity in (1, 0):
         candidates = _candidate_buckets_by_process_key(
@@ -408,6 +452,15 @@ def _merge_unknown_entries_into_unique_known_bucket(
                 if len(targets) == 1:
                     targets[0].append(entry)
                 else:
+                    if len(targets) > 1 and matches is not None:
+                        match = matches.get(id(entry))
+                        if match is not None:
+                            original_reason = match.reason or "unknown"
+                            match.reason = "no_unique_known_process_target"
+                            match.detail = (
+                                f"original_reason={original_reason} "
+                                f"target_count={len(targets)} {match.detail}"
+                            ).strip()
                     remaining.append(entry)
             entries[:] = remaining
 
@@ -444,6 +497,114 @@ def _bucket_specificity(board_cycle: MechBoardCycle, cpu_cycle: MechCpuCycle | N
 
 def _entry_process_key(entry: MechLogEntry) -> tuple[str, str, str]:
     return entry.process_name, entry.pid, entry.cpu_id or ""
+
+
+def _log_unknown_assignments(
+    module_key: str,
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+    matches: dict[int, _CycleMatch],
+) -> None:
+    for board_cycle, cpu_cycle, entries in buckets:
+        if _bucket_specificity(board_cycle, cpu_cycle) >= 2:
+            continue
+        for entry in entries:
+            match = matches.get(id(entry), _CycleMatch(reason="unknown", detail=""))
+            logger.info(
+                "[%s] 归属到unknown: slot=%s cpu=%s process=%s pid=%s "
+                "timestamp=%s source=%s reason=%s detail=\"%s\" raw=\"%s\"",
+                module_key,
+                entry.slot,
+                entry.cpu_id or "<board>",
+                entry.process_name,
+                entry.pid or "<empty>",
+                _format_optional_ts(entry.timestamp),
+                entry.source_file,
+                match.reason or "unknown",
+                match.detail,
+                _format_raw(entry.raw),
+            )
+
+
+def _slot_detail(
+    upstream_slot: MechSlotOutput,
+    available_slots: list[str],
+    timestamp: datetime | None,
+) -> str:
+    return (
+        "upstream_slot_found=true "
+        f"available_slots={_format_list(available_slots)} "
+        f"board_cycles={len(upstream_slot.board_cycles)} "
+        f"nearest=[{_format_nearest_board_cycles(upstream_slot, timestamp)}]"
+    )
+
+
+def _cpu_cycle_detail(
+    upstream_slot: MechSlotOutput,
+    available_slots: list[str],
+    board_cycle: MechBoardCycle,
+    entry: MechLogEntry,
+) -> str:
+    cpu_cycles = [cycle for cycle in board_cycle.cpu_cycles if cycle.cpu_id == entry.cpu_id]
+    if not cpu_cycles:
+        nearest = "<none>"
+    else:
+        nearest = _format_nearest_cycles(cpu_cycles, entry.timestamp)
+    return (
+        "upstream_slot_found=true "
+        f"available_slots={_format_list(available_slots)} "
+        f"board_cycles={len(upstream_slot.board_cycles)} "
+        f"board_cycle={_format_cycle_summary(board_cycle)} "
+        f"cpu_id={entry.cpu_id} cpu_cycles={len(cpu_cycles)} nearest_cpu=[{nearest}]"
+    )
+
+
+def _format_nearest_board_cycles(
+    upstream_slot: MechSlotOutput,
+    timestamp: datetime | None,
+) -> str:
+    return _format_nearest_cycles(upstream_slot.board_cycles, timestamp)
+
+
+def _format_nearest_cycles(
+    cycles: list[MechBoardCycle] | list[MechCpuCycle],
+    timestamp: datetime | None,
+) -> str:
+    if not cycles:
+        return "<none>"
+    if timestamp is None:
+        ordered = list(enumerate(cycles))
+    else:
+        ordered = sorted(
+            enumerate(cycles),
+            key=lambda item: (
+                _time_distance(item[1].start_time, item[1].end_time, timestamp),
+                item[0],
+            ),
+        )
+    return "; ".join(_format_cycle_summary(cycle) for _index, cycle in ordered[:3])
+
+
+def _format_cycle_summary(cycle: MechBoardCycle | MechCpuCycle) -> str:
+    return (
+        f"{cycle.dir_name} "
+        f"start={_format_optional_ts(cycle.start_time)} "
+        f"end={_format_optional_ts(cycle.end_time)}"
+    )
+
+
+def _format_optional_ts(timestamp: datetime | None) -> str:
+    return timestamp.isoformat() if timestamp else "<none>"
+
+
+def _format_list(values: list[str]) -> str:
+    return "[" + ",".join(str(value) for value in values) + "]"
+
+
+def _format_raw(raw: str) -> str:
+    compact = raw.replace("\r", "\\r").replace("\n", "\\n").replace('"', "'")
+    if len(compact) > 160:
+        return compact[:157] + "..."
+    return compact
 
 
 def _build_cycles(
