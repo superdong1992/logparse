@@ -54,7 +54,7 @@ python cli.py test-pattern -m module1 -t journal "日志行"
 
 生命周期切分报错和 DFX 字段解读见 `docs/lifecycle-dfx-guide.md`。定位边界问题时可使用 `mech-lifecycles --show-boundaries` 查看结构化证据和建议查询命令。
 
-`module1` 的新一代生命周期切分 `lifecycle_split` v2 默认关闭，只有显式配置 `enabled: true` 时才启用；未配置或 `enabled: false` 时继续使用旧 `CycleDetector`。仓库提供两份配置文件用于显式切换：`config.yaml` 保持默认产品 v2 关闭，`config.lifecycle-v2.yaml` 在默认产品 `module1` 中开启 v2。运行时通过 `-c/--config` 指定即可：
+`module1` 的新一代生命周期切分 `lifecycle_split` v2 默认关闭，只有显式配置 `enabled: true` 时才启用；未配置或 `enabled: false` 时继续使用旧 `CycleDetector`。仓库提供两份配置文件用于显式切换：`config.yaml` 保持默认产品 v2 关闭，`config.lifecycle-v2.yaml` 在默认产品 `module1` 中开启 v2，并且默认产品示例不再保留旧 `board_restart_indicator`、`board_restart_whitelist`、旧 `process_name_mapping`，避免把旧 CycleDetector 语义误认为 v2 配置。运行时通过 `-c/--config` 指定即可：
 
 ```bash
 python cli.py parse diagnostic_information_20260103.zip -c config.yaml --product default

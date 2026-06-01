@@ -285,6 +285,11 @@ python cli.py mech-lifecycles diagnostic_information_20260103 \
 | `config.yaml` | `lifecycle_split.enabled: false`，继续使用旧 `CycleDetector` | `python cli.py parse <package> -c config.yaml --product default` |
 | `config.lifecycle-v2.yaml` | `lifecycle_split.enabled: true`，默认产品走 v2 | `python cli.py parse <package> -c config.lifecycle-v2.yaml --product default` |
 
+`config.lifecycle-v2.yaml` 的默认产品 `module1` 不保留旧 `board_restart_indicator`、
+`board_restart_whitelist`、旧 `process_name_mapping`。v2 不兼容旧 indicator/whitelist
+语义，生命周期相关进程只通过 `lifecycle_split.process_name_mapping`、
+`lifecycle_split.reliable_processes` 和 `lifecycle_split.multi_instance_processes` 配置。
+
 注意：配置文件里的 `products.compact` 是 `--product compact` 的产品示例；它和
 `pipeline.result_json_mode: "compact"` 的轻量 `result.json` 输出模式不是一回事。
 默认产品解析只读取 `products.default` 下的机制模块配置。

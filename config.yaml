@@ -77,12 +77,14 @@ products:
               # 留空则仅靠 ActivePeriod 兜底判定
               active_master_keyword: ""
 
-              # [按需修改] 板卡重启标识进程名（小写）
+              # [按需修改] 旧 CycleDetector 专用：板卡重启标识进程名（小写）
+              # lifecycle_split v2 不使用该字段；v2 配置请写到 lifecycle_split.reliable_processes。
               # 此进程 PID 变化时触发重启周期切分，一定是非独立重启进程
               # 留空则不按 PID 切分
               board_restart_indicator: ""
 
-              # [按需修改] 切分计算白名单进程（小写列表）
+              # [按需修改] 旧 CycleDetector 专用：切分计算白名单进程（小写列表）
+              # lifecycle_split v2 不使用白名单概念；v2 用 reliable_processes 和 multi_instance_processes 表达进程分类。
               # 白名单内的进程需满足：不重名、不支持独立重启
               # 切分点计算仅参考白名单进程的 PID 和序号信息，避免同名/独立重启进程干扰
               # 留空则退化为仅用 indicator 的时间戳作为切分点
@@ -92,7 +94,8 @@ products:
               #   - "svc_a"
               #   - "svc_b"
 
-              # [按需修改] 进程名映射：诊断日志名 → journal 日志名
+              # [按需修改] 旧 CycleDetector/旧 journal resolver 专用：进程名映射（诊断日志名 → journal 日志名）
+              # lifecycle_split v2 的 canonical alias 映射不要写在这里，要写到 lifecycle_split.process_name_mapping。
               # 用于 journal 中 indicator 进程名与诊断日志不一致时的映射
               # 示例：{"DHCP": "dhcpd", "AAA": "aaa_svc"}
               process_name_mapping: {}
@@ -175,7 +178,11 @@ products:
                 module_name: "COMPACT"
                 diag_pattern: 'COMPACT\s+(?P<Service>\S+).*?proc=(?P<ProcessName>\S+).*?slot\s+(?P<Slot>\d+).*?cpu\s+(?P<CPU_Id>\d+).*?\|(?P<Context>.+)'
                 active_master_keyword: ""
+                # [按需修改] 旧 CycleDetector 专用：板卡重启标识进程名。
+                # compact 产品如果开启 lifecycle_split v2，应把生命周期进程分类写到下面的 lifecycle_split 段。
                 board_restart_indicator: ""
+                # [按需修改] 旧 CycleDetector/旧 journal resolver 专用：诊断日志名 → journal 日志名映射。
+                # lifecycle_split v2 的 canonical alias 映射不要写在这里。
                 process_name_mapping: {}
                 # [按需修改] lifecycle_split v2（compact 产品 ctrl 模块）
                 # 这里的 compact 是 --product compact 的产品示例，不是 pipeline.result_json_mode: compact。

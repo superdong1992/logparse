@@ -502,3 +502,13 @@ class TestShippedConfigFiles:
         assert default_module["lifecycle_split"]["enabled"] is False
         assert v2_module["lifecycle_split"]["enabled"] is True
         assert compact_module["lifecycle_split"]["enabled"] is False
+
+        legacy_lifecycle_fields = {
+            "board_restart_indicator",
+            "board_restart_whitelist",
+            "process_name_mapping",
+        }
+        for product in v2_cfg["products"].values():
+            modules = product["log_parser"]["config"]["mechanism_modules"].values()
+            for module in modules:
+                assert legacy_lifecycle_fields.isdisjoint(module["config"])
