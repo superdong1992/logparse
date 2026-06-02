@@ -241,6 +241,91 @@ def _module1_two_pid_expansion_result() -> MechResult:
     )
 
 
+def _module1_pid_then_unrelated_result() -> MechResult:
+    return MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[
+            MechSlotOutput(
+                slot_id="2",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="20260103T000000-20260103T001000",
+                        start_time=_ts(0),
+                        end_time=_ts(0, 10),
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="svc",
+                                pid="100",
+                                total_count=0,
+                            )
+                        ],
+                    ),
+                    MechBoardCycle(
+                        dir_name="20260103T010000-20260103T011000",
+                        start_time=_ts(1),
+                        end_time=_ts(1, 10),
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="other",
+                                pid="200",
+                                total_count=0,
+                            )
+                        ],
+                    ),
+                ],
+            )
+        ],
+    )
+
+
+def _module1_nested_pid_then_unrelated_cpu_result() -> MechResult:
+    return MechResult(
+        module_name="EXAMPLE",
+        module_key="module1",
+        slots=[
+            MechSlotOutput(
+                slot_id="2",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="20260103T000000-20260103T020000",
+                        start_time=_ts(0),
+                        end_time=_ts(2),
+                        cpu_cycles=[
+                            MechCpuCycle(
+                                cpu_id="3",
+                                dir_name="20260103T000000-20260103T001000",
+                                start_time=_ts(0),
+                                end_time=_ts(0, 10),
+                                processes=[
+                                    MechProcessLifecycle(
+                                        process_name="svc",
+                                        pid="100",
+                                        total_count=0,
+                                    )
+                                ],
+                            ),
+                            MechCpuCycle(
+                                cpu_id="3",
+                                dir_name="20260103T010000-20260103T011000",
+                                start_time=_ts(1),
+                                end_time=_ts(1, 10),
+                                processes=[
+                                    MechProcessLifecycle(
+                                        process_name="other",
+                                        pid="200",
+                                        total_count=0,
+                                    )
+                                ],
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+
 def test_module2_scans_diag_logs_and_parses_bracket_pid(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -460,6 +545,133 @@ def test_module2_reused_pid_uses_timestamp_to_choose_matching_cycle(tmp_path):
     assert cycle.processes[0].logs[0].context == "second pid generation"
 
 
+def test_module2_timestamp_inside_cycle_overrides_pid_from_other_cycle(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="time cycle wins over old pid"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_pid_then_unrelated_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == [
+        "20260103T010000-20260103T011000"
+    ]
+    cycle = mech.slots[0].board_cycles[0]
+    assert cycle.processes[0].process_name == "svc"
+    assert cycle.processes[0].logs[0].context == "time cycle wins over old pid"
+    assert "pid_fallback_blocked_by_time_cycle=true" in caplog.text
+    assert "归属到unknown" not in caplog.text
+
+
+def test_module2_pid_fallback_does_not_cross_adjacent_module1_cycle(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T01:20:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc[100],Context="far old pid should stay unknown"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_pid_then_unrelated_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == ["unknown"]
+    assert mech.slots[0].board_cycles[0].processes[0].logs[0].context == (
+        "far old pid should stay unknown"
+    )
+
+
+def test_module2_gap_pid_fallback_uses_nearest_adjacent_cycle_and_avoids_overlap(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:50:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=left[100],Context="left pid too close to right cycle"\n'
+        '2026-01-03T00:20:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=right[200],Context="right pid too close to left cycle"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_two_pid_expansion_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == ["unknown"]
+    contexts = [
+        log.context
+        for process in mech.slots[0].board_cycles[0].processes
+        for log in process.logs
+    ]
+    assert sorted(contexts) == [
+        "left pid too close to right cycle",
+        "right pid too close to left cycle",
+    ]
+
+
+def test_module2_cpu_timestamp_inside_cycle_overrides_pid_from_other_cpu_cycle(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=svc[100],Context="cpu time cycle wins over old pid"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_nested_pid_then_unrelated_cpu_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    board_cycle = mech.slots[0].board_cycles[0]
+    assert board_cycle.dir_name == "20260103T000000-20260103T020000"
+    assert len(board_cycle.cpu_cycles) == 1
+    cpu_cycle = board_cycle.cpu_cycles[0]
+    assert cpu_cycle.dir_name == "20260103T010000-20260103T011000"
+    assert cpu_cycle.processes[0].logs[0].context == "cpu time cycle wins over old pid"
+
+
 def test_module2_entry_without_timestamp_stays_unknown_even_when_pid_matches(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
@@ -604,7 +816,7 @@ def test_module2_logs_unknown_reason_when_no_board_cycle_contains_timestamp(tmp_
     assert "source=slot_2/diag.log" in caplog.text
     assert "board_cycles=1" in caplog.text
     assert "20260103T000000-20260103T010000" in caplog.text
-    assert "expanded_target_count=0" in caplog.text
+    assert "projected_target_count=0" in caplog.text
     assert "raw=\"2026-01-03T02:10:00+08:00 xxx Slot=2" in caplog.text
 
 
@@ -875,15 +1087,15 @@ def test_module2_merges_top_level_unknown_into_unique_projected_board_cycle(tmp_
     assert "归属到unknown" not in caplog.text
 
 
-def test_module2_keeps_unknown_when_projected_cycle_target_is_ambiguous(tmp_path, caplog):
+def test_module2_keeps_unknown_when_clamped_projected_targets_do_not_cover_entry(tmp_path, caplog):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
-        '2026-01-03T00:50:00+08:00 xxx Slot=2,CPU-Id=0,'
-        'ProcessName=left[100],Context="left extender"\n'
         '2026-01-03T00:20:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=left[100],Context="left extender"\n'
+        '2026-01-03T00:50:00+08:00 xxx Slot=2,CPU-Id=0,'
         'ProcessName=right[200],Context="right extender"\n'
-        '2026-01-03T00:30:00+08:00 xxx Slot=2,CPU-Id=0,'
-        'ProcessName=other[999],Context="ambiguous projected target"\n',
+        '2026-01-03T00:35:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=other[999],Context="outside clamped projected targets"\n',
         encoding="utf-8",
     )
     slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
@@ -904,15 +1116,14 @@ def test_module2_keeps_unknown_when_projected_cycle_target_is_ambiguous(tmp_path
     assert mech is not None
     cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
     assert sorted(cycles) == [
-        "20260103T000000-20260103T005000",
-        "20260103T002000-20260103T011000",
+        "20260103T000000-20260103T002000",
+        "20260103T005000-20260103T011000",
         "unknown",
     ]
-    assert cycles["unknown"].processes[0].logs[0].context == "ambiguous projected target"
-    assert "reason=no_unique_expanded_cycle_target" in caplog.text
-    assert "original_reason=no_board_cycle_contains_timestamp" in caplog.text
-    assert "target_count=2" in caplog.text
-    assert "ambiguous projected target" in caplog.text
+    assert cycles["unknown"].processes[0].logs[0].context == "outside clamped projected targets"
+    assert "reason=no_board_cycle_contains_timestamp" in caplog.text
+    assert "projected_target_count=0" in caplog.text
+    assert "outside clamped projected targets" in caplog.text
 
 
 def test_module2_extracts_slot_from_slash_format(tmp_path):

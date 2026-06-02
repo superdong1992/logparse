@@ -6,7 +6,7 @@ import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from backend.models import (
@@ -23,6 +23,7 @@ from backend.parsing.file_iter import iter_log_entry_lines
 from backend.plugins.mechanisms.base import MechanismModulePlugin
 
 logger = logging.getLogger(__name__)
+_NON_OVERLAP_EPSILON = timedelta(microseconds=1)
 
 
 @dataclass
@@ -48,6 +49,13 @@ class _BoardProjection:
     entries: list[MechLogEntry]
     board_entries: list[MechLogEntry] | None = None
     cpu_unknown_by_id: dict[str, tuple[MechCpuCycle, list[MechLogEntry]]] | None = None
+
+
+@dataclass
+class _KnownBucketTarget:
+    board_cycle: MechBoardCycle
+    cpu_cycle: MechCpuCycle | None
+    entries: list[MechLogEntry]
 
 
 class Module2Plugin(MechanismModulePlugin):
@@ -197,13 +205,18 @@ class Module2Plugin(MechanismModulePlugin):
         for slot_id, slot_entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
             upstream_slot = _find_upstream_slot(upstream, slot_id)
-            grouped = _assign_entries_to_cycles(
+            grouped, matches = _assign_entries_to_cycles(
                 slot_entries,
                 upstream_slot,
                 available_slots=[slot.slot_id for slot in upstream.slots],
                 module_key=self.module_key,
             )
-            slot_output.board_cycles = _build_cycles(grouped)
+            slot_output.board_cycles = _build_cycles(
+                grouped,
+                upstream_slot,
+                matches,
+                module_key=self.module_key,
+            )
             mech_result.slots.append(slot_output)
 
         mech_result.diag_entry_count = len(entries)
@@ -241,7 +254,10 @@ def _assign_entries_to_cycles(
     upstream_slot: MechSlotOutput | None,
     available_slots: list[str] | None = None,
     module_key: str = "module2",
-) -> list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]]:
+) -> tuple[
+    list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+    dict[int, _CycleMatch],
+]:
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]] = []
     matches: dict[int, _CycleMatch] = {}
     unknown = MechBoardCycle(dir_name="unknown")
@@ -249,6 +265,7 @@ def _assign_entries_to_cycles(
     for entry in entries:
         match = _find_matching_cycle(entry, upstream_slot, available_slots or [])
         matches[id(entry)] = match
+        _log_successful_assignment_detail(module_key, entry, match)
         board_cycle = match.board_cycle
         cpu_cycle = match.cpu_cycle
         if board_cycle is None:
@@ -273,9 +290,9 @@ def _assign_entries_to_cycles(
             buckets.append((board_cycle, cpu_cycle, [entry]))
 
     _merge_unknown_entries_into_unique_known_bucket(buckets, matches)
-    _merge_unknown_entries_into_unique_expanded_cycle_bucket(buckets, matches)
+    _merge_unknown_entries_into_unique_expanded_cycle_bucket(buckets, matches, upstream_slot)
     _log_unknown_assignments(module_key, buckets, matches)
-    return buckets
+    return buckets, matches
 
 
 def _find_matching_cycle(
@@ -294,12 +311,25 @@ def _find_matching_cycle(
             detail=_slot_detail(upstream_slot, available_slots, timestamp=None),
         )
 
+    time_match = _find_time_matching_cycle(entry, upstream_slot, available_slots)
+    if time_match.board_cycle is not None:
+        if _has_pid_match_outside_target(entry, upstream_slot, time_match):
+            _append_match_detail(time_match, "pid_fallback_blocked_by_time_cycle=true")
+        return time_match
+
     pid_match = _find_pid_matching_cycle(entry, upstream_slot)
     if pid_match != (None, None):
         board_cycle, cpu_cycle = pid_match
-        return _CycleMatch(board_cycle=board_cycle, cpu_cycle=cpu_cycle, reason="matched_by_pid")
+        match = _CycleMatch(
+            board_cycle=board_cycle,
+            cpu_cycle=cpu_cycle,
+            reason="matched_by_pid",
+            detail=time_match.detail,
+        )
+        _append_match_detail(match, "pid_fallback_nearest_adjacent=true")
+        return match
 
-    return _find_time_matching_cycle(entry, upstream_slot, available_slots)
+    return time_match
 
 
 def _find_pid_matching_cycle(
@@ -309,10 +339,14 @@ def _find_pid_matching_cycle(
     if not entry.pid:
         return None, None
 
+    nearest_cycles = _nearest_cycles_for_timestamp(upstream_slot.board_cycles, entry.timestamp)
+    if not nearest_cycles:
+        return None, None
+
     exact_matches: list[tuple[MechBoardCycle, MechCpuCycle | None]] = []
     pid_matches: list[tuple[MechBoardCycle, MechCpuCycle | None]] = []
 
-    for cycle in upstream_slot.board_cycles:
+    for cycle in nearest_cycles:
         if entry.cpu_id:
             for cpu_cycle in cycle.cpu_cycles:
                 if cpu_cycle.cpu_id != entry.cpu_id:
@@ -337,6 +371,87 @@ def _find_pid_matching_cycle(
 
     matches = exact_matches or pid_matches
     return _select_match_by_timestamp(entry, matches)
+
+
+def _has_pid_match_outside_target(
+    entry: MechLogEntry,
+    upstream_slot: MechSlotOutput,
+    target: _CycleMatch,
+) -> bool:
+    if not entry.pid:
+        return False
+
+    for cycle in upstream_slot.board_cycles:
+        if entry.cpu_id:
+            for cpu_cycle in cycle.cpu_cycles:
+                if cpu_cycle.cpu_id != entry.cpu_id:
+                    continue
+                if cycle is target.board_cycle and cpu_cycle is target.cpu_cycle:
+                    continue
+                if _cycle_has_pid(cpu_cycle.processes, entry):
+                    return True
+            continue
+
+        if cycle is target.board_cycle and target.cpu_cycle is None:
+            continue
+        if _cycle_has_pid(cycle.processes, entry):
+            return True
+
+    return False
+
+
+def _cycle_has_pid(processes: list[MechProcessLifecycle], entry: MechLogEntry) -> bool:
+    return any(process.pid == entry.pid for process in processes)
+
+
+def _nearest_cycles_for_timestamp(
+    cycles: list[MechBoardCycle] | list[MechCpuCycle],
+    timestamp: datetime | None,
+) -> list[MechBoardCycle] | list[MechCpuCycle]:
+    if timestamp is None:
+        return []
+    scored = [
+        (_time_distance(cycle.start_time, cycle.end_time, timestamp), index, cycle)
+        for index, cycle in enumerate(cycles)
+    ]
+    scored = [item for item in scored if item[0] != float("inf")]
+    if not scored:
+        return []
+    scored.sort(key=lambda item: (item[0], item[1]))
+    best_distance = scored[0][0]
+    return [cycle for distance, _index, cycle in scored if distance == best_distance]
+
+
+def _allowed_board_cycles_for_timestamp(
+    upstream_slot: MechSlotOutput | None,
+    timestamp: datetime | None,
+) -> list[MechBoardCycle]:
+    if upstream_slot is None or timestamp is None:
+        return []
+    containing = [
+        cycle for cycle in upstream_slot.board_cycles
+        if _contains_time(cycle.start_time, cycle.end_time, timestamp)
+    ]
+    if containing:
+        return containing
+    return list(_nearest_cycles_for_timestamp(upstream_slot.board_cycles, timestamp))
+
+
+def _allowed_cpu_cycles_for_timestamp(
+    board_cycle: MechBoardCycle,
+    cpu_id: str,
+    timestamp: datetime | None,
+) -> list[MechCpuCycle]:
+    if timestamp is None:
+        return []
+    cpu_cycles = [cycle for cycle in board_cycle.cpu_cycles if cycle.cpu_id == cpu_id]
+    containing = [
+        cycle for cycle in cpu_cycles
+        if _contains_time(cycle.start_time, cycle.end_time, timestamp)
+    ]
+    if containing:
+        return containing
+    return list(_nearest_cycles_for_timestamp(cpu_cycles, timestamp))
 
 
 def _find_time_matching_cycle(
@@ -468,7 +583,7 @@ def _merge_unknown_entries_into_unique_known_bucket(
             for entry in entries:
                 targets = candidates.get(_entry_process_key(entry), [])
                 if len(targets) == 1:
-                    targets[0].append(entry)
+                    targets[0].entries.append(entry)
                 else:
                     if len(targets) > 1 and matches is not None:
                         match = matches.get(id(entry))
@@ -488,8 +603,9 @@ def _merge_unknown_entries_into_unique_known_bucket(
 def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
     matches: dict[int, _CycleMatch],
+    upstream_slot: MechSlotOutput | None = None,
 ) -> None:
-    targets = _projected_cycle_targets(buckets)
+    targets = _projected_cycle_targets(buckets, upstream_slot)
 
     for board_cycle, _cpu_cycle, entries in buckets:
         if board_cycle.dir_name != "unknown":
@@ -497,7 +613,7 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
 
         remaining: list[MechLogEntry] = []
         for entry in entries:
-            candidates = _expanded_cycle_targets_for_entry(entry, targets)
+            candidates = _expanded_cycle_targets_for_entry(entry, targets, upstream_slot)
             match = matches.get(id(entry))
             if len(candidates) == 1:
                 candidates[0].entries.append(entry)
@@ -506,7 +622,7 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
             if match is not None:
                 if len(candidates) > 1:
                     original_reason = match.reason or "unknown"
-                    match.reason = "no_unique_expanded_cycle_target"
+                    match.reason = "no_unique_projected_assignment_target"
                     match.detail = (
                         f"original_reason={original_reason} "
                         f"target_count={len(candidates)} "
@@ -514,7 +630,7 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
                         f"{match.detail}"
                     ).strip()
                 else:
-                    _append_match_detail(match, "expanded_target_count=0")
+                    _append_match_detail(match, "projected_target_count=0")
             remaining.append(entry)
         entries[:] = remaining
 
@@ -523,6 +639,7 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
 
 def _projected_cycle_targets(
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+    upstream_slot: MechSlotOutput | None = None,
 ) -> list[_ProjectedCycleTarget]:
     board_projections: dict[int, _BoardProjection] = {}
     targets: list[_ProjectedCycleTarget] = []
@@ -551,10 +668,17 @@ def _projected_cycle_targets(
             projection.cpu_unknown_by_id[cpu_cycle.cpu_id] = (cpu_cycle, entries)
             continue
 
+        lower_bound, upper_bound = _extension_limits_for_target(
+            board_cycle,
+            cpu_cycle,
+            upstream_slot,
+        )
         start_time, end_time = _projected_bounds(
             cpu_cycle.start_time,
             cpu_cycle.end_time,
             entries,
+            lower_bound,
+            upper_bound,
         )
         targets.append(_ProjectedCycleTarget(
             board_cycle=board_cycle,
@@ -565,10 +689,17 @@ def _projected_cycle_targets(
         ))
 
     for projection in board_projections.values():
+        board_lower, board_upper = _extension_limits_for_target(
+            projection.board_cycle,
+            None,
+            upstream_slot,
+        )
         board_start, board_end = _projected_bounds(
             projection.board_cycle.start_time,
             projection.board_cycle.end_time,
             projection.entries,
+            board_lower,
+            board_upper,
         )
 
         board_entries = projection.board_entries
@@ -636,17 +767,28 @@ def _projected_bounds(
     start_time: datetime | None,
     end_time: datetime | None,
     entries: list[MechLogEntry],
+    lower_bound: datetime | None = None,
+    upper_bound: datetime | None = None,
 ) -> tuple[datetime | None, datetime | None]:
     times = [entry.timestamp for entry in entries if entry.timestamp]
     candidates = [time for time in [start_time, end_time, *times] if time]
     if not candidates:
         return None, None
-    return min(candidates), max(candidates)
+    start = min(candidates)
+    end = max(candidates)
+    if lower_bound is not None and start < lower_bound:
+        start = lower_bound
+    if upper_bound is not None and end > upper_bound:
+        end = upper_bound
+    if start > end:
+        return start_time, end_time
+    return start, end
 
 
 def _expanded_cycle_targets_for_entry(
     entry: MechLogEntry,
     targets: list[_ProjectedCycleTarget],
+    upstream_slot: MechSlotOutput | None = None,
 ) -> list[_ProjectedCycleTarget]:
     if entry.timestamp is None:
         return []
@@ -656,6 +798,12 @@ def _expanded_cycle_targets_for_entry(
             target for target in targets
             if target.cpu_cycle is None
             and _contains_time(target.start_time, target.end_time, entry.timestamp)
+            and _is_nearest_assignment_target(
+                entry,
+                target.board_cycle,
+                target.cpu_cycle,
+                upstream_slot,
+            )
         ]
 
     candidates = [
@@ -663,12 +811,125 @@ def _expanded_cycle_targets_for_entry(
         if target.cpu_cycle is not None
         and target.cpu_cycle.cpu_id == entry.cpu_id
         and _contains_time(target.start_time, target.end_time, entry.timestamp)
+        and _is_nearest_assignment_target(
+            entry,
+            target.board_cycle,
+            target.cpu_cycle,
+            upstream_slot,
+        )
     ]
     real_cpu_candidates = [
         target for target in candidates
         if target.cpu_cycle is not None and target.cpu_cycle.dir_name != "unknown"
     ]
     return real_cpu_candidates or candidates
+
+
+def _is_nearest_assignment_target(
+    entry: MechLogEntry,
+    board_cycle: MechBoardCycle,
+    cpu_cycle: MechCpuCycle | None,
+    upstream_slot: MechSlotOutput | None,
+) -> bool:
+    if entry.timestamp is None:
+        return False
+    if entry.cpu_id:
+        if cpu_cycle is None or cpu_cycle.cpu_id != entry.cpu_id:
+            return False
+    elif cpu_cycle is not None:
+        return False
+
+    allowed_boards = _allowed_board_cycles_for_timestamp(upstream_slot, entry.timestamp)
+    if allowed_boards and not any(board_cycle is allowed for allowed in allowed_boards):
+        return False
+
+    if not entry.cpu_id:
+        return True
+
+    allowed_cpus = _allowed_cpu_cycles_for_timestamp(
+        board_cycle,
+        entry.cpu_id,
+        entry.timestamp,
+    )
+    if not allowed_cpus:
+        return cpu_cycle is not None and cpu_cycle.dir_name == "unknown"
+    if cpu_cycle is None or cpu_cycle.dir_name == "unknown":
+        return False
+    return any(cpu_cycle is allowed for allowed in allowed_cpus)
+
+
+def _extension_limits_for_target(
+    board_cycle: MechBoardCycle,
+    cpu_cycle: MechCpuCycle | None,
+    upstream_slot: MechSlotOutput | None,
+) -> tuple[datetime | None, datetime | None]:
+    board_lower, board_upper = _extension_limits_for_cycle(
+        board_cycle,
+        upstream_slot.board_cycles if upstream_slot is not None else [],
+    )
+    if cpu_cycle is None or cpu_cycle.dir_name == "unknown":
+        return board_lower, board_upper
+
+    peer_cpu_cycles = [
+        peer for peer in board_cycle.cpu_cycles
+        if peer.cpu_id == cpu_cycle.cpu_id
+    ]
+    cpu_lower, cpu_upper = _extension_limits_for_cycle(cpu_cycle, peer_cpu_cycles)
+    return _max_optional_datetime(board_lower, cpu_lower), _min_optional_datetime(board_upper, cpu_upper)
+
+
+def _extension_limits_for_cycle(
+    cycle: MechBoardCycle | MechCpuCycle,
+    peers: list[MechBoardCycle] | list[MechCpuCycle],
+) -> tuple[datetime | None, datetime | None]:
+    if cycle.dir_name == "unknown":
+        return None, None
+
+    ordered = [peer for peer in peers if peer.start_time is not None or peer.end_time is not None]
+    index = next((idx for idx, peer in enumerate(ordered) if peer is cycle), None)
+    if index is None:
+        return None, None
+
+    lower: datetime | None = None
+    upper: datetime | None = None
+    if index > 0:
+        lower = _gap_midpoint(ordered[index - 1].end_time, cycle.start_time)
+        if lower is not None:
+            lower = lower + _NON_OVERLAP_EPSILON
+    if index + 1 < len(ordered):
+        upper = _gap_midpoint(cycle.end_time, ordered[index + 1].start_time)
+    return lower, upper
+
+
+def _gap_midpoint(
+    left: datetime | None,
+    right: datetime | None,
+) -> datetime | None:
+    if left is None or right is None or right <= left:
+        return None
+    return left + (right - left) / 2
+
+
+def _max_optional_datetime(
+    left: datetime | None,
+    right: datetime | None,
+) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
+def _min_optional_datetime(
+    left: datetime | None,
+    right: datetime | None,
+) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right)
 
 
 def _append_match_detail(match: _CycleMatch, addition: str) -> None:
@@ -696,8 +957,8 @@ def _format_projected_target(target: _ProjectedCycleTarget) -> str:
 def _candidate_buckets_by_process_key(
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
     min_specificity: int,
-) -> dict[tuple[str, str, str], list[list[MechLogEntry]]]:
-    candidates: dict[tuple[str, str, str], list[list[MechLogEntry]]] = defaultdict(list)
+) -> dict[tuple[str, str, str], list[_KnownBucketTarget]]:
+    candidates: dict[tuple[str, str, str], list[_KnownBucketTarget]] = defaultdict(list)
     for board_cycle, cpu_cycle, entries in buckets:
         if _bucket_specificity(board_cycle, cpu_cycle) < min_specificity:
             continue
@@ -708,7 +969,7 @@ def _candidate_buckets_by_process_key(
             if key in seen:
                 continue
             seen.add(key)
-            candidates[key].append(entries)
+            candidates[key].append(_KnownBucketTarget(board_cycle, cpu_cycle, entries))
 
     return candidates
 
@@ -749,6 +1010,32 @@ def _log_unknown_assignments(
                 match.detail,
                 _format_raw(entry.raw),
             )
+
+
+def _log_successful_assignment_detail(
+    module_key: str,
+    entry: MechLogEntry,
+    match: _CycleMatch,
+) -> None:
+    if match.board_cycle is None:
+        return
+    if "pid_fallback_blocked_by_time_cycle=true" not in match.detail:
+        return
+
+    logger.info(
+        "[%s] module2归属诊断: slot=%s cpu=%s process=%s pid=%s "
+        "timestamp=%s source=%s reason=%s detail=\"%s\" raw=\"%s\"",
+        module_key,
+        entry.slot,
+        entry.cpu_id or "<board>",
+        entry.process_name,
+        entry.pid or "<empty>",
+        _format_optional_ts(entry.timestamp),
+        entry.source_file,
+        match.reason or "unknown",
+        match.detail,
+        _format_raw(entry.raw),
+    )
 
 
 def _slot_detail(
@@ -835,6 +1122,9 @@ def _format_raw(raw: str) -> str:
 
 def _build_cycles(
     grouped: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+    upstream_slot: MechSlotOutput | None = None,
+    matches: dict[int, _CycleMatch] | None = None,
+    module_key: str = "module2",
 ) -> list[MechBoardCycle]:
     cycles: list[MechBoardCycle] = []
     board_by_key: dict[int, MechBoardCycle] = {}
@@ -851,7 +1141,20 @@ def _build_cycles(
             )
             cycles.append(board_cycle)
             board_by_key[board_key] = board_cycle
-        _extend_cycle_bounds(board_cycle, entries)
+        lower_bound, upper_bound = _extension_limits_for_target(
+            board_template,
+            None,
+            upstream_slot,
+        )
+        _extend_cycle_bounds(
+            board_cycle,
+            entries,
+            lower_bound,
+            upper_bound,
+            matches=matches,
+            module_key=module_key,
+            scope="board",
+        )
 
         if cpu_template is None:
             board_cycle.processes.extend(_build_processes(entries))
@@ -868,7 +1171,20 @@ def _build_cycles(
             )
             board_cycle.cpu_cycles.append(cpu_cycle)
             cpu_by_key[cpu_key] = cpu_cycle
-        _extend_cycle_bounds(cpu_cycle, entries)
+        lower_bound, upper_bound = _extension_limits_for_target(
+            board_template,
+            cpu_template,
+            upstream_slot,
+        )
+        _extend_cycle_bounds(
+            cpu_cycle,
+            entries,
+            lower_bound,
+            upper_bound,
+            matches=matches,
+            module_key=module_key,
+            scope=f"cpu_{cpu_template.cpu_id}",
+        )
         cpu_cycle.processes.extend(_build_processes(entries))
 
     return cycles
@@ -877,6 +1193,11 @@ def _build_cycles(
 def _extend_cycle_bounds(
     cycle: MechBoardCycle | MechCpuCycle,
     entries: list[MechLogEntry],
+    lower_bound: datetime | None = None,
+    upper_bound: datetime | None = None,
+    matches: dict[int, _CycleMatch] | None = None,
+    module_key: str = "module2",
+    scope: str = "board",
 ) -> None:
     if cycle.dir_name == "unknown":
         return
@@ -886,9 +1207,75 @@ def _extend_cycle_bounds(
     if not candidates:
         return
 
-    cycle.start_time = min(candidates)
-    cycle.end_time = max(candidates)
+    proposed_start = min(candidates)
+    proposed_end = max(candidates)
+    start_time = proposed_start
+    end_time = proposed_end
+    if lower_bound is not None and start_time < lower_bound:
+        start_time = lower_bound
+    if upper_bound is not None and end_time > upper_bound:
+        end_time = upper_bound
+    if start_time > end_time:
+        return
+
+    if proposed_start != start_time or proposed_end != end_time:
+        _log_pid_fallback_clamp(
+            module_key,
+            scope,
+            cycle,
+            entries,
+            matches or {},
+            proposed_start,
+            proposed_end,
+            start_time,
+            end_time,
+        )
+
+    cycle.start_time = start_time
+    cycle.end_time = end_time
     cycle.dir_name = _format_cycle_dir(cycle.start_time, cycle.end_time)
+
+
+def _log_pid_fallback_clamp(
+    module_key: str,
+    scope: str,
+    cycle: MechBoardCycle | MechCpuCycle,
+    entries: list[MechLogEntry],
+    matches: dict[int, _CycleMatch],
+    proposed_start: datetime,
+    proposed_end: datetime,
+    clamped_start: datetime,
+    clamped_end: datetime,
+) -> None:
+    for entry in entries:
+        match = matches.get(id(entry))
+        if match is None or "pid_fallback_nearest_adjacent=true" not in match.detail:
+            continue
+
+        logger.info(
+            "[%s] module2归属诊断: slot=%s cpu=%s process=%s pid=%s "
+            "timestamp=%s source=%s reason=%s "
+            "detail=\"pid_fallback_clamped=true scope=%s "
+            "original_cycle=%s proposed_start=%s proposed_end=%s "
+            "clamped_start=%s clamped_end=%s target_cycle=%s %s\" raw=\"%s\"",
+            module_key,
+            entry.slot,
+            entry.cpu_id or "<board>",
+            entry.process_name,
+            entry.pid or "<empty>",
+            _format_optional_ts(entry.timestamp),
+            entry.source_file,
+            match.reason or "unknown",
+            scope,
+            _format_cycle_summary(match.cpu_cycle or match.board_cycle or cycle),
+            _format_optional_ts(proposed_start),
+            _format_optional_ts(proposed_end),
+            _format_optional_ts(clamped_start),
+            _format_optional_ts(clamped_end),
+            _format_cycle_summary(cycle),
+            match.detail,
+            _format_raw(entry.raw),
+        )
 
 
 def _format_cycle_dir(start: datetime | None, end: datetime | None) -> str:

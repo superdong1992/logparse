@@ -62,6 +62,8 @@
 - CPU 日志优先匹配板卡周期内的嵌套 CPU 周期。
 - 板卡日志匹配顶层板卡周期。
 - 找不到 CPU 周期时，CPU 日志进入对应板卡周期下的 `cpu_<id>/unknown/`。
+- timestamp 不落入任何 module1 周期时，module2 可用 PID 归入最近相邻周期；不能跨过相邻 module1 周期拉回旧 PID。
+- module2 输出目录允许按自身日志扩展，但扩展边界会被相邻 module1 周期夹住，保证 module2 周期目录不重叠。
 
 ## 流程图
 

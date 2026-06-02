@@ -83,6 +83,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。从全部条目中检测时区并归一化所有 naive timestamp
 - **journal 双正则 fallback**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式；`line_pattern2_required_substrings` 可对 `line_pattern2` / 自动无序号 fallback 增加大小写敏感整行字符串约束
 - **嵌套生命周期输出**：`MechBoardCycle` 是顶层板卡生命周期；`MechCpuCycle` 嵌套在对应板卡周期下，保存 CPU-local 重启周期、split trace 和进程生命周期。
+- **module2 相邻扩展**：module2 优先按 module1 时间周期归属；PID 只在 timestamp 不落入任何 module1 周期时作为最近相邻 fallback。module2 可扩展自己的输出目录边界，但不能跨入相邻 module1 周期并产生重叠目录。
 
 ### 模块分工
 

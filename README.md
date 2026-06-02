@@ -67,7 +67,7 @@ python cli.py parse diagnostic_information_20260103.zip -c config.lifecycle-v2.y
 python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx decisions
 ```
 
-`module2` 是诊断日志-only 的机制模块示例。它依赖 `module1` 的生命周期切分结果，不自行切周期；解析到的 module2 日志会按 `slot + cpu_id + timestamp` 归入 module1 对应周期。CPU 日志优先匹配嵌套 CPU 周期，找不到 CPU 周期但能匹配板卡周期时写入 `cpu_<id>/unknown/`；无法匹配板卡周期的日志写入 `unknown/`。配置时需要把 `module2` 声明在它依赖的 `module1` 之后。排查 module2 unknown 归属时可加 `--verbose`，日志会输出 `reason/detail`，展示解析出的 slot、CPU、timestamp 以及参与比较的上游 cycle。
+`module2` 是诊断日志-only 的机制模块示例。它依赖 `module1` 的生命周期切分结果，不自行切周期；解析到的 module2 日志优先按 `slot + cpu_id + timestamp` 归入 module1 对应周期，只有 timestamp 不落入任何 module1 周期时才使用 PID 做相邻空档 fallback。module2 输出周期可按自身日志扩展边界，但扩展会被相邻 module1 周期夹住，避免生成重叠生命周期目录。CPU 日志优先匹配嵌套 CPU 周期，找不到 CPU 周期但能匹配板卡周期时写入 `cpu_<id>/unknown/`；无法匹配板卡周期的日志写入 `unknown/`。配置时需要把 `module2` 声明在它依赖的 `module1` 之后。排查 module2 unknown 归属时可加 `--verbose`，日志会输出 `reason/detail`，展示解析出的 slot、CPU、timestamp 以及参与比较的上游 cycle。
 
 解压职责集中在 `Decompressor`。Scanner 插件只扫描统一解压后的工作区，不再自行解压 `varlog.zip` 或诊断日志内层包。内层归档会保留原文件，并在同目录生成 `*_extracted/` 目录供 scanner/parser 使用；如需降低磁盘占用，可配置 `pipeline.cleanup_inner_archives: true` 在解析后删除已展开的内层归档副本，或配置 `pipeline.cleanup_extracted: true` 删除整个 `extracted/` 工作区。
 

@@ -38,6 +38,7 @@ Checklist:
 
 - `module2` is diagnostic-only for lifecycle purposes.
 - `module2` reuses `module1` lifecycle cycles.
+- `module2` may expand output bounds only within the nearest adjacent module1 gap; output lifecycle directories must not overlap.
 - CPU anchors preserve the same parent board cycle and nested CPU cycle when available.
 
 ## rules:compact-result-contract
