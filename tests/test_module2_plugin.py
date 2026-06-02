@@ -8,6 +8,7 @@ from backend.models import (
     LogEntry,
     MechBoardCycle,
     MechCpuCycle,
+    MechLogEntry,
     MechProcessLifecycle,
     MechResult,
     MechSlotOutput,
@@ -16,6 +17,7 @@ from backend.models import (
 )
 from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.parsing.output_writer import MechOutputWriter
+from backend.plugins.mechanisms import module2 as module2_impl
 from backend.plugins.mechanisms.module2 import Module2Plugin
 
 
@@ -981,42 +983,7 @@ def test_module2_does_not_log_unknown_reason_after_successful_unknown_merge(tmp_
     assert "归属到unknown" not in caplog.text
 
 
-def test_module2_keeps_unknown_entries_when_same_process_lifecycle_is_ambiguous(tmp_path):
-    log_file = tmp_path / "diag.log"
-    log_file.write_text(
-        '2026-01-03T00:05:00+08:00 xxx Slot=2,CPU-Id=0,'
-        'ProcessName=svc,Context="first cycle"\n'
-        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=0,'
-        'ProcessName=svc,Context="second cycle"\n'
-        '2026-01-03T02:00:00+08:00 xxx Slot=2,CPU-Id=0,'
-        'ProcessName=svc,Context="ambiguous outside"\n',
-        encoding="utf-8",
-    )
-    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
-    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
-    result = ParseResult(
-        diagnostic_slots=[slot],
-        mech_results=[_module1_reused_pid_result()],
-    )
-    plugin = Module2Plugin(
-        _module2_config(),
-        module_key="module2",
-        ts_extractor=_timestamp_extractor(),
-    )
-
-    mech = plugin.parse(result)
-
-    assert mech is not None
-    cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
-    assert sorted(cycles) == [
-        "20260103T000000-20260103T001000",
-        "20260103T010000-20260103T011000",
-        "unknown",
-    ]
-    assert cycles["unknown"].processes[0].logs[0].context == "ambiguous outside"
-
-
-def test_module2_logs_unknown_reason_when_unknown_merge_target_is_ambiguous(tmp_path, caplog):
+def test_module2_resolves_same_process_unknown_to_nearest_later_lifecycle(tmp_path, caplog):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
         '2026-01-03T00:05:00+08:00 xxx Slot=2,CPU-Id=0,'
@@ -1043,10 +1010,116 @@ def test_module2_logs_unknown_reason_when_unknown_merge_target_is_ambiguous(tmp_
         mech = plugin.parse(result)
 
     assert mech is not None
+    cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
+    assert sorted(cycles) == [
+        "20260103T000000-20260103T001000",
+        "20260103T010000-20260103T020000",
+    ]
+    later_contexts = [
+        log.context
+        for process in cycles["20260103T010000-20260103T020000"].processes
+        for log in process.logs
+    ]
+    assert later_contexts == ["second cycle", "ambiguous outside"]
+    assert "resolved_unknown_by_nearest_time=true" in caplog.text
+    assert "归属到unknown" not in caplog.text
+
+
+def test_module2_resolves_same_process_unknown_to_nearest_earlier_lifecycle(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="first cycle"\n'
+        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="second cycle"\n'
+        '2026-01-03T00:20:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="ambiguous outside nearer first"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_reused_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
+    cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
+    assert sorted(cycles) == [
+        "20260103T000000-20260103T002000",
+        "20260103T010000-20260103T011000",
+    ]
+    earlier_contexts = [
+        log.context
+        for process in cycles["20260103T000000-20260103T002000"].processes
+        for log in process.logs
+    ]
+    assert earlier_contexts == ["first cycle", "ambiguous outside nearer first"]
+    assert "resolved_unknown_by_nearest_time=true" in caplog.text
+    assert "归属到unknown" not in caplog.text
+
+
+def test_module2_keeps_unknown_when_nearest_time_candidate_ties():
+    entry = MechLogEntry(timestamp=_ts(0, 15), process_name="svc")
+
+    resolution = module2_impl._resolve_candidate_by_nearest_time(
+        entry,
+        ["left", "right"],
+        range_getter=lambda candidate: (
+            (_ts(0), _ts(0, 10)) if candidate == "left" else (_ts(0, 20), _ts(0, 30))
+        ),
+        admissible_range_getter=lambda _candidate: (None, None),
+        summary_formatter=lambda candidate: candidate,
+    )
+
+    assert resolution.target is None
+    assert resolution.target_count == 2
+    assert resolution.admissible_count == 2
+    assert resolution.tie
+    assert "distance=300.000000" in resolution.detail
+
+
+def test_module2_logs_unknown_reason_when_unknown_merge_target_ties(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="first cycle"\n'
+        '2026-01-03T01:05:00+08:00 xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="second cycle"\n'
+        'xxx Slot=2,CPU-Id=0,'
+        'ProcessName=svc,Context="ambiguous without timestamp"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_reused_pid_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        mech = plugin.parse(result)
+
+    assert mech is not None
     assert "reason=no_unique_known_process_target" in caplog.text
-    assert "original_reason=no_board_cycle_contains_timestamp" in caplog.text
+    assert "original_reason=missing_timestamp" in caplog.text
     assert "target_count=2" in caplog.text
-    assert "ambiguous outside" in caplog.text
+    assert "admissible_count=0" in caplog.text
+    assert "candidates=[" in caplog.text
+    assert "ambiguous without timestamp" in caplog.text
 
 
 def test_module2_merges_top_level_unknown_into_unique_projected_board_cycle(tmp_path, caplog):
@@ -1087,7 +1160,7 @@ def test_module2_merges_top_level_unknown_into_unique_projected_board_cycle(tmp_
     assert "归属到unknown" not in caplog.text
 
 
-def test_module2_keeps_unknown_when_clamped_projected_targets_do_not_cover_entry(tmp_path, caplog):
+def test_module2_resolves_projected_unknown_to_nearest_admissible_target(tmp_path, caplog):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
         '2026-01-03T00:20:00+08:00 xxx Slot=2,CPU-Id=0,'
@@ -1095,7 +1168,7 @@ def test_module2_keeps_unknown_when_clamped_projected_targets_do_not_cover_entry
         '2026-01-03T00:50:00+08:00 xxx Slot=2,CPU-Id=0,'
         'ProcessName=right[200],Context="right extender"\n'
         '2026-01-03T00:35:00+08:00 xxx Slot=2,CPU-Id=0,'
-        'ProcessName=other[999],Context="outside clamped projected targets"\n',
+        'ProcessName=other[999],Context="between clamped projected targets"\n',
         encoding="utf-8",
     )
     slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
@@ -1116,14 +1189,18 @@ def test_module2_keeps_unknown_when_clamped_projected_targets_do_not_cover_entry
     assert mech is not None
     cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
     assert sorted(cycles) == [
-        "20260103T000000-20260103T002000",
+        "20260103T000000-20260103T003500",
         "20260103T005000-20260103T011000",
-        "unknown",
     ]
-    assert cycles["unknown"].processes[0].logs[0].context == "outside clamped projected targets"
-    assert "reason=no_board_cycle_contains_timestamp" in caplog.text
-    assert "projected_target_count=0" in caplog.text
-    assert "outside clamped projected targets" in caplog.text
+    left_contexts = [
+        log.context
+        for process in cycles["20260103T000000-20260103T003500"].processes
+        for log in process.logs
+    ]
+    assert sorted(left_contexts) == ["between clamped projected targets", "left extender"]
+    assert "resolved_unknown_by_nearest_time=true" in caplog.text
+    assert "admissible_count=1" in caplog.text
+    assert "归属到unknown" not in caplog.text
 
 
 def test_module2_extracts_slot_from_slash_format(tmp_path):

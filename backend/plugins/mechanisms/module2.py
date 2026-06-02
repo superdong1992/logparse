@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from backend.models import (
     LogEntry,
@@ -56,6 +56,17 @@ class _KnownBucketTarget:
     board_cycle: MechBoardCycle
     cpu_cycle: MechCpuCycle | None
     entries: list[MechLogEntry]
+
+
+@dataclass
+class _CandidateResolution:
+    target: Any | None
+    target_count: int
+    admissible_count: int
+    distance: float | None = None
+    tie: bool = False
+    selected_summary: str = ""
+    detail: str = ""
 
 
 class Module2Plugin(MechanismModulePlugin):
@@ -289,8 +300,13 @@ def _assign_entries_to_cycles(
         else:
             buckets.append((board_cycle, cpu_cycle, [entry]))
 
-    _merge_unknown_entries_into_unique_known_bucket(buckets, matches)
-    _merge_unknown_entries_into_unique_expanded_cycle_bucket(buckets, matches, upstream_slot)
+    _merge_unknown_entries_into_unique_known_bucket(buckets, matches, upstream_slot, module_key)
+    _merge_unknown_entries_into_unique_expanded_cycle_bucket(
+        buckets,
+        matches,
+        upstream_slot,
+        module_key,
+    )
     _log_unknown_assignments(module_key, buckets, matches)
     return buckets, matches
 
@@ -422,38 +438,6 @@ def _nearest_cycles_for_timestamp(
     return [cycle for distance, _index, cycle in scored if distance == best_distance]
 
 
-def _allowed_board_cycles_for_timestamp(
-    upstream_slot: MechSlotOutput | None,
-    timestamp: datetime | None,
-) -> list[MechBoardCycle]:
-    if upstream_slot is None or timestamp is None:
-        return []
-    containing = [
-        cycle for cycle in upstream_slot.board_cycles
-        if _contains_time(cycle.start_time, cycle.end_time, timestamp)
-    ]
-    if containing:
-        return containing
-    return list(_nearest_cycles_for_timestamp(upstream_slot.board_cycles, timestamp))
-
-
-def _allowed_cpu_cycles_for_timestamp(
-    board_cycle: MechBoardCycle,
-    cpu_id: str,
-    timestamp: datetime | None,
-) -> list[MechCpuCycle]:
-    if timestamp is None:
-        return []
-    cpu_cycles = [cycle for cycle in board_cycle.cpu_cycles if cycle.cpu_id == cpu_id]
-    containing = [
-        cycle for cycle in cpu_cycles
-        if _contains_time(cycle.start_time, cycle.end_time, timestamp)
-    ]
-    if containing:
-        return containing
-    return list(_nearest_cycles_for_timestamp(cpu_cycles, timestamp))
-
-
 def _find_time_matching_cycle(
     entry: MechLogEntry,
     upstream_slot: MechSlotOutput,
@@ -569,6 +553,8 @@ def _time_distance(
 def _merge_unknown_entries_into_unique_known_bucket(
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
     matches: dict[int, _CycleMatch] | None = None,
+    upstream_slot: MechSlotOutput | None = None,
+    module_key: str = "module2",
 ) -> None:
     for specificity in (1, 0):
         candidates = _candidate_buckets_by_process_key(
@@ -582,9 +568,27 @@ def _merge_unknown_entries_into_unique_known_bucket(
             remaining: list[MechLogEntry] = []
             for entry in entries:
                 targets = candidates.get(_entry_process_key(entry), [])
-                if len(targets) == 1:
-                    targets[0].entries.append(entry)
-                else:
+                resolution = _resolve_candidate_by_nearest_time(
+                    entry,
+                    targets,
+                    range_getter=lambda target: _known_bucket_target_range(target, upstream_slot),
+                    admissible_range_getter=lambda target: _candidate_admissible_range(
+                        target.board_cycle,
+                        target.cpu_cycle,
+                        upstream_slot,
+                    ),
+                    summary_formatter=_format_known_bucket_target,
+                )
+                if resolution.target is not None:
+                    resolution.target.entries.append(entry)
+                    _log_resolved_unknown_by_nearest_time(
+                        module_key,
+                        entry,
+                        resolution,
+                    )
+                    continue
+
+                if targets:
                     if len(targets) > 1 and matches is not None:
                         match = matches.get(id(entry))
                         if match is not None:
@@ -592,9 +596,13 @@ def _merge_unknown_entries_into_unique_known_bucket(
                             match.reason = "no_unique_known_process_target"
                             match.detail = (
                                 f"original_reason={original_reason} "
-                                f"target_count={len(targets)} {match.detail}"
+                                f"{resolution.detail} {match.detail}"
                             ).strip()
-                    remaining.append(entry)
+                    elif matches is not None:
+                        match = matches.get(id(entry))
+                        if match is not None:
+                            _append_match_detail(match, resolution.detail)
+                remaining.append(entry)
             entries[:] = remaining
 
     buckets[:] = [bucket for bucket in buckets if bucket[2]]
@@ -604,6 +612,7 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
     matches: dict[int, _CycleMatch],
     upstream_slot: MechSlotOutput | None = None,
+    module_key: str = "module2",
 ) -> None:
     targets = _projected_cycle_targets(buckets, upstream_slot)
 
@@ -613,22 +622,39 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
 
         remaining: list[MechLogEntry] = []
         for entry in entries:
-            candidates = _expanded_cycle_targets_for_entry(entry, targets, upstream_slot)
+            candidates = _expanded_cycle_targets_for_entry(entry, targets)
             match = matches.get(id(entry))
-            if len(candidates) == 1:
-                candidates[0].entries.append(entry)
+            resolution = _resolve_candidate_by_nearest_time(
+                entry,
+                candidates,
+                range_getter=lambda target: (target.start_time, target.end_time),
+                admissible_range_getter=lambda target: _candidate_admissible_range(
+                    target.board_cycle,
+                    target.cpu_cycle,
+                    upstream_slot,
+                ),
+                summary_formatter=_format_projected_target,
+            )
+            if resolution.target is not None:
+                resolution.target.entries.append(entry)
+                _log_resolved_unknown_by_nearest_time(
+                    module_key,
+                    entry,
+                    resolution,
+                )
                 continue
 
             if match is not None:
-                if len(candidates) > 1:
+                if resolution.target_count > 1:
                     original_reason = match.reason or "unknown"
                     match.reason = "no_unique_projected_assignment_target"
                     match.detail = (
                         f"original_reason={original_reason} "
-                        f"target_count={len(candidates)} "
-                        f"candidates=[{_format_projected_targets(candidates)}] "
+                        f"{resolution.detail} "
                         f"{match.detail}"
                     ).strip()
+                elif resolution.target_count == 1:
+                    _append_match_detail(match, resolution.detail)
                 else:
                     _append_match_detail(match, "projected_target_count=0")
             remaining.append(entry)
@@ -788,35 +814,17 @@ def _projected_bounds(
 def _expanded_cycle_targets_for_entry(
     entry: MechLogEntry,
     targets: list[_ProjectedCycleTarget],
-    upstream_slot: MechSlotOutput | None = None,
 ) -> list[_ProjectedCycleTarget]:
-    if entry.timestamp is None:
-        return []
-
     if not entry.cpu_id:
         return [
             target for target in targets
             if target.cpu_cycle is None
-            and _contains_time(target.start_time, target.end_time, entry.timestamp)
-            and _is_nearest_assignment_target(
-                entry,
-                target.board_cycle,
-                target.cpu_cycle,
-                upstream_slot,
-            )
         ]
 
     candidates = [
         target for target in targets
         if target.cpu_cycle is not None
         and target.cpu_cycle.cpu_id == entry.cpu_id
-        and _contains_time(target.start_time, target.end_time, entry.timestamp)
-        and _is_nearest_assignment_target(
-            entry,
-            target.board_cycle,
-            target.cpu_cycle,
-            upstream_slot,
-        )
     ]
     real_cpu_candidates = [
         target for target in candidates
@@ -825,37 +833,190 @@ def _expanded_cycle_targets_for_entry(
     return real_cpu_candidates or candidates
 
 
-def _is_nearest_assignment_target(
+def _resolve_candidate_by_nearest_time(
     entry: MechLogEntry,
+    candidates: list[Any],
+    range_getter: Callable[[Any], tuple[datetime | None, datetime | None]],
+    admissible_range_getter: Callable[[Any], tuple[datetime | None, datetime | None]],
+    summary_formatter: Callable[[Any], str],
+) -> _CandidateResolution:
+    target_count = len(candidates)
+    if target_count == 0:
+        return _CandidateResolution(
+            target=None,
+            target_count=0,
+            admissible_count=0,
+            detail="target_count=0 admissible_count=0",
+        )
+
+    if entry.timestamp is None:
+        detail = _candidate_resolution_detail(
+            candidates,
+            range_getter,
+            admissible_range_getter,
+            summary_formatter,
+            timestamp=None,
+            admissible_candidates=[],
+        )
+        return _CandidateResolution(
+            target=None,
+            target_count=target_count,
+            admissible_count=0,
+            detail=detail,
+        )
+
+    scored: list[tuple[float, int, Any, str]] = []
+    admissible_candidates: list[Any] = []
+    for index, candidate in enumerate(candidates):
+        lower_bound, upper_bound = admissible_range_getter(candidate)
+        if not _contains_open_time(lower_bound, upper_bound, entry.timestamp):
+            continue
+        start_time, end_time = range_getter(candidate)
+        distance = _time_distance(start_time, end_time, entry.timestamp)
+        scored.append((distance, index, candidate, summary_formatter(candidate)))
+        admissible_candidates.append(candidate)
+
+    detail = _candidate_resolution_detail(
+        candidates,
+        range_getter,
+        admissible_range_getter,
+        summary_formatter,
+        timestamp=entry.timestamp,
+        admissible_candidates=admissible_candidates,
+    )
+    if not scored:
+        return _CandidateResolution(
+            target=None,
+            target_count=target_count,
+            admissible_count=0,
+            detail=detail,
+        )
+
+    if len(scored) == 1:
+        distance, _index, candidate, summary = scored[0]
+        return _CandidateResolution(
+            target=candidate,
+            target_count=target_count,
+            admissible_count=1,
+            distance=distance,
+            selected_summary=summary,
+            detail=detail,
+        )
+
+    scored.sort(key=lambda item: (item[0], item[1]))
+    best_distance = scored[0][0]
+    tied = [item for item in scored if item[0] == best_distance]
+    if len(tied) > 1:
+        return _CandidateResolution(
+            target=None,
+            target_count=target_count,
+            admissible_count=len(scored),
+            distance=best_distance,
+            tie=True,
+            detail=detail,
+        )
+
+    distance, _index, candidate, summary = scored[0]
+    return _CandidateResolution(
+        target=candidate,
+        target_count=target_count,
+        admissible_count=len(scored),
+        distance=distance,
+        selected_summary=summary,
+        detail=detail,
+    )
+
+
+def _candidate_resolution_detail(
+    candidates: list[Any],
+    range_getter: Callable[[Any], tuple[datetime | None, datetime | None]],
+    admissible_range_getter: Callable[[Any], tuple[datetime | None, datetime | None]],
+    summary_formatter: Callable[[Any], str],
+    timestamp: datetime | None,
+    admissible_candidates: list[Any],
+) -> str:
+    admissible_ids = {id(candidate) for candidate in admissible_candidates}
+    formatted = []
+    for candidate in candidates[:3]:
+        start_time, end_time = range_getter(candidate)
+        lower_bound, upper_bound = admissible_range_getter(candidate)
+        if timestamp is None:
+            distance = None
+            admissible = False
+        else:
+            distance = _time_distance(start_time, end_time, timestamp)
+            admissible = id(candidate) in admissible_ids
+        formatted.append(
+            f"{summary_formatter(candidate)} "
+            f"range_start={_format_optional_ts(start_time)} "
+            f"range_end={_format_optional_ts(end_time)} "
+            f"admissible_start={_format_optional_ts(lower_bound)} "
+            f"admissible_end={_format_optional_ts(upper_bound)} "
+            f"distance={_format_distance(distance)} "
+            f"admissible={str(admissible).lower()}"
+        )
+
+    return (
+        f"target_count={len(candidates)} "
+        f"admissible_count={len(admissible_candidates)} "
+        f"candidates=[{'; '.join(formatted)}]"
+    )
+
+
+def _contains_open_time(
+    lower_bound: datetime | None,
+    upper_bound: datetime | None,
+    timestamp: datetime,
+) -> bool:
+    if lower_bound is not None and timestamp < lower_bound:
+        return False
+    if upper_bound is not None and timestamp > upper_bound:
+        return False
+    return True
+
+
+def _format_distance(distance: float | None) -> str:
+    if distance is None:
+        return "<none>"
+    if distance == float("inf"):
+        return "<inf>"
+    return f"{distance:.6f}"
+
+
+def _known_bucket_target_range(
+    target: _KnownBucketTarget,
+    upstream_slot: MechSlotOutput | None,
+) -> tuple[datetime | None, datetime | None]:
+    lower_bound, upper_bound = _extension_limits_for_target(
+        target.board_cycle,
+        target.cpu_cycle,
+        upstream_slot,
+    )
+    start_time, end_time = _target_base_range(target.board_cycle, target.cpu_cycle)
+    return _projected_bounds(
+        start_time,
+        end_time,
+        target.entries,
+        lower_bound,
+        upper_bound,
+    )
+
+
+def _candidate_admissible_range(
     board_cycle: MechBoardCycle,
     cpu_cycle: MechCpuCycle | None,
     upstream_slot: MechSlotOutput | None,
-) -> bool:
-    if entry.timestamp is None:
-        return False
-    if entry.cpu_id:
-        if cpu_cycle is None or cpu_cycle.cpu_id != entry.cpu_id:
-            return False
-    elif cpu_cycle is not None:
-        return False
+) -> tuple[datetime | None, datetime | None]:
+    return _extension_limits_for_target(board_cycle, cpu_cycle, upstream_slot)
 
-    allowed_boards = _allowed_board_cycles_for_timestamp(upstream_slot, entry.timestamp)
-    if allowed_boards and not any(board_cycle is allowed for allowed in allowed_boards):
-        return False
 
-    if not entry.cpu_id:
-        return True
-
-    allowed_cpus = _allowed_cpu_cycles_for_timestamp(
-        board_cycle,
-        entry.cpu_id,
-        entry.timestamp,
-    )
-    if not allowed_cpus:
-        return cpu_cycle is not None and cpu_cycle.dir_name == "unknown"
-    if cpu_cycle is None or cpu_cycle.dir_name == "unknown":
-        return False
-    return any(cpu_cycle is allowed for allowed in allowed_cpus)
+def _target_base_range(
+    board_cycle: MechBoardCycle,
+    cpu_cycle: MechCpuCycle | None,
+) -> tuple[datetime | None, datetime | None]:
+    if cpu_cycle is not None and cpu_cycle.dir_name != "unknown":
+        return cpu_cycle.start_time, cpu_cycle.end_time
+    return board_cycle.start_time, board_cycle.end_time
 
 
 def _extension_limits_for_target(
@@ -892,6 +1053,8 @@ def _extension_limits_for_cycle(
 
     lower: datetime | None = None
     upper: datetime | None = None
+    # TODO: 评估 gap 中点作为 module2 扩展临界点是否符合业务语义；
+    # 可能需要改为相邻 module1 lifecycle 边界或配置化归属规则。
     if index > 0:
         lower = _gap_midpoint(ordered[index - 1].end_time, cycle.start_time)
         if lower is not None:
@@ -938,10 +1101,6 @@ def _append_match_detail(match: _CycleMatch, addition: str) -> None:
     match.detail = f"{match.detail} {addition}".strip()
 
 
-def _format_projected_targets(targets: list[_ProjectedCycleTarget]) -> str:
-    return "; ".join(_format_projected_target(target) for target in targets[:3])
-
-
 def _format_projected_target(target: _ProjectedCycleTarget) -> str:
     if target.cpu_cycle is None:
         scope = "board"
@@ -952,6 +1111,14 @@ def _format_projected_target(target: _ProjectedCycleTarget) -> str:
         f"projected_start={_format_optional_ts(target.start_time)} "
         f"projected_end={_format_optional_ts(target.end_time)}"
     )
+
+
+def _format_known_bucket_target(target: _KnownBucketTarget) -> str:
+    if target.cpu_cycle is None:
+        scope = "board"
+    else:
+        scope = f"cpu_{target.cpu_cycle.cpu_id}/{target.cpu_cycle.dir_name}"
+    return f"{target.board_cycle.dir_name}/{scope}"
 
 
 def _candidate_buckets_by_process_key(
@@ -984,6 +1151,34 @@ def _bucket_specificity(board_cycle: MechBoardCycle, cpu_cycle: MechCpuCycle | N
 
 def _entry_process_key(entry: MechLogEntry) -> tuple[str, str, str]:
     return entry.process_name, entry.pid, entry.cpu_id or ""
+
+
+def _log_resolved_unknown_by_nearest_time(
+    module_key: str,
+    entry: MechLogEntry,
+    resolution: _CandidateResolution,
+) -> None:
+    if resolution.target_count <= 1:
+        return
+
+    logger.info(
+        "[%s] module2归属诊断: slot=%s cpu=%s process=%s pid=%s "
+        "timestamp=%s source=%s detail=\"resolved_unknown_by_nearest_time=true "
+        "target_count=%d admissible_count=%d selected=%s distance=%s %s\" raw=\"%s\"",
+        module_key,
+        entry.slot,
+        entry.cpu_id or "<board>",
+        entry.process_name,
+        entry.pid or "<empty>",
+        _format_optional_ts(entry.timestamp),
+        entry.source_file,
+        resolution.target_count,
+        resolution.admissible_count,
+        resolution.selected_summary,
+        _format_distance(resolution.distance),
+        resolution.detail,
+        _format_raw(entry.raw),
+    )
 
 
 def _log_unknown_assignments(
