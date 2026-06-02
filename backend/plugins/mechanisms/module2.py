@@ -69,6 +69,16 @@ class _CandidateResolution:
     detail: str = ""
 
 
+@dataclass
+class _NearestResolutionStats:
+    known_process: int = 0
+    projected: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.known_process + self.projected
+
+
 class Module2Plugin(MechanismModulePlugin):
     """Diagnostic-only module that reuses another module's board cycles."""
 
@@ -271,6 +281,7 @@ def _assign_entries_to_cycles(
 ]:
     buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]] = []
     matches: dict[int, _CycleMatch] = {}
+    nearest_stats = _NearestResolutionStats()
     unknown = MechBoardCycle(dir_name="unknown")
 
     for entry in entries:
@@ -300,13 +311,21 @@ def _assign_entries_to_cycles(
         else:
             buckets.append((board_cycle, cpu_cycle, [entry]))
 
-    _merge_unknown_entries_into_unique_known_bucket(buckets, matches, upstream_slot, module_key)
+    _merge_unknown_entries_into_unique_known_bucket(
+        buckets,
+        matches,
+        upstream_slot,
+        module_key,
+        nearest_stats,
+    )
     _merge_unknown_entries_into_unique_expanded_cycle_bucket(
         buckets,
         matches,
         upstream_slot,
         module_key,
+        nearest_stats,
     )
+    _log_nearest_resolution_summary(module_key, entries, nearest_stats)
     _log_unknown_assignments(module_key, buckets, matches)
     return buckets, matches
 
@@ -555,6 +574,7 @@ def _merge_unknown_entries_into_unique_known_bucket(
     matches: dict[int, _CycleMatch] | None = None,
     upstream_slot: MechSlotOutput | None = None,
     module_key: str = "module2",
+    nearest_stats: _NearestResolutionStats | None = None,
 ) -> None:
     for specificity in (1, 0):
         candidates = _candidate_buckets_by_process_key(
@@ -581,6 +601,8 @@ def _merge_unknown_entries_into_unique_known_bucket(
                 )
                 if resolution.target is not None:
                     resolution.target.entries.append(entry)
+                    if resolution.target_count > 1 and nearest_stats is not None:
+                        nearest_stats.known_process += 1
                     _log_resolved_unknown_by_nearest_time(
                         module_key,
                         entry,
@@ -613,6 +635,7 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
     matches: dict[int, _CycleMatch],
     upstream_slot: MechSlotOutput | None = None,
     module_key: str = "module2",
+    nearest_stats: _NearestResolutionStats | None = None,
 ) -> None:
     targets = _projected_cycle_targets(buckets, upstream_slot)
 
@@ -637,6 +660,8 @@ def _merge_unknown_entries_into_unique_expanded_cycle_bucket(
             )
             if resolution.target is not None:
                 resolution.target.entries.append(entry)
+                if resolution.target_count > 1 and nearest_stats is not None:
+                    nearest_stats.projected += 1
                 _log_resolved_unknown_by_nearest_time(
                     module_key,
                     entry,
@@ -1161,7 +1186,7 @@ def _log_resolved_unknown_by_nearest_time(
     if resolution.target_count <= 1:
         return
 
-    logger.info(
+    logger.debug(
         "[%s] module2归属诊断: slot=%s cpu=%s process=%s pid=%s "
         "timestamp=%s source=%s detail=\"resolved_unknown_by_nearest_time=true "
         "target_count=%d admissible_count=%d selected=%s distance=%s %s\" raw=\"%s\"",
@@ -1178,6 +1203,25 @@ def _log_resolved_unknown_by_nearest_time(
         _format_distance(resolution.distance),
         resolution.detail,
         _format_raw(entry.raw),
+    )
+
+
+def _log_nearest_resolution_summary(
+    module_key: str,
+    entries: list[MechLogEntry],
+    stats: _NearestResolutionStats,
+) -> None:
+    if stats.total <= 0:
+        return
+    slot = entries[0].slot if entries else "<unknown>"
+    logger.info(
+        "[%s] module2 unknown归属摘要: slot=%s resolved_by_nearest_time=%d "
+        "known_process=%d projected=%d",
+        module_key,
+        slot,
+        stats.total,
+        stats.known_process,
+        stats.projected,
     )
 
 
@@ -1217,7 +1261,7 @@ def _log_successful_assignment_detail(
     if "pid_fallback_blocked_by_time_cycle=true" not in match.detail:
         return
 
-    logger.info(
+    logger.debug(
         "[%s] module2归属诊断: slot=%s cpu=%s process=%s pid=%s "
         "timestamp=%s source=%s reason=%s detail=\"%s\" raw=\"%s\"",
         module_key,
@@ -1447,7 +1491,7 @@ def _log_pid_fallback_clamp(
         if match is None or "pid_fallback_nearest_adjacent=true" not in match.detail:
             continue
 
-        logger.info(
+        logger.debug(
             "[%s] module2归属诊断: slot=%s cpu=%s process=%s pid=%s "
             "timestamp=%s source=%s reason=%s "
             "detail=\"pid_fallback_clamped=true scope=%s "

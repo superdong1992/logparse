@@ -566,7 +566,7 @@ def test_module2_timestamp_inside_cycle_overrides_pid_from_other_cycle(tmp_path,
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+    with caplog.at_level(logging.DEBUG, logger="backend.plugins.mechanisms.module2"):
         mech = plugin.parse(result)
 
     assert mech is not None
@@ -1021,7 +1021,8 @@ def test_module2_resolves_same_process_unknown_to_nearest_later_lifecycle(tmp_pa
         for log in process.logs
     ]
     assert later_contexts == ["second cycle", "ambiguous outside"]
-    assert "resolved_unknown_by_nearest_time=true" in caplog.text
+    assert "resolved_by_nearest_time=1" in caplog.text
+    assert "resolved_unknown_by_nearest_time=true" not in caplog.text
     assert "归属到unknown" not in caplog.text
 
 
@@ -1063,7 +1064,8 @@ def test_module2_resolves_same_process_unknown_to_nearest_earlier_lifecycle(tmp_
         for log in process.logs
     ]
     assert earlier_contexts == ["first cycle", "ambiguous outside nearer first"]
-    assert "resolved_unknown_by_nearest_time=true" in caplog.text
+    assert "resolved_by_nearest_time=1" in caplog.text
+    assert "resolved_unknown_by_nearest_time=true" not in caplog.text
     assert "归属到unknown" not in caplog.text
 
 
@@ -1198,8 +1200,9 @@ def test_module2_resolves_projected_unknown_to_nearest_admissible_target(tmp_pat
         for log in process.logs
     ]
     assert sorted(left_contexts) == ["between clamped projected targets", "left extender"]
-    assert "resolved_unknown_by_nearest_time=true" in caplog.text
-    assert "admissible_count=1" in caplog.text
+    assert "resolved_by_nearest_time=1" in caplog.text
+    assert "projected=1" in caplog.text
+    assert "resolved_unknown_by_nearest_time=true" not in caplog.text
     assert "归属到unknown" not in caplog.text
 
 
