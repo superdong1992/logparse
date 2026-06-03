@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from backend.models import (
@@ -67,6 +68,30 @@ def test_module1_plugin_parses_diag_entries(tmp_path):
     assert mech.diag_entry_count == 1
     assert mech.active_master_slots == ["1"]
     assert mech.slots[0].board_cycles[0].processes[0].process_name == "SERVICE"
+
+
+def test_module1_plugin_emits_perf_logs_with_elapsed(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        "2026-01-03T00:01:00 EXAMPLE Service=SERVICE; Slot=1; CPU-Id=0; "
+        "ProcessName=SERVICE-12345; Context=No[1] ACTIVE)\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(diagnostic_slots=[slot])
+    plugin = Module1Plugin(
+        _module1_config(),
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module1"):
+        plugin.parse(result)
+
+    assert "LOGPARSE_PERF module1.diag_scan module=module1 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module1.journal_scan module=module1 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module1.slot_cycle module=module1 slot=1 elapsed=" in caplog.text
 
 
 def _module1_journal_no_sequence_config() -> dict:

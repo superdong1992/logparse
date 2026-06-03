@@ -366,6 +366,34 @@ def test_module2_scans_diag_logs_and_parses_bracket_pid(tmp_path):
     assert proc.logs[0].context == "xxxxx"
 
 
+def test_module2_emits_perf_logs_with_elapsed(tmp_path, caplog):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00+08:00 xxx Slot=2,CPU-Id=3,'
+        'ProcessName=hellokitty[123],Context="xxxxx"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
+        plugin.parse(result)
+
+    assert "LOGPARSE_PERF module2.find_dependency module=module2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.diag_scan module=module2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.normalize_timezones module=module2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.build_result module=module2 elapsed=" in caplog.text
+
+
 def test_module2_logs_outside_module1_cycle_go_to_unknown(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(

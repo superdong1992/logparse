@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -112,7 +113,14 @@ class Module2Plugin(MechanismModulePlugin):
             logger.warning("[%s] 配置校验失败: %s", self.module_key, errors)
             return None
 
+        t0 = time.perf_counter()
         upstream = self._find_dependency(result)
+        logger.info(
+            "LOGPARSE_PERF module2.find_dependency module=%s elapsed=%.3fs result=%s",
+            self.module_key,
+            time.perf_counter() - t0,
+            "yes" if upstream is not None else "no",
+        )
         if upstream is None:
             msg = (
                 f"{self.module_key}: depends_on_module={self.config['depends_on_module']!r} result not found"
@@ -121,7 +129,18 @@ class Module2Plugin(MechanismModulePlugin):
             logger.warning("[%s] 依赖未找到: %s", self.module_key, msg)
             return None
 
+        t0 = time.perf_counter()
         entries = self._scan_diagnostic_entries(result)
+        diag_file_count = sum(
+            len(slot.diagnostic_logs) for slot in result.diagnostic_slots
+        )
+        logger.info(
+            "LOGPARSE_PERF module2.diag_scan module=%s elapsed=%.3fs files=%d entries=%d",
+            self.module_key,
+            time.perf_counter() - t0,
+            diag_file_count,
+            len(entries),
+        )
         if not entries:
             logger.info("[%s] 未扫描到诊断日志条目 (keyword=%r, slots=%d)",
                         self.module_key,
@@ -129,9 +148,25 @@ class Module2Plugin(MechanismModulePlugin):
                         len(result.diagnostic_slots))
             return None
 
+        t0 = time.perf_counter()
         self._normalize_timezones(entries, upstream)
+        logger.info(
+            "LOGPARSE_PERF module2.normalize_timezones module=%s elapsed=%.3fs entries=%d",
+            self.module_key,
+            time.perf_counter() - t0,
+            len(entries),
+        )
 
-        return self._build_result(entries, upstream)
+        t0 = time.perf_counter()
+        mech_result = self._build_result(entries, upstream)
+        logger.info(
+            "LOGPARSE_PERF module2.build_result module=%s elapsed=%.3fs entries=%d slots=%d",
+            self.module_key,
+            time.perf_counter() - t0,
+            len(entries),
+            len(mech_result.slots),
+        )
+        return mech_result
 
     def _find_dependency(self, result: ParseResult) -> MechResult | None:
         depends_on = self.config["depends_on_module"]

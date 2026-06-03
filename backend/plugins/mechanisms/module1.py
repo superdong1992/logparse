@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -16,6 +18,8 @@ from backend.parsing.mech_journal_scanner import MechJournalScanner
 from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.role_identifier import RoleIdentifier
 from backend.plugins.mechanisms.base import MechanismModulePlugin
+
+logger = logging.getLogger(__name__)
 
 
 class Module1Plugin(MechanismModulePlugin):
@@ -85,6 +89,9 @@ class Module1Plugin(MechanismModulePlugin):
         all_entries: list[MechLogEntry] = []
         resolver = ProcessNameResolver(name_map)
 
+        diag_t0 = time.perf_counter()
+        diag_file_count = 0
+        diag_entry_count = 0
         if diag_re:
             diag_scanner = MechDiagScanner(
                 diag_re,
@@ -96,13 +103,26 @@ class Module1Plugin(MechanismModulePlugin):
             )
             for slot in result.diagnostic_slots:
                 for log_entry in slot.diagnostic_logs:
-                    all_entries.extend(diag_scanner.scan(log_entry, slot.slot_id))
+                    diag_file_count += 1
+                    scanned = diag_scanner.scan(log_entry, slot.slot_id)
+                    diag_entry_count += len(scanned)
+                    all_entries.extend(scanned)
+        logger.info(
+            "LOGPARSE_PERF module1.diag_scan module=%s elapsed=%.3fs files=%d entries=%d",
+            self.module_key,
+            time.perf_counter() - diag_t0,
+            diag_file_count,
+            diag_entry_count,
+        )
 
         diag_tz = next(
             (e.timestamp.tzinfo for e in all_entries if e.timestamp and e.timestamp.tzinfo),
             None,
         )
 
+        journal_t0 = time.perf_counter()
+        journal_file_count = 0
+        journal_entry_count = 0
         if (journal_re or journal_re2) and journal_keyword:
             journal_scanner = MechJournalScanner(
                 journal_re,
@@ -117,7 +137,17 @@ class Module1Plugin(MechanismModulePlugin):
                 self.ts_extractor,
             )
             for private_slot in result.private_slots:
-                all_entries.extend(journal_scanner.scan(private_slot, diag_tz))
+                journal_file_count += len(private_slot.journal_logs)
+                scanned = journal_scanner.scan(private_slot, diag_tz)
+                journal_entry_count += len(scanned)
+                all_entries.extend(scanned)
+        logger.info(
+            "LOGPARSE_PERF module1.journal_scan module=%s elapsed=%.3fs files=%d entries=%d",
+            self.module_key,
+            time.perf_counter() - journal_t0,
+            journal_file_count,
+            journal_entry_count,
+        )
 
         if not all_entries:
             return None
@@ -137,6 +167,7 @@ class Module1Plugin(MechanismModulePlugin):
 
         mech_result = MechResult(module_name=module_name, module_key=self.module_key)
         for slot_id, entries in sorted(by_slot.items()):
+            slot_t0 = time.perf_counter()
             slot_output = MechSlotOutput(slot_id=slot_id)
             if use_lifecycle_split_v2 and split_config is not None:
                 splitter_cls = (
@@ -165,6 +196,16 @@ class Module1Plugin(MechanismModulePlugin):
                 slot_output.boundary_issues = detector.boundary_issues
                 result.errors.extend(detector.errors)
             mech_result.slots.append(slot_output)
+            logger.info(
+                "LOGPARSE_PERF module1.slot_cycle module=%s slot=%s elapsed=%.3fs "
+                "entries=%d cycles=%d lifecycle_split=%s",
+                self.module_key,
+                slot_id,
+                time.perf_counter() - slot_t0,
+                len(entries),
+                len(slot_output.board_cycles),
+                str(use_lifecycle_split_v2).lower(),
+            )
 
         active_slots = {entry.slot for entry in all_entries if entry.is_active_signal}
         mech_result.active_master_slots = sorted(active_slots)

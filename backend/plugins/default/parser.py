@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -46,12 +47,35 @@ class ParserPlugin(LogParserPlugin):
 
     def parse(self, result: ParseResult) -> ParseResult:
         # 1. 提取所有内容时间戳
+        t0 = time.perf_counter()
         self._extract_all_timestamps(result.diagnostic_slots)
+        elapsed = time.perf_counter() - t0
+        diag_file_count = sum(len(slot.diagnostic_logs) for slot in result.diagnostic_slots)
+        ts_total = sum(
+            len(entry.content_timestamps)
+            for slot in result.diagnostic_slots
+            for entry in slot.diagnostic_logs
+        )
+        logger.info(
+            "LOGPARSE_PERF parser.timestamps elapsed=%.3fs diag_files=%d timestamps=%d",
+            elapsed,
+            diag_file_count,
+            ts_total,
+        )
 
         # 2. 构建 ActivePeriod
+        t0 = time.perf_counter()
         for slot in result.diagnostic_slots:
             for p in self._active_period_builder.build(slot):
                 slot.add_active_period(p)
+        elapsed = time.perf_counter() - t0
+        period_total = sum(len(slot.active_periods) for slot in result.diagnostic_slots)
+        logger.info(
+            "LOGPARSE_PERF parser.active_periods elapsed=%.3fs slots=%d periods=%d",
+            elapsed,
+            len(result.diagnostic_slots),
+            period_total,
+        )
 
         # 3. 加载并编排机制模块插件
         mechanism_plugins: list[MechanismModulePlugin] = []
@@ -71,12 +95,37 @@ class ParserPlugin(LogParserPlugin):
             logger.info("[%s] 已加载 %s", module_key, module_entry["plugin"])
 
         for mechanism in mechanism_plugins:
+            t0 = time.perf_counter()
             try:
                 mech = mechanism.parse(result)
             except Exception as e:
+                elapsed = time.perf_counter() - t0
+                logger.info(
+                    "LOGPARSE_PERF parser.module module=%s elapsed=%.3fs result=error",
+                    mechanism.module_key,
+                    elapsed,
+                )
                 logger.warning("[%s] parse 异常: %s", mechanism.module_key, e)
                 result.errors.append(f"[{mechanism.module_key}] parse 异常: {e}")
                 continue
+            elapsed = time.perf_counter() - t0
+            if mech:
+                logger.info(
+                    "LOGPARSE_PERF parser.module module=%s elapsed=%.3fs result=yes "
+                    "diag_entries=%d journal_entries=%d slots=%d",
+                    mechanism.module_key,
+                    elapsed,
+                    mech.diag_entry_count,
+                    mech.journal_entry_count,
+                    len(mech.slots),
+                )
+            else:
+                logger.info(
+                    "LOGPARSE_PERF parser.module module=%s elapsed=%.3fs result=no "
+                    "diag_entries=0 journal_entries=0 slots=0",
+                    mechanism.module_key,
+                    elapsed,
+                )
             if mech:
                 result.mech_results.append(mech)
                 mechanism.apply_roles(result, mech)
@@ -95,7 +144,14 @@ class ParserPlugin(LogParserPlugin):
                 )
 
         # 4. 兜底主控判定
+        t0 = time.perf_counter()
         RoleIdentifier.fallback_roles(result)
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "LOGPARSE_PERF parser.roles elapsed=%.3fs slots=%d",
+            elapsed,
+            len(result.diagnostic_slots),
+        )
 
         return result
 

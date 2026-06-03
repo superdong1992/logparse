@@ -1,6 +1,7 @@
 """Tests for ParserPlugin: timestamps, ActivePeriod, cycle detection, role identification."""
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -263,6 +264,19 @@ class TestMechanismPluginOrchestration:
         result = plugin.parse(sample_parse_result)
 
         assert result is sample_parse_result
+
+    def test_parser_emits_perf_logs_with_elapsed(
+        self, sample_config, sample_parse_result, caplog,
+    ):
+        plugin = ParserPlugin(sample_config)
+
+        with caplog.at_level(logging.INFO, logger="backend.plugins.default.parser"):
+            plugin.parse(sample_parse_result)
+
+        assert "LOGPARSE_PERF parser.timestamps elapsed=" in caplog.text
+        assert "LOGPARSE_PERF parser.active_periods elapsed=" in caplog.text
+        assert "LOGPARSE_PERF parser.module module=module1 elapsed=" in caplog.text
+        assert "LOGPARSE_PERF parser.roles elapsed=" in caplog.text
 
     def test_parser_no_longer_exposes_module_specific_parse_method(self, plugin):
         assert not hasattr(plugin, "_parse_one_mech")
