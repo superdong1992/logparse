@@ -392,6 +392,11 @@ def test_module2_emits_perf_logs_with_elapsed(tmp_path, caplog):
     assert "LOGPARSE_PERF module2.diag_scan module=module2 elapsed=" in caplog.text
     assert "LOGPARSE_PERF module2.normalize_timezones module=module2 elapsed=" in caplog.text
     assert "LOGPARSE_PERF module2.build_result module=module2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.assign_cycles module=module2 slot=2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.assign_initial module=module2 slot=2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.merge_known_unknown module=module2 slot=2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.merge_projected_unknown module=module2 slot=2 elapsed=" in caplog.text
+    assert "LOGPARSE_PERF module2.build_cycles module=module2 slot=2 elapsed=" in caplog.text
 
 
 def test_module2_logs_outside_module1_cycle_go_to_unknown(tmp_path):

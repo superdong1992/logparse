@@ -261,17 +261,40 @@ class Module2Plugin(MechanismModulePlugin):
         for slot_id, slot_entries in sorted(by_slot.items()):
             slot_output = MechSlotOutput(slot_id=slot_id)
             upstream_slot = _find_upstream_slot(upstream, slot_id)
+            assign_t0 = time.perf_counter()
             grouped, matches = _assign_entries_to_cycles(
                 slot_entries,
                 upstream_slot,
                 available_slots=[slot.slot_id for slot in upstream.slots],
                 module_key=self.module_key,
             )
+            logger.info(
+                "LOGPARSE_PERF module2.assign_cycles module=%s slot=%s elapsed=%.3fs "
+                "entries=%d buckets=%d matches=%d unknown_entries=%d",
+                self.module_key,
+                slot_id,
+                time.perf_counter() - assign_t0,
+                len(slot_entries),
+                len(grouped),
+                len(matches),
+                _count_unknown_bucket_entries(grouped),
+            )
+            build_cycles_t0 = time.perf_counter()
             slot_output.board_cycles = _build_cycles(
                 grouped,
                 upstream_slot,
                 matches,
                 module_key=self.module_key,
+            )
+            logger.info(
+                "LOGPARSE_PERF module2.build_cycles module=%s slot=%s elapsed=%.3fs "
+                "groups=%d cycles=%d entries=%d",
+                self.module_key,
+                slot_id,
+                time.perf_counter() - build_cycles_t0,
+                len(grouped),
+                len(slot_output.board_cycles),
+                len(slot_entries),
             )
             mech_result.slots.append(slot_output)
 
@@ -318,7 +341,9 @@ def _assign_entries_to_cycles(
     matches: dict[int, _CycleMatch] = {}
     nearest_stats = _NearestResolutionStats()
     unknown = MechBoardCycle(dir_name="unknown")
+    slot_label = _entries_slot_label(entries)
 
+    initial_t0 = time.perf_counter()
     for entry in entries:
         match = _find_matching_cycle(entry, upstream_slot, available_slots or [])
         matches[id(entry)] = match
@@ -346,6 +371,23 @@ def _assign_entries_to_cycles(
         else:
             buckets.append((board_cycle, cpu_cycle, [entry]))
 
+    logger.info(
+        "LOGPARSE_PERF module2.assign_initial module=%s slot=%s elapsed=%.3fs "
+        "entries=%d buckets=%d matches=%d unknown_entries=%d upstream_cycles=%d",
+        module_key,
+        slot_label,
+        time.perf_counter() - initial_t0,
+        len(entries),
+        len(buckets),
+        len(matches),
+        _count_unknown_bucket_entries(buckets),
+        len(upstream_slot.board_cycles) if upstream_slot else 0,
+    )
+
+    known_t0 = time.perf_counter()
+    known_buckets_before = len(buckets)
+    known_unknown_before = _count_unknown_bucket_entries(buckets)
+    known_nearest_before = nearest_stats.known_process
     _merge_unknown_entries_into_unique_known_bucket(
         buckets,
         matches,
@@ -353,12 +395,47 @@ def _assign_entries_to_cycles(
         module_key,
         nearest_stats,
     )
+    known_unknown_after = _count_unknown_bucket_entries(buckets)
+    logger.info(
+        "LOGPARSE_PERF module2.merge_known_unknown module=%s slot=%s elapsed=%.3fs "
+        "before_buckets=%d after_buckets=%d unknown_before=%d unknown_after=%d "
+        "resolved_entries=%d nearest_resolved=%d",
+        module_key,
+        slot_label,
+        time.perf_counter() - known_t0,
+        known_buckets_before,
+        len(buckets),
+        known_unknown_before,
+        known_unknown_after,
+        max(0, known_unknown_before - known_unknown_after),
+        nearest_stats.known_process - known_nearest_before,
+    )
+
+    projected_t0 = time.perf_counter()
+    projected_buckets_before = len(buckets)
+    projected_unknown_before = _count_unknown_bucket_entries(buckets)
+    projected_nearest_before = nearest_stats.projected
     _merge_unknown_entries_into_unique_expanded_cycle_bucket(
         buckets,
         matches,
         upstream_slot,
         module_key,
         nearest_stats,
+    )
+    projected_unknown_after = _count_unknown_bucket_entries(buckets)
+    logger.info(
+        "LOGPARSE_PERF module2.merge_projected_unknown module=%s slot=%s elapsed=%.3fs "
+        "before_buckets=%d after_buckets=%d unknown_before=%d unknown_after=%d "
+        "resolved_entries=%d nearest_resolved=%d",
+        module_key,
+        slot_label,
+        time.perf_counter() - projected_t0,
+        projected_buckets_before,
+        len(buckets),
+        projected_unknown_before,
+        projected_unknown_after,
+        max(0, projected_unknown_before - projected_unknown_after),
+        nearest_stats.projected - projected_nearest_before,
     )
     _log_nearest_resolution_summary(module_key, entries, nearest_stats)
     _log_unknown_assignments(module_key, buckets, matches)
@@ -1199,6 +1276,23 @@ def _candidate_buckets_by_process_key(
             candidates[key].append(_KnownBucketTarget(board_cycle, cpu_cycle, entries))
 
     return candidates
+
+
+def _entries_slot_label(entries: list[MechLogEntry]) -> str:
+    slots = sorted({entry.slot for entry in entries if entry.slot})
+    if not slots:
+        return "<empty>"
+    return ",".join(slots)
+
+
+def _count_unknown_bucket_entries(
+    buckets: list[tuple[MechBoardCycle, MechCpuCycle | None, list[MechLogEntry]]],
+) -> int:
+    return sum(
+        len(entries)
+        for board_cycle, cpu_cycle, entries in buckets
+        if _bucket_specificity(board_cycle, cpu_cycle) < 2
+    )
 
 
 def _bucket_specificity(board_cycle: MechBoardCycle, cpu_cycle: MechCpuCycle | None) -> int:
