@@ -988,6 +988,80 @@ def test_module2_merges_unknown_entries_into_unique_same_process_lifecycle(tmp_p
     assert not unknown_file.exists()
 
 
+def test_module2_known_unknown_merge_reuses_target_range_cache(monkeypatch):
+    board_cycle = MechBoardCycle(
+        dir_name="20260103T000000-20260103T010000",
+        start_time=_ts(0),
+        end_time=_ts(1),
+    )
+    known_cpu_cycle = MechCpuCycle(
+        cpu_id="3",
+        dir_name="20260103T000000-20260103T001000",
+        start_time=_ts(0),
+        end_time=_ts(0, 10),
+    )
+    board_cycle.cpu_cycles.append(known_cpu_cycle)
+    unknown_cpu_cycle = MechCpuCycle(
+        cpu_id="3",
+        dir_name="unknown",
+        start_time=board_cycle.start_time,
+        end_time=board_cycle.end_time,
+    )
+    known_entries = [
+        MechLogEntry(
+            timestamp=_ts(0, 5),
+            slot="2",
+            cpu_id="3",
+            process_name="svc",
+            pid="100",
+            context="known",
+        )
+    ]
+    unknown_entries = [
+        MechLogEntry(
+            timestamp=_ts(0, 11),
+            slot="2",
+            cpu_id="3",
+            process_name="svc",
+            pid="100",
+            context="unknown 1",
+        ),
+        MechLogEntry(
+            timestamp=_ts(0, 12),
+            slot="2",
+            cpu_id="3",
+            process_name="svc",
+            pid="100",
+            context="unknown 2",
+        ),
+    ]
+    buckets = [
+        (board_cycle, known_cpu_cycle, known_entries),
+        (board_cycle, unknown_cpu_cycle, unknown_entries),
+    ]
+    upstream_slot = MechSlotOutput(slot_id="2", board_cycles=[board_cycle])
+    projected_bounds_calls = 0
+    original_projected_bounds = module2_impl._projected_bounds
+
+    def counting_projected_bounds(*args, **kwargs):
+        nonlocal projected_bounds_calls
+        projected_bounds_calls += 1
+        return original_projected_bounds(*args, **kwargs)
+
+    monkeypatch.setattr(module2_impl, "_projected_bounds", counting_projected_bounds)
+
+    module2_impl._merge_unknown_entries_into_unique_known_bucket(
+        buckets,
+        {},
+        upstream_slot,
+        module_key="module2",
+    )
+
+    assert [entry.context for entry in known_entries] == ["known", "unknown 1", "unknown 2"]
+    assert unknown_entries == []
+    assert projected_bounds_calls <= 2
+
+
 def test_module2_does_not_log_unknown_reason_after_successful_unknown_merge(tmp_path, caplog):
     log_file = tmp_path / "diag.log"
     log_file.write_text(

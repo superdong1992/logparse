@@ -60,6 +60,19 @@ class _KnownBucketTarget:
 
 
 @dataclass
+class _KnownBucketTargetCache:
+    target: _KnownBucketTarget
+    lower_bound: datetime | None
+    upper_bound: datetime | None
+    base_start: datetime | None
+    base_end: datetime | None
+    raw_start: datetime | None
+    raw_end: datetime | None
+    range_start: datetime | None
+    range_end: datetime | None
+
+
+@dataclass
 class _CandidateResolution:
     target: Any | None
     target_count: int
@@ -693,6 +706,7 @@ def _merge_unknown_entries_into_unique_known_bucket(
             buckets,
             min_specificity=specificity + 1,
         )
+        target_caches = _known_bucket_target_caches(candidates, upstream_slot)
         for board_cycle, cpu_cycle, entries in buckets:
             if _bucket_specificity(board_cycle, cpu_cycle) != specificity:
                 continue
@@ -703,16 +717,19 @@ def _merge_unknown_entries_into_unique_known_bucket(
                 resolution = _resolve_candidate_by_nearest_time(
                     entry,
                     targets,
-                    range_getter=lambda target: _known_bucket_target_range(target, upstream_slot),
-                    admissible_range_getter=lambda target: _candidate_admissible_range(
-                        target.board_cycle,
-                        target.cpu_cycle,
-                        upstream_slot,
+                    range_getter=lambda target: _known_bucket_cached_range(target, target_caches),
+                    admissible_range_getter=lambda target: _known_bucket_cached_admissible_range(
+                        target,
+                        target_caches,
                     ),
                     summary_formatter=_format_known_bucket_target,
                 )
                 if resolution.target is not None:
                     resolution.target.entries.append(entry)
+                    _update_known_bucket_target_cache(
+                        target_caches[_known_bucket_cache_key(resolution.target)],
+                        entry,
+                    )
                     if resolution.target_count > 1 and nearest_stats is not None:
                         nearest_stats.known_process += 1
                     _log_resolved_unknown_by_nearest_time(
@@ -933,18 +950,47 @@ def _projected_bounds(
     lower_bound: datetime | None = None,
     upper_bound: datetime | None = None,
 ) -> tuple[datetime | None, datetime | None]:
-    times = [entry.timestamp for entry in entries if entry.timestamp]
-    candidates = [time for time in [start_time, end_time, *times] if time]
-    if not candidates:
+    raw_start, raw_end = _raw_projected_bounds(start_time, end_time, entries)
+    return _clamp_projected_bounds(
+        raw_start,
+        raw_end,
+        fallback_start=start_time,
+        fallback_end=end_time,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+    )
+
+
+def _raw_projected_bounds(
+    start_time: datetime | None,
+    end_time: datetime | None,
+    entries: list[MechLogEntry],
+) -> tuple[datetime | None, datetime | None]:
+    times = [time for time in [start_time, end_time] if time]
+    times.extend(entry.timestamp for entry in entries if entry.timestamp)
+    if not times:
         return None, None
-    start = min(candidates)
-    end = max(candidates)
+    return min(times), max(times)
+
+
+def _clamp_projected_bounds(
+    start_time: datetime | None,
+    end_time: datetime | None,
+    fallback_start: datetime | None,
+    fallback_end: datetime | None,
+    lower_bound: datetime | None = None,
+    upper_bound: datetime | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    if start_time is None or end_time is None:
+        return None, None
+    start = start_time
+    end = end_time
     if lower_bound is not None and start < lower_bound:
         start = lower_bound
     if upper_bound is not None and end > upper_bound:
         end = upper_bound
     if start > end:
-        return start_time, end_time
+        return fallback_start, fallback_end
     return start, end
 
 
@@ -1118,6 +1164,95 @@ def _format_distance(distance: float | None) -> str:
     if distance == float("inf"):
         return "<inf>"
     return f"{distance:.6f}"
+
+
+def _known_bucket_target_caches(
+    candidates: dict[tuple[str, str, str], list[_KnownBucketTarget]],
+    upstream_slot: MechSlotOutput | None,
+) -> dict[tuple[int, int, int], _KnownBucketTargetCache]:
+    caches: dict[tuple[int, int, int], _KnownBucketTargetCache] = {}
+    for targets in candidates.values():
+        for target in targets:
+            key = _known_bucket_cache_key(target)
+            if key not in caches:
+                caches[key] = _build_known_bucket_target_cache(target, upstream_slot)
+    return caches
+
+
+def _build_known_bucket_target_cache(
+    target: _KnownBucketTarget,
+    upstream_slot: MechSlotOutput | None,
+) -> _KnownBucketTargetCache:
+    lower_bound, upper_bound = _extension_limits_for_target(
+        target.board_cycle,
+        target.cpu_cycle,
+        upstream_slot,
+    )
+    base_start, base_end = _target_base_range(target.board_cycle, target.cpu_cycle)
+    raw_start, raw_end = _raw_projected_bounds(base_start, base_end, target.entries)
+    range_start, range_end = _clamp_projected_bounds(
+        raw_start,
+        raw_end,
+        fallback_start=base_start,
+        fallback_end=base_end,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+    )
+    return _KnownBucketTargetCache(
+        target=target,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+        base_start=base_start,
+        base_end=base_end,
+        raw_start=raw_start,
+        raw_end=raw_end,
+        range_start=range_start,
+        range_end=range_end,
+    )
+
+
+def _known_bucket_cached_range(
+    target: _KnownBucketTarget,
+    caches: dict[tuple[int, int, int], _KnownBucketTargetCache],
+) -> tuple[datetime | None, datetime | None]:
+    cache = caches[_known_bucket_cache_key(target)]
+    return cache.range_start, cache.range_end
+
+
+def _known_bucket_cached_admissible_range(
+    target: _KnownBucketTarget,
+    caches: dict[tuple[int, int, int], _KnownBucketTargetCache],
+) -> tuple[datetime | None, datetime | None]:
+    cache = caches[_known_bucket_cache_key(target)]
+    return cache.lower_bound, cache.upper_bound
+
+
+def _update_known_bucket_target_cache(
+    cache: _KnownBucketTargetCache,
+    entry: MechLogEntry,
+) -> None:
+    if entry.timestamp is None:
+        return
+    if cache.raw_start is None or entry.timestamp < cache.raw_start:
+        cache.raw_start = entry.timestamp
+    if cache.raw_end is None or entry.timestamp > cache.raw_end:
+        cache.raw_end = entry.timestamp
+    cache.range_start, cache.range_end = _clamp_projected_bounds(
+        cache.raw_start,
+        cache.raw_end,
+        fallback_start=cache.base_start,
+        fallback_end=cache.base_end,
+        lower_bound=cache.lower_bound,
+        upper_bound=cache.upper_bound,
+    )
+
+
+def _known_bucket_cache_key(target: _KnownBucketTarget) -> tuple[int, int, int]:
+    return (
+        id(target.board_cycle),
+        id(target.cpu_cycle) if target.cpu_cycle is not None else 0,
+        id(target.entries),
+    )
 
 
 def _known_bucket_target_range(
