@@ -34,17 +34,21 @@ Load `references/wiki-template.md` when the wiki structure is unclear or when yo
 4. Write the generated skill in Chinese.
    - The frontmatter `name` stays English.
    - The frontmatter `description` is Claude's trigger predicate. It may include English trigger terms, but it must clearly state in Chinese that this skill uses `logparse-diagnose`, analyzes returned module logs, and creates `result.zip`.
+   - Add `effort: medium` to the generated skill frontmatter by default. Do not raise it unless the user explicitly asks for a higher effort level.
    - The body must follow `references/generated-skill-contract.md`.
    - The body must explicitly say that `logparse-diagnose` is another Claude skill, not a shell command, not a Python module, and not an optional hint.
    - The body must include a Chinese section named `先调用 logparse-diagnose skill` before any wiki-specific analysis steps.
+   - The body must include a Chinese section named `证据收敛约束`, requiring the diagnosis to stay within `logparse-diagnose` returned target module logs and the wiki's rules.
    - Embed the wiki-derived target roles and analysis steps directly enough that a future agent can run the diagnosis without re-reading the original wiki.
 
 5. Validate the generated skill.
    - Run `quick_validate.py` with UTF-8 mode on Windows when available.
    - Confirm the generated skill lives under `.claude/skills/`, not `.agents/skills/`.
    - Confirm the generated skill explicitly tells Claude to invoke/load the separate `logparse-diagnose` skill first.
+   - Confirm the generated skill frontmatter contains `effort: medium`.
    - Confirm the generated body requires per-target grouped inputs: `module + slot + process_name`, optional `pid`.
    - Confirm it states that `logparse-diagnose` returns the module logs and that the generated skill analyzes those logs.
+   - Confirm it forbids divergent analysis, unrelated modules/processes/code, wiki-unrequested investigation directions, and experience-based root-cause guesses.
    - Confirm it requires `result.zip` with `result.txt` first giving a clear conclusion and then key analysis evidence.
 
 ## Generated Skill Requirements
@@ -61,6 +65,16 @@ Every generated diagnosis skill must perform these phases:
 - Read and analyze the returned module logs according to the wiki-derived rules.
 - Create `result.zip` containing `result.txt` and the process logs actually used in the analysis.
 
+Every generated diagnosis skill must use frontmatter equivalent to:
+
+```yaml
+---
+name: diagnose-<english-topic-slug>
+description: 中文说明：用于根据指定 wiki 定位某类问题；必须先调用 logparse-diagnose skill 获取目标模块日志，再只基于这些日志按 wiki 规则分析并生成 result.zip。
+effort: medium
+---
+```
+
 Do not allow the generated skill to split `slot` and `process_name` into separate lists or combine them across targets. They belong to the same target process record.
 
 Every generated diagnosis skill must contain wording equivalent to:
@@ -69,6 +83,18 @@ Every generated diagnosis skill must contain wording equivalent to:
 先调用 logparse-diagnose skill
 
 logparse-diagnose 也是本项目里的一个 Claude skill，路径是 .claude/skills/logparse-diagnose/SKILL.md。不要把它当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill，让它完成输入预处理、生命周期匹配和目标模块日志提取。当前定位 skill 只分析 logparse-diagnose 返回的模块日志。
+```
+
+Every generated diagnosis skill must also contain wording equivalent to:
+
+```text
+证据收敛约束
+
+禁止发散分析。只允许基于 logparse-diagnose 返回的目标模块日志和本 wiki 的定位规则给结论。
+不要补充 wiki 未要求的排查方向。
+不要分析无关模块、无关进程或无关代码。
+不要根据经验猜根因。
+没有日志证据时，定位结论必须写“当前证据不足以确认根因”。
 ```
 
 ## Output Rules

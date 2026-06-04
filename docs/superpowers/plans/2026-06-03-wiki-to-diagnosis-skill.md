@@ -23,6 +23,7 @@
 - 移除 `wiki-to-diagnosis-skill` 的 Codex/OpenAI 专用 `agents/openai.yaml`，避免 Claude skill 中混入无关元信息。
 - 更新 `.gitignore`，继续忽略 `.claude` 下的本地配置，但允许提交 `.claude/skills/**` 项目级 Claude skills。
 - 生成出的定位 skill 必须明确说明 `logparse-diagnose` 也是一个 Claude skill，并要求先调用/加载它；不能让弱模型误以为它是 shell 命令、Python 模块或普通提示词。
+- 生成出的定位 skill 默认 frontmatter 使用 `effort: medium`，并加入“证据收敛约束”，避免 Claude Code 在问题定位时发散到 wiki 未要求的方向。
 
 ## Skill Naming Contract
 
@@ -32,6 +33,7 @@
 - skill 目录名和 frontmatter `name` 必须使用英文小写、数字和短横线，少于 64 字符，并与目录名完全一致。
 - 如果 wiki 标题是中文，生成器优先要求用户提供英文 `skill_name`；如果未提供，再从标题翻译/归一化成英文 slug，并在生成 skill 正文里保留中文显示名。
 - 生成 skill 的正文、运行时提问、结果说明和 `result.txt` 必须使用中文。
+- 生成 skill 默认 frontmatter 包含 `effort: medium`；除非用户明确要求，不生成更高 effort。
 
 ## Generated Skill Contract
 
@@ -55,7 +57,10 @@
   - 定位 skill 必须读取并使用 `logparse-diagnose` 返回的模块日志；
   - 按 wiki 中的步骤检查日志中的状态、错误、请求响应、超时、序号、跨进程关联等证据；
   - 多个目标进程按 wiki 顺序关联分析；
-  - 如果任一目标日志缺失，先用中文报告缺失证据，不能用相关日志替代目标日志。
+  - 如果任一目标日志缺失，先用中文报告缺失证据，不能用相关日志替代目标日志；
+  - 必须包含“证据收敛约束”：禁止发散分析，只允许基于 `logparse-diagnose` 返回的目标模块日志和 wiki 定位规则给结论；
+  - 不补充 wiki 未要求的排查方向，不分析无关模块、无关进程或无关代码，不根据经验猜根因；
+  - 没有日志证据时，定位结论必须写“当前证据不足以确认根因”。
 - 交付物阶段：
   - 生成 `result.zip`；
   - 压缩包内必须包含 `result.txt`；
@@ -92,6 +97,7 @@
   - skill 路径位于 `.claude/skills/`；
   - 正文为中文；
   - 明确按目标进程记录输入 `module + slot + process_name`；
+  - frontmatter 默认包含 `effort: medium`；
   - 不允许把 `slot` 和 `process_name` 拆成独立列表；
   - 能转换多组目标进程为多个 `logparse-diagnose` anchors；
   - 明确告诉执行者 `logparse-diagnose` 也是一个 Claude skill，必须先调用/加载它；
@@ -99,6 +105,7 @@
   - 明确要求生成 `result.zip`；
   - `result.zip` 包含 `result.txt` 和本次分析使用的进程日志；
   - `result.txt` 先给出明确定位结论，再给出关键分析依据；
+  - 包含“证据收敛约束”，禁止发散分析、无关模块/进程/代码分析和经验性猜根因；
   - 对缺失整组信息、目标日志缺失、当前版本不支持的输入类型有中文提示。
 - 用 `quick_validate.py` 校验样例生成 skill。
 
