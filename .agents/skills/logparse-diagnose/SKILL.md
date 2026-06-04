@@ -11,6 +11,12 @@ Use logparse preprocessed results as an index into the original problem context.
 
 Load `references/preprocess-output.md` when you need field meanings, path layout, or CLI reminders. Load `references/relation-rules.md` before expanding beyond target anchors, especially for module2.
 
+## Python Execution
+
+Run repository Python commands with Python 3.12. Use `python3.12` for CLI commands, helper scripts, dependency installation, and ad hoc JSON inspection; do not use bare `python` or rely on PATH defaults. If `python3.12` is unavailable on Windows, try `py -3.12`; if no Python 3.12 interpreter is available, stop and set up Python 3.12 before parsing or diagnosing.
+
+When dependencies are missing, install them with the Python 3.12 interpreter, for example `python3.12 -m pip install -r requirements.txt`. If creating a virtual environment, create it from Python 3.12 first, for example `python3.12 -m venv .venv`, then use that environment's Python.
+
 ## Required Inputs
 
 Collect or infer these inputs:
@@ -27,7 +33,7 @@ If the input path, problem time, module, slot, or process name is missing and ca
 1. Resolve the input into a preprocessed result root.
    - Prefer the directory containing `result.json`.
    - If only an output base and task id are given, use `output/{task_id}/result.json`.
-   - If the input is a raw package file or a directory without `result.json`, parse it first with `python cli.py parse <package_path> -c <v3_config_path> -o <output_dir>`.
+   - If the input is a raw package file or a directory without `result.json`, parse it first with `python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>`.
    - Use parse settings from the prompt when provided. Otherwise use the repo-local profile that currently enables formal V3 lifecycle splitting. Do not infer lifecycle version from `cli.py` option defaults alone.
    - After parsing, verify the parsed result has V3 lifecycle payloads before diagnosing.
    - After parsing, derive `task_id` from the CLI output or package stem, then use `<output_dir>/<task_id>/result.json`.
@@ -111,14 +117,14 @@ Avoid claiming root cause unless the preprocessed logs directly support it. Pref
 Use normal shell and JSON tooling available in the current environment. These commands are optional helpers, not requirements:
 
 ```bash
-python cli.py info <task_id> -o <output_dir>
-python cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
-python cli.py parse <package_path> -c <v3_config_path> -o <output_dir> --verbose
-python cli.py list-slots <task_id> -o <output_dir>
-python cli.py mech-slots <task_id> -o <output_dir>
-python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx decisions -o <output_dir>
-python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx full -o <output_dir>
-python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> -m <module_name> --cpu <cpu_id> --cpu-cycle <cpu_cycle_dir> -o <output_dir>
+python3.12 cli.py info <task_id> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir> --verbose
+python3.12 cli.py list-slots <task_id> -o <output_dir>
+python3.12 cli.py mech-slots <task_id> -o <output_dir>
+python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx decisions -o <output_dir>
+python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx full -o <output_dir>
+python3.12 cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> -m <module_name> --cpu <cpu_id> --cpu-cycle <cpu_cycle_dir> -o <output_dir>
 ```
 
 Prefer direct JSON reads for exact matching and multi-anchor correlation; use CLI commands for quick human-readable checks.

@@ -7,10 +7,12 @@ Use this reference when locating issues from logparse output. The input can be a
 When the user gives a raw log package instead of a result root, run the repository parser before diagnosis:
 
 ```bash
-python cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
 ```
 
 Use config/output values from the prompt when present. If they are not provided, use the repo-local V3 config profile that currently enables formal lifecycle splitting. Do not infer lifecycle version from `cli.py` option defaults alone. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
+
+Run all repository Python commands through Python 3.12. Prefer `python3.12`; on Windows only fall back to `py -3.12` if `python3.12` is unavailable. Install dependencies with the same interpreter, for example `python3.12 -m pip install -r requirements.txt`, and do not use bare `python`.
 
 Parsing handles archive extraction through the pipeline. It writes:
 
@@ -114,15 +116,15 @@ Each line is written as:
 These commands are useful for quick checks. Use the repository root as the working directory.
 
 ```bash
-python cli.py info <task_id> -o <output_dir>
-python cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
-python cli.py parse <package_path> -c <v3_config_path> -o <output_dir> --verbose
-python cli.py list-slots <task_id> -o <output_dir>
-python cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
-python cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>
-python cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx decisions -o <output_dir>
-python cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx full -o <output_dir>
-python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>] -o <output_dir>
+python3.12 cli.py info <task_id> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir> --verbose
+python3.12 cli.py list-slots <task_id> -o <output_dir>
+python3.12 cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
+python3.12 cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>
+python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx decisions -o <output_dir>
+python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx full -o <output_dir>
+python3.12 cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>] -o <output_dir>
 ```
 
 `-m` uses `module_name`, not `module_key`, in the current CLI query service. `--cpu` with `--cpu-cycle` locates nested CPU-cycle logs. For board-level CPU logs, check the direct `cpu_{cpu_id}/{process}.log` path when the nested CPU-cycle path is absent.
