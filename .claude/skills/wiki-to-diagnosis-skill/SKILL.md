@@ -7,7 +7,7 @@ description: Use when converting a Markdown issue-location wiki into a repo-loca
 
 ## Overview
 
-Use this skill to generate a repo-local problem diagnosis skill from a Markdown issue-location wiki. The generated skill is for humans to maintain, so its body, runtime questions, result text, and artifact instructions must be written in Chinese, while its folder name and frontmatter `name` must remain English lowercase hyphen-case.
+Use this Claude project skill to generate a repo-local problem diagnosis skill from a Markdown issue-location wiki. The generated skill is for humans to maintain, so its body, runtime questions, result text, and artifact instructions must be written in Chinese, while its folder name and frontmatter `name` must remain English lowercase hyphen-case.
 
 Load `references/wiki-template.md` when the wiki structure is unclear or when you need to ask the user to normalize a wiki. Load `references/generated-skill-contract.md` before writing or reviewing the generated skill.
 
@@ -25,19 +25,21 @@ Load `references/wiki-template.md` when the wiki structure is unclear or when yo
    - If the wiki title is Chinese and no `skill_name` is provided, translate or summarize it into a short English slug, then preserve the Chinese title in the generated skill body.
 
 3. Create or update the generated skill folder.
-   - Target path: `.agents/skills/<skill_name>/SKILL.md`.
-   - Prefer the `skill-creator` workflow and validation rules when available.
+   - Target path: `.claude/skills/<skill_name>/SKILL.md`.
+   - Use Claude's skill shape: a folder containing `SKILL.md` with YAML frontmatter fields `name` and `description`, plus optional `references/`, `scripts/`, or `assets/`.
+   - Do not add Codex/OpenAI-specific `agents/openai.yaml` files to generated Claude skills.
    - Do not create extra README, changelog, or install docs.
    - Keep reference files only if the wiki-specific rules are too long for a concise `SKILL.md`.
 
 4. Write the generated skill in Chinese.
    - The frontmatter `name` stays English.
-   - The frontmatter `description` may include English trigger terms, but it must clearly state in Chinese that this skill uses `logparse-diagnose`, analyzes returned module logs, and creates `result.zip`.
+   - The frontmatter `description` is Claude's trigger predicate. It may include English trigger terms, but it must clearly state in Chinese that this skill uses `logparse-diagnose`, analyzes returned module logs, and creates `result.zip`.
    - The body must follow `references/generated-skill-contract.md`.
    - Embed the wiki-derived target roles and analysis steps directly enough that a future agent can run the diagnosis without re-reading the original wiki.
 
 5. Validate the generated skill.
    - Run `quick_validate.py` with UTF-8 mode on Windows when available.
+   - Confirm the generated skill lives under `.claude/skills/`, not `.agents/skills/`.
    - Confirm the generated body requires per-target grouped inputs: `module + slot + process_name`, optional `pid`.
    - Confirm it states that `logparse-diagnose` returns the module logs and that the generated skill analyzes those logs.
    - Confirm it requires `result.zip` with `result.txt` first giving a clear conclusion and then key analysis evidence.

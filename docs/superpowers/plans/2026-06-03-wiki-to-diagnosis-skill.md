@@ -2,16 +2,16 @@
 
 ## Summary
 
-创建 repo-local skill：`.agents/skills/wiki-to-diagnosis-skill`，用于把 Markdown 问题定位 wiki 转换成新的、中文的问题定位 skill。
+创建 Claude project skill：`.claude/skills/wiki-to-diagnosis-skill`，用于把 Markdown 问题定位 wiki 转换成新的、中文的问题定位 skill。
 
 生成出的定位 skill 运行时分两阶段工作：先把用户输入的目标进程信息转换成 `logparse-diagnose` anchors，由 `logparse-diagnose` 完成预处理并输出 wiki 指定进程对应模块的日志文件；再由定位 skill 读取这些模块日志，按 wiki 中的定位步骤分析问题。分析完成后必须生成 `result.zip`，其中包含本次分析使用的进程日志和 `result.txt`。
 
 ## Key Changes
 
-- 新增 `wiki-to-diagnosis-skill/SKILL.md`，定义生成流程：
+- 新增 `.claude/skills/wiki-to-diagnosis-skill/SKILL.md`，定义生成流程：
   - 读取 Markdown wiki；
   - 抽取定位步骤、目标进程数量、进程标签、判断规则、输出要求；
-  - 生成 `.agents/skills/diagnose-<english-topic-slug>/SKILL.md`；
+  - 生成 `.claude/skills/diagnose-<english-topic-slug>/SKILL.md`；
   - 生成内容必须是中文，方便人工修改；
   - 校验生成出的 skill。
 - 新增 `references/wiki-template.md`，要求 wiki 描述定位流程需要几个目标进程，例如“客户端进程”“服务端进程”“主控进程”。
@@ -19,11 +19,15 @@
   - `logparse-diagnose` 负责预处理输入、匹配目标进程、输出对应模块日志；
   - 生成出的定位 skill 负责消费这些模块日志，并按 wiki 规则分析问题；
   - 定位 skill 分析完毕后必须产出 `result.zip`。
+- 新增 `.claude/skills/logparse-diagnose/SKILL.md` 作为 Claude project-skill wrapper，指向 repo 中已有的 canonical `.agents/skills/logparse-diagnose/SKILL.md`。
+- 移除 `wiki-to-diagnosis-skill` 的 Codex/OpenAI 专用 `agents/openai.yaml`，避免 Claude skill 中混入无关元信息。
+- 更新 `.gitignore`，继续忽略 `.claude` 下的本地配置，但允许提交 `.claude/skills/**` 项目级 Claude skills。
 
 ## Skill Naming Contract
 
 - 生成器 skill 名固定为 `wiki-to-diagnosis-skill`。
 - 生成出的定位 skill 名使用 `diagnose-<english-topic-slug>`。
+- 生成器和生成出的定位 skill 都必须放在 `.claude/skills/`，以适配 Claude Code project skills。
 - skill 目录名和 frontmatter `name` 必须使用英文小写、数字和短横线，少于 64 字符，并与目录名完全一致。
 - 如果 wiki 标题是中文，生成器优先要求用户提供英文 `skill_name`；如果未提供，再从标题翻译/归一化成英文 slug，并在生成 skill 正文里保留中文显示名。
 - 生成 skill 的正文、运行时提问、结果说明和 `result.txt` 必须使用中文。
@@ -72,7 +76,7 @@
 ## Coordination With logparse-diagnose
 
 - 后续 logparse 支持诊断日志压缩包和单个诊断日志后，需要同步更新 `.agents/skills/logparse-diagnose/SKILL.md` 的输入类型说明。
-- `wiki-to-diagnosis-skill` 和生成出的定位 skill 依赖 `logparse-diagnose` 提供统一的预处理与目标日志输出契约。
+- `wiki-to-diagnosis-skill` 和生成出的定位 skill 依赖 Claude project skill `$logparse-diagnose` / `/logparse-diagnose` 提供统一的预处理与目标日志输出契约。
 - 生成出的定位 skill 可以分析模块日志内容，但不能绕过 `logparse-diagnose` 自己选择 lifecycle、cycle 或输出路径。
 
 ## Test Plan
@@ -82,6 +86,7 @@
 - 生成样例 `diagnose-<english-topic-slug>` skill。
 - 校验样例生成 skill：
   - skill 名和目录名为英文小写短横线；
+  - skill 路径位于 `.claude/skills/`；
   - 正文为中文；
   - 明确按目标进程记录输入 `module + slot + process_name`；
   - 不允许把 `slot` 和 `process_name` 拆成独立列表；
@@ -95,7 +100,7 @@
 
 ## Assumptions
 
-- 新生成器 skill 放在 `.agents/skills/`。
+- 新生成器 skill 放在 `.claude/skills/`，供 Claude Code 作为 project skill 发现和执行。
 - v1 只支持 Markdown wiki 文件，不支持 Confluence/web 页面抓取。
 - Wiki 决定需要几个目标进程信息；用户运行生成出的 skill 时按这些目标提供对应组数。
 - 生成出来的问题定位 skill 面向人工维护，正文默认中文。

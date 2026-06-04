@@ -10,7 +10,7 @@ skill_name: diagnose-link-timeout
 ```
 
 - `title` 是中文显示名，用于生成 skill 正文。
-- `skill_name` 可选；提供时必须是英文小写短横线，建议格式为 `diagnose-<english-topic-slug>`。
+- `skill_name` 可选；提供时必须是英文小写短横线，建议格式为 `diagnose-<english-topic-slug>`，生成路径为 `.claude/skills/<skill_name>/SKILL.md`。
 
 ## 问题范围
 

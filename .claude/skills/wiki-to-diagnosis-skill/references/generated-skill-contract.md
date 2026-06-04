@@ -4,9 +4,11 @@
 
 ## 命名
 
-- skill 目录名和 frontmatter `name` 使用 `diagnose-<english-topic-slug>`。
+- 生成出的 skill 必须放在 `.claude/skills/diagnose-<english-topic-slug>/SKILL.md`，用于 Claude Code 项目级 skill 发现。
+- skill 目录名和 frontmatter `name` 使用 `diagnose-<english-topic-slug>`，并保持完全一致。
 - 名字只能包含英文小写字母、数字和短横线，长度少于 64 字符。
 - 中文问题名保存在正文中，例如“中文显示名：链路超时问题定位”。
+- 不要为生成出的 Claude skill 添加 Codex/OpenAI 专用的 `agents/openai.yaml`。
 
 ## 运行时输入
 
@@ -33,6 +35,8 @@
 ## 日志获取阶段
 
 生成出的定位 skill 必须使用 `logparse-diagnose` 做预处理和目标日志获取。
+
+在 Claude 中使用时，优先通过项目级 Claude skill `$logparse-diagnose` / `/logparse-diagnose` 调用该能力；如果 Claude 没有自动加载该 skill，则读取 `.claude/skills/logparse-diagnose/SKILL.md` 并按其说明执行。
 
 对每组目标进程信息构造一个 anchor：
 
