@@ -63,7 +63,7 @@ skill_name: diagnose-link-timeout
 
 ## 输出要求
 
-写明 `result.txt` 里需要呈现的结论字段或证据字段。`result.zip` 必须是扁平结构，根目录只包含 `result.txt` 和本次实际使用的进程 module 日志，不创建 `logs/`，不创建 `manifest.txt`，也不创建任何子目录。
+写明 `result.txt` 里需要呈现的结论字段或证据字段。`result.zip` 必须是扁平结构，根目录只包含 `result.txt` 和本次实际使用的进程 module 日志，不创建 `logs/`，不创建 `manifest.txt`，也不创建任何子目录。生成出的 skill 应使用 `.claude/skills/wiki-to-diagnosis-skill/scripts/pack_result_zip.py` 打包。
 
 ```markdown
 - 先输出明确定位结论。

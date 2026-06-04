@@ -1,15 +1,26 @@
 ---
 name: logparse-diagnose
-description: Use when diagnosing logparse log packages or preprocessed output with approximate problem time plus slot/process/PID anchors, especially raw compressed archives, V3 lifecycle_split output, compact result.json indexes, mech_modules logs, strict process/PID matching, module1/module2 lifecycle correlation, and unknown or nearest-cycle caveats.
+description: Use when diagnosing logparse logs or output/{task_id} with problem time plus module/slot/process/PID anchors, especially to return target_logs for generated diagnosis skills, V3 lifecycle_split evidence, mech_modules logs, strict PID matching, module1/module2 correlation, and nearest or unknown caveats.
 ---
 
 # Logparse Diagnose
 
 ## Overview
 
-Use logparse preprocessed results as an index into the original problem context. If the user gives a raw compressed log package, run the repository parse pipeline first to create that preprocessed result. The primary deliverable is the log file that matches the user-specified module, slot, problem time, and process name; when the user specifies multiple processes, provide each matched log. Treat lifecycle_split V3 as the official lifecycle model: final lifecycle evidence comes from `lifecycle_split_result.algorithm == "interval_v3"` and the written process logs under `mech_modules/`.
+Use logparse preprocessed results as an index into the original problem context. The primary deliverable is the process log that matches each user-specified module, slot, problem time, process name, and optional PID. Treat lifecycle_split V3 as the official lifecycle model only when `lifecycle_split_result.algorithm == "interval_v3"` is present; written process logs under `mech_modules/` are the source evidence.
 
 Load `references/preprocess-output.md` when you need field meanings, path layout, or CLI reminders. Load `references/relation-rules.md` before expanding beyond target anchors, especially for module2.
+
+## Minimal Execution Path
+
+For weak-model or generated diagnosis callers, follow this path first:
+
+1. Collect `input_path`, `problem_time`, and one target anchor per requested process: `module + slot + process_name + optional pid + optional label`.
+2. Resolve `input_path` to a result root containing `result.json`. If parsing a raw package is needed, require an explicit V3 config path whose module1 `lifecycle_split.algorithm` is `interval_v3`; do not use `config.yaml`, `config.lifecycle-v2.yaml`, or CLI defaults as an implicit V3 config.
+3. Run `python3.12 cli.py mech-target-logs ...` once per target anchor and use the returned JSON as the only target-log selection result.
+4. Return `target_logs` plus matched log content/windows. Stop on missing or ambiguous requested targets instead of substituting related logs.
+
+Only after this path succeeds should you interpret V3 details, expand related logs, or correlate broader context.
 
 ## Python Execution
 
@@ -24,7 +35,7 @@ Collect or infer these inputs:
 - Input path: either a raw log package such as `.zip`, `.tar`, `.tar.gz`, `.tgz`, or `.gz`, or a preprocessed result directory such as `output/{task_id}` containing `result.json`.
 - Approximate problem time. Preserve the user's timezone wording if present.
 - One or more target anchors. Each anchor should include `module`, `slot`, and `process_name`; `pid` and a user label such as `client` or `server` are optional.
-- Optional parse settings when the input is a raw package: V3 config path, output directory, and whether verbose output is desired.
+- Parse settings when the input is a raw package: explicit V3 config path, output directory, and whether verbose output is desired. The V3 config path is required for raw-package parsing unless the prompt explicitly asks for legacy/non-V3 output.
 
 If the input path, problem time, module, slot, or process name is missing and cannot be inferred, ask for it. If a PID is supplied, use it as a strict additional match.
 
@@ -34,7 +45,7 @@ If the input path, problem time, module, slot, or process name is missing and ca
    - Prefer the directory containing `result.json`.
    - If only an output base and task id are given, use `output/{task_id}/result.json`.
    - If the input is a raw package file or a directory without `result.json`, parse it first with `python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>`.
-   - Use parse settings from the prompt when provided. Otherwise use the repo-local profile that currently enables formal V3 lifecycle splitting. Do not infer lifecycle version from `cli.py` option defaults alone.
+   - Use parse settings from the prompt. If no explicit V3 config path is provided, ask for it or stop with a missing-input error; do not infer lifecycle version from `cli.py` option defaults, `config.yaml`, or `config.lifecycle-v2.yaml`.
    - After parsing, verify the parsed result has V3 lifecycle payloads before diagnosing.
    - After parsing, derive `task_id` from the CLI output or package stem, then use `<output_dir>/<task_id>/result.json`.
    - Read `metadata.json` when available for scanner coverage, original paths, active periods, private slots, and parse errors.

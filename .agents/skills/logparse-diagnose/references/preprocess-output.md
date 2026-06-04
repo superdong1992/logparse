@@ -10,7 +10,7 @@ When the user gives a raw log package instead of a result root, run the reposito
 python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
 ```
 
-Use config/output values from the prompt when present. If they are not provided, use the repo-local V3 config profile that currently enables formal lifecycle splitting. Do not infer lifecycle version from `cli.py` option defaults alone. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
+Use config/output values from the prompt. For official V3 diagnosis of a raw package, require an explicit config path whose module1 `lifecycle_split.algorithm` is `interval_v3`. Do not infer lifecycle version from `cli.py` option defaults, `config.yaml`, or `config.lifecycle-v2.yaml`; the checked-in defaults are not an implicit V3 profile. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
 
 Run all repository Python commands through Python 3.12. Prefer `python3.12`; on Windows only fall back to `py -3.12` if `python3.12` is unavailable. Install dependencies with the same interpreter, for example `python3.12 -m pip install -r requirements.txt`, and do not use bare `python`.
 

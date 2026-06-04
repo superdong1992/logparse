@@ -1,6 +1,6 @@
 ---
 name: logparse-diagnose
-description: Use when diagnosing logparse log packages or preprocessed output in Claude Code, especially when a generated diagnosis skill needs preprocessing and target module logs for module/slot/process anchors.
+description: Use when 诊断 logparse 日志包或 output/{task_id}，尤其是 generated diagnosis skill 需要按 module/slot/process/PID anchors 获取 target_logs 目标模块日志。
 ---
 
 # Logparse Diagnose
