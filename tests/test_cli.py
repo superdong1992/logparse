@@ -255,6 +255,116 @@ def test_parse_accepts_config_option_after_subcommand(tmp_path, monkeypatch):
     assert seen_config["sentinel"] == "from-command-option"
 
 
+def _write_target_log_result(tmp_path, *, with_log=True):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(exist_ok=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_key": "module1",
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "board_cycles": [
+                                    {
+                                        "dir_name": "cycle",
+                                        "start_time": "2026-01-03T00:00:00",
+                                        "end_time": "2026-01-03T00:10:00",
+                                        "processes": [
+                                            {
+                                                "process_name": "SERVICE",
+                                                "pid": "123",
+                                                "total_count": 1,
+                                                "missing_sequences": [],
+                                                "missing_count": 0,
+                                            },
+                                        ],
+                                        "cpu_cycles": [],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    if with_log:
+        log_dir = task_dir / "mech_modules" / "EXAMPLE" / "slot_1" / "cycle"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "SERVICE-123.log").write_text("matched log\n", encoding="utf-8")
+
+
+def test_mech_target_logs_outputs_json_without_cycle_argument(tmp_path):
+    _write_target_log_result(tmp_path, with_log=True)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-target-logs",
+            "task",
+            "--problem-time",
+            "2026-01-03T00:05:00",
+            "--module",
+            "module1",
+            "--slot",
+            "slot_1",
+            "--process-name",
+            "service",
+            "--pid",
+            "123",
+            "--label",
+            "client",
+            "-o",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    target = payload["target_logs"][0]
+    assert target["label"] == "client"
+    assert target["match_status"] == "exact"
+    assert target["board_cycle"] == "cycle"
+    assert target["log_path"].endswith("SERVICE-123.log")
+
+
+def test_mech_target_logs_reports_missing_log_without_guessing(tmp_path):
+    _write_target_log_result(tmp_path, with_log=False)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-target-logs",
+            "task",
+            "--problem-time",
+            "2026-01-03T00:05:00",
+            "--module",
+            "EXAMPLE",
+            "--slot",
+            "1",
+            "--process-name",
+            "SERVICE",
+            "--pid",
+            "123",
+            "-o",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    target = payload["target_logs"][0]
+    assert target["match_status"] == "missing"
+    assert "log_path" not in target
+    assert any("log file missing" in caveat for caveat in target["caveats"])
+
+
 def test_parse_validates_config_before_running_pipeline(tmp_path, monkeypatch):
     package_path = tmp_path / "package.zip"
     package_path.write_text("placeholder", encoding="utf-8")

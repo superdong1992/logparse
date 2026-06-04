@@ -4,7 +4,7 @@
 
 创建 Claude project skill：`.claude/skills/wiki-to-diagnosis-skill`，用于把 Markdown 问题定位 wiki 转换成新的、中文的问题定位 skill。
 
-生成出的定位 skill 运行时分两阶段工作：先把用户输入的目标进程信息转换成 `logparse-diagnose` anchors，由 `logparse-diagnose` 完成预处理并输出 wiki 指定进程对应模块的日志文件；再由定位 skill 读取这些模块日志，按 wiki 中的定位步骤分析问题。分析完成后必须生成 `result.zip`，其中包含本次分析使用的进程日志和 `result.txt`。
+生成出的定位 skill 运行时分两阶段工作：先把用户输入的目标进程信息转换成 `logparse-diagnose` anchors，由 `logparse-diagnose` 完成预处理并输出结构化 `target_logs` 清单；再由定位 skill 只读取 `target_logs[*].log_path` 指定的模块日志，按 wiki 中的定位步骤分析问题。分析完成后必须生成扁平 `result.zip`，其中只包含本次分析使用的进程日志和 `result.txt`。
 
 ## Key Changes
 
@@ -16,8 +16,8 @@
   - 校验生成出的 skill。
 - 新增 `references/wiki-template.md`，要求 wiki 描述定位流程需要几个目标进程，例如“客户端进程”“服务端进程”“主控进程”。
 - 新增 `references/generated-skill-contract.md`，定义生成 skill 的职责和交付物：
-  - `logparse-diagnose` 负责预处理输入、匹配目标进程、输出对应模块日志；
-  - 生成出的定位 skill 负责消费这些模块日志，并按 wiki 规则分析问题；
+  - `logparse-diagnose` 负责预处理输入、匹配目标进程、输出结构化 `target_logs`；
+  - 生成出的定位 skill 负责消费 `target_logs[*].log_path` 指定模块日志，并按 wiki 规则分析问题；
   - 定位 skill 分析完毕后必须产出 `result.zip`。
 - 新增 `.claude/skills/logparse-diagnose/SKILL.md` 作为 Claude project-skill wrapper，指向 repo 中已有的 canonical `.agents/skills/logparse-diagnose/SKILL.md`。
 - 移除 `wiki-to-diagnosis-skill` 的 Codex/OpenAI 专用 `agents/openai.yaml`，避免 Claude skill 中混入无关元信息。
@@ -52,13 +52,14 @@
   - `module`、`slot`、`process_name` 必须来自同一组输入；
   - `slot` 和 `process_name` 不能拆成两个独立列表分别收集或交叉组合；
   - `pid` 只约束对应那一组进程；
-  - `logparse-diagnose` 返回每个目标进程对应的模块日志路径、日志内容窗口、匹配状态和 V3 caveat。
+  - `logparse-diagnose` 通过 `cli.py mech-target-logs` 返回每个目标进程对应的 `target_logs` 记录，包含模块日志路径、日志内容窗口、匹配状态和 V3 caveat。
 - Wiki 分析阶段：
-  - 定位 skill 必须读取并使用 `logparse-diagnose` 返回的模块日志；
+  - 定位 skill 必须读取并使用 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志；
   - 按 wiki 中的步骤检查日志中的状态、错误、请求响应、超时、序号、跨进程关联等证据；
   - 多个目标进程按 wiki 顺序关联分析；
   - 如果任一目标日志缺失，先用中文报告缺失证据，不能用相关日志替代目标日志；
-  - 必须包含“证据收敛约束”：禁止发散分析，只允许基于 `logparse-diagnose` 返回的目标模块日志和 wiki 定位规则给结论；
+  - 必须包含“证据收敛约束”：禁止发散分析，只允许基于 `logparse-diagnose` 返回的 `target_logs[*].log_path` 目标模块日志和 wiki 定位规则给结论；
+  - 不允许遍历 `output/`、重新选择 lifecycle/cycle、重新拼接日志路径或用相关日志替代缺失的目标日志；生命周期选择必须来自 `logparse-diagnose` 调用的 `cli.py mech-target-logs`；
   - 不补充 wiki 未要求的排查方向，不分析无关模块、无关进程或无关代码，不根据经验猜根因；
   - 没有日志证据时，定位结论必须写“当前证据不足以确认根因”。
 - 交付物阶段：
@@ -71,10 +72,10 @@
 
 ## Result Artifact Contract
 
-- `result.zip` 推荐结构：
+- `result.zip` 固定为扁平结构：
   - `result.txt`：中文分析结果；
-  - `logs/`：本次分析使用的进程日志，文件名保留或补充目标标签，避免同名覆盖；
-  - 可选 `manifest.txt`：记录每个日志对应的 `module`、`slot`、`process_name`、`pid`、原始路径和匹配状态。
+  - `<label>__<module>__slot_<slot>__<process_name>[-pid].log`：本次分析实际使用的进程 module 日志；
+  - 不创建 `logs/`，不创建 `manifest.txt`，也不创建任何子目录。
 - `result.txt` 最小结构：
   - `定位结论`：第一段给出明确结论；
   - `关键分析依据`：列出来自哪些日志、哪些时间点、哪些关键行或状态变化；
@@ -84,8 +85,8 @@
 ## Coordination With logparse-diagnose
 
 - 后续 logparse 支持诊断日志压缩包和单个诊断日志后，需要同步更新 `.agents/skills/logparse-diagnose/SKILL.md` 的输入类型说明。
-- `wiki-to-diagnosis-skill` 和生成出的定位 skill 依赖 Claude project skill `$logparse-diagnose` / `/logparse-diagnose` 提供统一的预处理与目标日志输出契约。
-- 生成出的定位 skill 可以分析模块日志内容，但不能绕过 `logparse-diagnose` 自己选择 lifecycle、cycle 或输出路径。
+- `wiki-to-diagnosis-skill` 和生成出的定位 skill 依赖 Claude project skill `$logparse-diagnose` / `/logparse-diagnose` 提供统一的预处理与 `target_logs` 输出契约，`target_logs` 必须由 `cli.py mech-target-logs` 生成。
+- 生成出的定位 skill 可以分析 `target_logs[*].log_path` 指定模块日志内容，但不能绕过 `logparse-diagnose` / `cli.py mech-target-logs` 自己选择 lifecycle、cycle 或输出路径。
 
 ## Test Plan
 
@@ -101,9 +102,11 @@
   - 不允许把 `slot` 和 `process_name` 拆成独立列表；
   - 能转换多组目标进程为多个 `logparse-diagnose` anchors；
   - 明确告诉执行者 `logparse-diagnose` 也是一个 Claude skill，必须先调用/加载它；
-  - 明确把 `logparse-diagnose` 输出作为后续问题分析输入；
+  - 明确把 `logparse-diagnose` 输出的 `target_logs[*].log_path` 作为后续问题分析唯一日志输入；
+  - 禁止遍历 `output/`、重新选择 lifecycle/cycle、重新拼接日志路径或用相关日志替代缺失的目标日志；生命周期选择必须来自 `cli.py mech-target-logs`；
   - 明确要求生成 `result.zip`；
-  - `result.zip` 包含 `result.txt` 和本次分析使用的进程日志；
+  - `result.zip` 根目录只包含 `result.txt` 和本次分析使用的进程日志；
+  - 不生成 `logs/`，不生成 `manifest.txt`，也不生成任何子目录；
   - `result.txt` 先给出明确定位结论，再给出关键分析依据；
   - 包含“证据收敛约束”，禁止发散分析、无关模块/进程/代码分析和经验性猜根因；
   - 对缺失整组信息、目标日志缺失、当前版本不支持的输入类型有中文提示。

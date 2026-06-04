@@ -41,7 +41,7 @@ skill_name: diagnose-link-timeout
 
 ## 定位步骤
 
-按执行顺序描述如何分析 `logparse-diagnose` 返回的模块日志。
+按执行顺序描述如何分析 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志。生成出的定位 skill 只允许读取这些路径，不允许遍历 `output/`、重新选择 lifecycle/cycle 或重新拼接日志路径；生命周期选择必须来自 `logparse-diagnose` 调用的 `cli.py mech-target-logs`。
 
 ```markdown
 1. 在 client 日志中查找问题时间附近的请求发送记录，记录 request_id、序号和发送时间。
@@ -63,10 +63,11 @@ skill_name: diagnose-link-timeout
 
 ## 输出要求
 
-写明 `result.txt` 里需要呈现的结论字段或证据字段。
+写明 `result.txt` 里需要呈现的结论字段或证据字段。`result.zip` 必须是扁平结构，根目录只包含 `result.txt` 和本次实际使用的进程 module 日志，不创建 `logs/`，不创建 `manifest.txt`，也不创建任何子目录。
 
 ```markdown
 - 先输出明确定位结论。
 - 再输出关键分析依据，包括日志文件、时间点、关键行摘要。
+- 进程日志文件必须来自 `target_logs[*].log_path`，压缩包根目录中文件名使用 `<label>__<module>__slot_<slot>__<process_name>[-pid].log`。
 - 如果证据不足，明确写“当前证据不足以确认根因”，并说明缺失哪份日志或哪类关键记录。
 ```

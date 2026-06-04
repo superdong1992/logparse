@@ -106,10 +106,9 @@ Each line is written as:
 - Match PID exactly as a string.
 - When both process name and PID are provided, require both.
 - Treat each requested process as requiring its own matched log. Multiple requested processes produce multiple matched logs.
-- For board-level logs, match the problem time against `board_cycles[]`.
-- For CPU-level logs, match the problem time against nested `cpu_cycles[]` first, then preserve the parent board cycle in the report.
-- When no exact cycle covers the problem time, pick the nearest timed board or CPU cycle and mark it approximate.
-- Use `unknown` board or CPU cycle only when no timed cycle can be selected.
+- Use `python3.12 cli.py mech-target-logs ...` for target-log lookup. Do not make the model manually compare `problem_time` against `board_cycles[]` or nested `cpu_cycles[]`.
+- `mech-target-logs` matches board-level logs against `board_cycles[]`, CPU-level logs against nested `cpu_cycles[]` first, and returns exact/nearest/unknown/missing/ambiguous status in JSON.
+- Use `unknown` board or CPU cycle only when `mech-target-logs` returns that status; do not substitute related logs.
 
 ## CLI Helpers
 
@@ -122,12 +121,13 @@ python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir> --ver
 python3.12 cli.py list-slots <task_id> -o <output_dir>
 python3.12 cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
 python3.12 cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>
+python3.12 cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module_key_or_name> --slot <slot_id> --process-name <process_name> [--pid <pid>] [--label <label>] -o <output_dir>
 python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx decisions -o <output_dir>
 python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx full -o <output_dir>
 python3.12 cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>] -o <output_dir>
 ```
 
-`-m` uses `module_name`, not `module_key`, in the current CLI query service. `--cpu` with `--cpu-cycle` locates nested CPU-cycle logs. For board-level CPU logs, check the direct `cpu_{cpu_id}/{process}.log` path when the nested CPU-cycle path is absent.
+`mech-target-logs --module` accepts either `module_key` or `module_name` and is the preferred target-log handoff for diagnosis skills. `mech-lifecycles -m` and `mech-logs -m` use `module_name`. `--cpu` with `--cpu-cycle` locates nested CPU-cycle logs. For board-level CPU logs, `mech-target-logs` checks the direct `cpu_{cpu_id}/{process}.log` path when the nested CPU-cycle path is absent.
 
 ## Common Signals
 
