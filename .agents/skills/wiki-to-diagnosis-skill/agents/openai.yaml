@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wiki Diagnosis Skill Generator"
+  short_description: "Generate Chinese diagnosis skills from issue wikis"
+  default_prompt: "Use $wiki-to-diagnosis-skill to convert a Markdown issue-location wiki into a Chinese diagnosis skill."

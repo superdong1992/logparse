@@ -1,0 +1,72 @@
+# 问题定位 Wiki 推荐模板
+
+使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、问题时间、slot、module、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。
+
+## Frontmatter
+
+```yaml
+title: 链路超时问题定位
+skill_name: diagnose-link-timeout
+```
+
+- `title` 是中文显示名，用于生成 skill 正文。
+- `skill_name` 可选；提供时必须是英文小写短横线，建议格式为 `diagnose-<english-topic-slug>`。
+
+## 问题范围
+
+描述这个 wiki 适用于什么问题、现象或告警。
+
+示例：
+
+```markdown
+适用于客户端向服务端发起请求后长时间未收到响应，或者响应日志显示 timeout 的问题定位。
+```
+
+## 目标进程角色
+
+列出定位流程需要几组目标进程信息。每一行代表生成出的定位 skill 运行时必须收集的一组 `module + slot + process_name`，`pid` 可选。
+
+```markdown
+| 标签 | 说明 | 是否必需 |
+| --- | --- | --- |
+| client | 发起请求的客户端进程 | 是 |
+| server | 处理请求的服务端进程 | 是 |
+```
+
+规则：
+
+- 标签用于关联多份日志，例如 `client`、`server`、`active`、`standby`。
+- 不要把 `slot` 和 `process_name` 写成独立列表；它们必须属于同一目标进程。
+- 如果 wiki 知道推荐 module 或进程名，可以写在说明里作为提示，但生成出的定位 skill 仍必须让用户按目标进程组提供运行时参数。
+
+## 定位步骤
+
+按执行顺序描述如何分析 `logparse-diagnose` 返回的模块日志。
+
+```markdown
+1. 在 client 日志中查找问题时间附近的请求发送记录，记录 request_id、序号和发送时间。
+2. 在 server 日志中查找相同 request_id 或相邻时间窗口内的接收记录。
+3. 如果 client 有发送但 server 没有接收，结论倾向于请求未到达服务端。
+4. 如果 server 已处理并返回，但 client 没有收到响应，结论倾向于响应链路异常。
+5. 如果两端日志都缺失关键记录，结论写为当前证据不足以确认根因。
+```
+
+## 判断规则
+
+写明能支撑结论的关键证据。
+
+```markdown
+- 看到同一个 request_id 的发送和接收记录，才能建立跨进程关联。
+- 超时时间以问题时间前后 5 分钟内的日志为主。
+- 不能只凭单侧 timeout 文案直接判定根因。
+```
+
+## 输出要求
+
+写明 `result.txt` 里需要呈现的结论字段或证据字段。
+
+```markdown
+- 先输出明确定位结论。
+- 再输出关键分析依据，包括日志文件、时间点、关键行摘要。
+- 如果证据不足，明确写“当前证据不足以确认根因”，并说明缺失哪份日志或哪类关键记录。
+```
