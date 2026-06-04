@@ -1,6 +1,6 @@
 ---
 name: logparse-diagnose
-description: Use when diagnosing logparse log packages or preprocessed output in Claude Code, especially when a generated diagnosis skill needs preprocessing and target module logs for module/slot/process anchors.
+description: Use when 诊断 logparse 日志包或 output/{task_id}，尤其是 generated diagnosis skill 需要按 module/slot/process/PID anchors 获取 target_logs 目标模块日志。
 ---
 
 # Logparse Diagnose
@@ -14,6 +14,6 @@ When this skill is invoked in Claude Code:
 1. Read `.agents/skills/logparse-diagnose/SKILL.md`.
 2. Follow that canonical workflow exactly.
 3. When the canonical workflow tells you to load references, read them from `.agents/skills/logparse-diagnose/references/`.
-4. Preserve the canonical output contract: return the matched target process module logs, V3 context, gaps, and caveats.
+4. Preserve the canonical output contract: return the structured `target_logs` block generated through `cli.py mech-target-logs`, matched target process module logs, V3 context, gaps, and caveats.
 
-Do not reimplement lifecycle, cycle, or output-path selection in this wrapper. Its only purpose is to make `logparse-diagnose` discoverable as a Claude project skill under `.claude/skills/`.
+Do not reimplement lifecycle, cycle, or output-path selection in this wrapper. Do not weaken `target_logs` into an informal summary: generated diagnosis skills depend on `target_logs[*].log_path` as the only allowed handoff for target module logs. This wrapper's only purpose is to make `logparse-diagnose` discoverable as a Claude project skill under `.claude/skills/`.

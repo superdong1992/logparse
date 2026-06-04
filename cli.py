@@ -11,6 +11,7 @@
   python cli.py query-diag <task_id> --slot <slot_id>
   python cli.py mech-slots <task_id>
   python cli.py mech-lifecycles <task_id> -s <slot_id>
+  python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module> --slot <slot_id> --process-name <name> [--pid <pid>]
   python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc> [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
 """
 
@@ -1649,6 +1650,30 @@ def mech_lifecycles(
                 for p in cpu_cycle.get("processes", []):
                     missing = f" 丢号:{p['missing_sequences']}" if p.get("missing_sequences") else ""
                     click.echo(f"      {p['process_name']}-{p['pid']}: {p['total_count']} 条{missing}")
+
+
+@cli.command()
+@click.argument("task_id")
+@click.option("--problem-time", required=True, help="问题发生时间，ISO 格式")
+@click.option("--module", "module", required=True, help="机制模块 key 或输出模块名")
+@click.option("--slot", required=True, help="槽位 ID，例如 1 或 slot_1")
+@click.option("--process-name", required=True, help="目标进程名")
+@click.option("--pid", default=None, help="目标 PID，提供时严格匹配")
+@click.option("--label", default=None, help="目标标签，例如 client/server")
+@click.option("--output", "-o", default="./output", help="输出目录")
+def mech_target_logs(task_id, problem_time, module, slot, process_name, pid, label, output):
+    """按目标进程和问题时间确定性输出 target_logs JSON。"""
+    svc = ResultQueryService(Path(output))
+    payload = svc.resolve_target_logs(
+        task_id,
+        problem_time=problem_time,
+        module=module,
+        slot=slot,
+        process_name=process_name,
+        pid=pid,
+        label=label,
+    )
+    click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 @cli.command()
