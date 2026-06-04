@@ -36,6 +36,25 @@
 
 生成出的定位 skill 必须使用 `logparse-diagnose` 做预处理和目标日志获取。
 
+生成出的定位 skill 必须把下面这件事说清楚：`logparse-diagnose` 也是一个 Claude skill，不是 shell 命令、不是 Python 模块、也不是普通提示词。当前定位 skill 不能直接开始分析原始日志，必须先调用/加载 `logparse-diagnose` skill。
+
+生成出的定位 skill 必须包含这个中文小节，或语义完全等价的内容：
+
+```markdown
+## 先调用 logparse-diagnose skill
+
+`logparse-diagnose` 也是本项目里的一个 Claude skill，路径是 `.claude/skills/logparse-diagnose/SKILL.md`。
+
+不要把 `logparse-diagnose` 当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill，让它完成：
+
+1. 对 `input_path` 做预处理；
+2. 根据每组 `module + slot + process_name + 可选 pid` 生成并匹配 anchor；
+3. 选择正确的 lifecycle/cycle；
+4. 输出目标进程对应模块日志。
+
+当前定位 skill 只负责分析 `logparse-diagnose` 返回的模块日志，并生成 `result.zip`。
+```
+
 在 Claude 中使用时，优先通过项目级 Claude skill `$logparse-diagnose` / `/logparse-diagnose` 调用该能力；如果 Claude 没有自动加载该 skill，则读取 `.claude/skills/logparse-diagnose/SKILL.md` 并按其说明执行。
 
 对每组目标进程信息构造一个 anchor：

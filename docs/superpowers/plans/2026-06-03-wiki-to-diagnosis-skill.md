@@ -22,6 +22,7 @@
 - 新增 `.claude/skills/logparse-diagnose/SKILL.md` 作为 Claude project-skill wrapper，指向 repo 中已有的 canonical `.agents/skills/logparse-diagnose/SKILL.md`。
 - 移除 `wiki-to-diagnosis-skill` 的 Codex/OpenAI 专用 `agents/openai.yaml`，避免 Claude skill 中混入无关元信息。
 - 更新 `.gitignore`，继续忽略 `.claude` 下的本地配置，但允许提交 `.claude/skills/**` 项目级 Claude skills。
+- 生成出的定位 skill 必须明确说明 `logparse-diagnose` 也是一个 Claude skill，并要求先调用/加载它；不能让弱模型误以为它是 shell 命令、Python 模块或普通提示词。
 
 ## Skill Naming Contract
 
@@ -44,6 +45,8 @@
   - 每组可带 wiki 派生标签，例如 `client`、`server`、`active`、`standby`。
 - 日志获取阶段：
   - 每组目标进程信息转换成一个 `logparse-diagnose` anchor；
+  - 在生成出的定位 skill 中先写清楚：`logparse-diagnose` 是另一个 Claude skill，路径为 `.claude/skills/logparse-diagnose/SKILL.md`；
+  - 必须先调用/加载 `logparse-diagnose` skill，再做当前 wiki 的问题分析；
   - `module`、`slot`、`process_name` 必须来自同一组输入；
   - `slot` 和 `process_name` 不能拆成两个独立列表分别收集或交叉组合；
   - `pid` 只约束对应那一组进程；
@@ -91,6 +94,7 @@
   - 明确按目标进程记录输入 `module + slot + process_name`；
   - 不允许把 `slot` 和 `process_name` 拆成独立列表；
   - 能转换多组目标进程为多个 `logparse-diagnose` anchors；
+  - 明确告诉执行者 `logparse-diagnose` 也是一个 Claude skill，必须先调用/加载它；
   - 明确把 `logparse-diagnose` 输出作为后续问题分析输入；
   - 明确要求生成 `result.zip`；
   - `result.zip` 包含 `result.txt` 和本次分析使用的进程日志；

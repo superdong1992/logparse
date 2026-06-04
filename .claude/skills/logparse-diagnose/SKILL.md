@@ -7,6 +7,8 @@ description: Use when diagnosing logparse log packages or preprocessed output in
 
 This is a Claude project-skill wrapper for the repo-local canonical diagnosis workflow.
 
+Other generated diagnosis skills call this skill first. Treat this as a real Claude skill entrypoint, not as a shell command or Python module.
+
 When this skill is invoked in Claude Code:
 
 1. Read `.agents/skills/logparse-diagnose/SKILL.md`.
