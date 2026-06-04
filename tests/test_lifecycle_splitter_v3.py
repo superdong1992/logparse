@@ -201,6 +201,53 @@ def test_reliable_pid_conflict_inside_final_lifecycle_records_error_without_auto
     assert result.issues[0].observed_pids == ["100", "200"]
 
 
+def test_reliable_pid_conflict_ignores_other_scopes_in_same_slot_lifecycle():
+    result = _splitter(reliable=["anchor"]).split([
+        _entry("anchor", "100", 0),
+        _entry("anchor", "200", 5, cpu_id="1"),
+        _entry("anchor", "300", 10, cpu_id="2"),
+    ])
+
+    assert result.lifecycle_reliable is True
+    assert result.issues == []
+    board_lifecycle = next(item for item in result.lifecycles if item.scope == "board")
+    assert board_lifecycle.lifecycle_reliable is True
+
+
+def test_board_reliable_pid_conflict_still_records_error():
+    result = _splitter(reliable=["anchor"]).split([
+        _entry("anchor", "100", 0),
+        _entry("anchor", "200", 29),
+    ])
+
+    issues = [
+        issue
+        for issue in result.issues
+        if issue.type == "reliable_process_multiple_pid_in_lifecycle"
+    ]
+    assert len(issues) == 1
+    assert issues[0].scope == "board"
+    assert issues[0].cpu_id is None
+    assert issues[0].observed_pids == ["100", "200"]
+
+
+def test_cpu_reliable_pid_conflict_still_records_cpu_scoped_error():
+    result = _splitter(reliable=["anchor"]).split([
+        _entry("anchor", "100", 0, cpu_id="1"),
+        _entry("anchor", "200", 29, cpu_id="1"),
+    ])
+
+    issues = [
+        issue
+        for issue in result.issues
+        if issue.type == "reliable_process_multiple_pid_in_lifecycle"
+    ]
+    assert len(issues) == 1
+    assert issues[0].scope == "cpu"
+    assert issues[0].cpu_id == "1"
+    assert issues[0].observed_pids == ["100", "200"]
+
+
 def test_process_name_mapping_is_applied_before_v3_reliable_pid_counting():
     splitter = LifecycleSplitterV3(
         LifecycleSplitConfig.from_mapping({
@@ -341,3 +388,19 @@ def test_kept_boundary_with_same_pid_records_pid_reuse_assumption_violation():
 
     assert len(result.lifecycles) == 2
     assert any(issue.type == "pid_reuse_assumption_violation" for issue in result.issues)
+
+
+def test_board_pid_reuse_warning_ignores_cpu_logs_across_boundary():
+    result = _splitter().split([
+        _entry("journal", "", 0, source="journal", sequence=99),
+        _entry("ordinary", "500", 10, cpu_id="1"),
+        _entry("journal", "", 40, source="journal", sequence=1),
+        _entry("ordinary", "500", 50, cpu_id="1"),
+    ])
+
+    board_issues = [
+        issue
+        for issue in result.issues
+        if issue.type == "pid_reuse_assumption_violation" and issue.scope == "board"
+    ]
+    assert board_issues == []

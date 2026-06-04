@@ -627,7 +627,10 @@ class LifecycleSplitterV3:
     ) -> list[LifecycleV3Issue]:
         issues: list[LifecycleV3Issue] = []
         for lifecycle in lifecycles:
-            lifecycle_entries = self._entries_for_lifecycle(entries, lifecycle)
+            lifecycle_entries = self._entries_for_lifecycle_reliability(
+                entries,
+                lifecycle,
+            )
             for pid_count in self._reliable_pid_counts(lifecycle_entries):
                 if len(pid_count["pids"]) <= 1:
                     continue
@@ -696,8 +699,12 @@ class LifecycleSplitterV3:
         left: LifecycleV3Lifecycle,
         right: LifecycleV3Lifecycle,
     ) -> list[tuple[str, str]]:
-        left_pairs = self._process_pid_pairs(self._entries_for_lifecycle(entries, left))
-        right_pairs = self._process_pid_pairs(self._entries_for_lifecycle(entries, right))
+        left_pairs = self._process_pid_pairs(
+            self._entries_for_lifecycle_reliability(entries, left)
+        )
+        right_pairs = self._process_pid_pairs(
+            self._entries_for_lifecycle_reliability(entries, right)
+        )
         return sorted(left_pairs & right_pairs)
 
     def _process_pid_pairs(self, entries: list[MechLogEntry]) -> set[tuple[str, str]]:
@@ -723,6 +730,20 @@ class LifecycleSplitterV3:
                     continue
             result.append(entry)
         return sorted(result, key=_entry_sort_key)
+
+    def _entries_for_lifecycle_reliability(
+        self,
+        entries: list[MechLogEntry],
+        lifecycle: LifecycleV3Lifecycle,
+    ) -> list[MechLogEntry]:
+        lifecycle_entries = self._entries_for_lifecycle(entries, lifecycle)
+        if lifecycle.scope == "board":
+            return [entry for entry in lifecycle_entries if not entry.cpu_id]
+        return [
+            entry
+            for entry in lifecycle_entries
+            if entry.cpu_id == lifecycle.cpu_id
+        ]
 
     def _parent_board_lifecycle(
         self,
