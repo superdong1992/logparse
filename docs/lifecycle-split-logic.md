@@ -54,14 +54,14 @@
 
 落盘路径：
 
-- 板卡日志：`slot_1/<board_cycle>/<proc>-<pid>.log`
-- CPU 日志：`slot_1/<board_cycle>/cpu_1/<cpu_cycle>/<proc>-<pid>.log`
+- 板卡日志：`slot_1/<board_cycle>/<proc>~P<pid>.log`
+- CPU 日志：`slot_1/<board_cycle>/cpu_1/<cpu_cycle>/<proc>~P<pid>.log`
 
 `module2` 匹配周期时按 `slot + cpu_id + timestamp`：
 
 - CPU 日志优先匹配板卡周期内的嵌套 CPU 周期。
 - 板卡日志匹配顶层板卡周期。
-- 找不到 CPU 周期时，CPU 日志进入对应板卡周期下的 `cpu_<id>/unknown/`。
+- 找不到 CPU 周期时，机制模块可显式生成 `cpu_<id>/unknown/` CPU 周期；若输出仍是板卡周期 process 但携带 `cpu_id`，兼容路径为 `cpu_<id>/<proc>[~P<pid>].log`。
 - timestamp 不落入任何 module1 周期时，module2 可用 PID 归入最近相邻周期；不能跨过相邻 module1 周期拉回旧 PID。
 - module2 输出目录允许按自身日志扩展，但扩展边界会被相邻 module1 周期夹住，保证 module2 周期目录不重叠。
 
@@ -94,6 +94,6 @@ flowchart LR
     B["BoardCycle A"] --> BP["board processes"]
     B --> C1["cpu_1 / CpuCycle A1"]
     B --> C2["cpu_1 / CpuCycle A2"]
-    C1 --> P1["dhcp-10.log"]
-    C2 --> P2["dhcp-20.log"]
+    C1 --> P1["dhcp~P10.log"]
+    C2 --> P2["dhcp~P20.log"]
 ```

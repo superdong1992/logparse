@@ -12,7 +12,7 @@
   python cli.py mech-slots <task_id>
   python cli.py mech-lifecycles <task_id> -s <slot_id>
   python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module> --slot <slot_id> --process-name <name> [--pid <pid>]
-  python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc> [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
+  python cli.py mech-logs <task_id> -s <slot_id> -c <cycle_dir> -p <proc> [--pid <pid>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -60,12 +61,29 @@ def _print_summary(
     result: ParseResult,
     output_dir: Path,
     result_json_mode: str = "compact",
+    detailed: bool = True,
 ) -> None:
     """打印解析结果摘要 + 落盘 result.json。"""
     click.echo(f"\n=== 解析结果 ===")
     click.echo(f"压缩包: {result.package_name}")
     click.echo(f"诊断日志槽位数: {len(result.diagnostic_slots)}")
     click.echo(f"私有日志槽位数: {len(result.private_slots)}")
+
+    if not detailed:
+        json_output = output_dir / result.task_id / "result.json"
+        json_output.parent.mkdir(parents=True, exist_ok=True)
+        json_output.write_text(
+            json.dumps(
+                result_to_dict(result, result_json_mode),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+        click.echo(f"机制模块结果数: {len(result.mech_results)}")
+        click.echo(f"\n完整结果: {json_output}")
+        return
 
     for slot in result.diagnostic_slots:
         diag_count = len(slot.diagnostic_logs)
@@ -147,6 +165,7 @@ def cli(ctx, config):
 @click.option("--verbose", "-v", is_flag=True, help="通用详细输出；生命周期 DFX 请用 --lifecycle-dfx")
 @click.option("--product", "-p", default="default", help="产品名（default/compact）")
 @click.option("--debug-expand-gz", is_flag=True, default=False, help="强制在解析过程中将 .gz 日志就地展开")
+@click.option("--profile", is_flag=True, default=False, help="生成 performance.json 并打印性能摘要")
 @click.option(
     "--lifecycle-dfx",
     type=click.Choice(["off", "errors", "summary", "decisions", "full"]),
@@ -155,7 +174,7 @@ def cli(ctx, config):
     help="生命周期聚合/切分中文说明输出级别",
 )
 @click.pass_context
-def parse(ctx, package_path, config, output, verbose, product, debug_expand_gz, lifecycle_dfx):
+def parse(ctx, package_path, config, output, verbose, product, debug_expand_gz, profile, lifecycle_dfx):
     """解析日志压缩包。"""
     if verbose:
         import logging
@@ -187,12 +206,28 @@ def parse(ctx, package_path, config, output, verbose, product, debug_expand_gz, 
             click.echo(f"  - {error}", err=True)
         raise click.exceptions.Exit(1)
     pipeline = Pipeline(raw_config)
-    result = pipeline.run(source, output_dir, product=product, verbose=verbose)
+    run_kwargs = {"product": product, "verbose": verbose}
+    if profile:
+        run_kwargs["profile"] = True
+    result = pipeline.run(source, output_dir, **run_kwargs)
     _print_parse_errors(result, verbose=verbose, lifecycle_dfx=lifecycle_dfx)
 
     # 输出摘要
     result_json_mode = raw_config.get("pipeline", {}).get("result_json_mode", "compact")
-    _print_summary(result, output_dir, result_json_mode=result_json_mode)
+    summary_t0 = time.perf_counter()
+    _print_summary(result, output_dir, result_json_mode=result_json_mode, detailed=not profile)
+    if profile:
+        if hasattr(pipeline.performance, "record_stage"):
+            pipeline.performance.record_stage(
+                "cli.result_json",
+                elapsed_seconds=time.perf_counter() - summary_t0,
+                result_json_mode=result_json_mode,
+            )
+        if hasattr(pipeline.performance, "write"):
+            pipeline.performance.write(output_dir / result.task_id)
+        click.echo("\n=== 性能摘要 ===")
+        for line in pipeline.performance.summary_lines():
+            click.echo(line)
 
 
 @cli.command()
@@ -526,7 +561,7 @@ def _first_hint(commands: list[str], task_id: str) -> str | None:
     if not commands:
         return None
     command = next((cmd for cmd in commands if "mech-logs" in cmd), commands[0])
-    return command.replace("<task_id>", task_id)
+    return _normalize_hint_command(command, task_id)
 
 
 def _hint_for_boundary_endpoint(
@@ -544,12 +579,35 @@ def _hint_for_boundary_endpoint(
     for pid in pids:
         if not pid:
             continue
-        proc_arg = _proc_pid(proc, pid)
-        pattern = rf"(^|\s)-p\s+{re.escape(proc_arg)}($|\s)"
         for command in commands:
-            if "mech-logs" in command and re.search(pattern, command):
-                return command.replace("<task_id>", task_id)
+            if "mech-logs" in command and _command_targets_proc_pid(command, proc, pid):
+                return _normalize_hint_command(command, task_id)
     return None
+
+
+def _normalize_hint_command(command: str, task_id: str) -> str:
+    normalized = command.replace("<task_id>", task_id)
+    if "mech-logs" not in normalized or "--pid" in normalized:
+        return normalized
+    return re.sub(
+        r"(?P<prefix>(?:^|\s)-p\s+)(?P<proc>\S+)-(?P<pid>\d+)(?P<suffix>(?=\s|$))",
+        lambda match: (
+            f"{match.group('prefix')}{match.group('proc')} --pid {match.group('pid')}"
+            f"{match.group('suffix')}"
+        ),
+        normalized,
+        count=1,
+    )
+
+
+def _command_targets_proc_pid(command: str, proc: str, pid: str) -> bool:
+    proc_pattern = rf"(^|\s)-p\s+{re.escape(proc)}($|\s)"
+    pid_pattern = rf"(^|\s)--pid\s+{re.escape(pid)}($|\s)"
+    legacy_pattern = rf"(^|\s)-p\s+{re.escape(_proc_pid(proc, pid))}($|\s)"
+    return (
+        re.search(proc_pattern, command) is not None
+        and re.search(pid_pattern, command) is not None
+    ) or re.search(legacy_pattern, command) is not None
 
 
 def _detail_fields(issue: dict) -> dict[str, str]:
@@ -1002,7 +1060,7 @@ def _print_boundary_issue_full(issue: dict, task_id: str) -> None:
         _print_boundary_evidence(evidence, indent="    ")
 
     for command in issue.get("suggested_commands", []):
-        click.echo(f"    hint {command.replace('<task_id>', task_id)}")
+        click.echo(f"    hint {_normalize_hint_command(command, task_id)}")
 
 
 def _print_lifecycle_split_v2(result: dict, detail: str = "compact") -> None:
@@ -1680,12 +1738,13 @@ def mech_target_logs(task_id, problem_time, module, slot, process_name, pid, lab
 @click.argument("task_id")
 @click.option("--slot", "-s", required=True, help="槽位 ID")
 @click.option("--cycle", "-c", required=True, help="周期目录名")
-@click.option("--proc", "-p", required=True, help="进程名-pid")
+@click.option("--proc", "-p", required=True, help="进程名；PID 请使用 --pid")
 @click.option("--module", "-m", "module_name", default=None, help="机制模块名，默认取第一个")
+@click.option("--pid", default=None, help="PID; when provided, --proc is treated as the process name")
 @click.option("--cpu", "cpu_id", default=None, help="CPU ID")
 @click.option("--cpu-cycle", default=None, help="CPU cycle directory")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_logs(task_id, slot, cycle, proc, module_name, cpu_id, cpu_cycle, output):
+def mech_logs(task_id, slot, cycle, proc, module_name, pid, cpu_id, cpu_cycle, output):
     """查看指定进程批次的机制模块日志。"""
     svc = ResultQueryService(Path(output))
     log_file = svc.mech_log_path(
@@ -1696,6 +1755,7 @@ def mech_logs(task_id, slot, cycle, proc, module_name, cpu_id, cpu_cycle, output
         module_name=module_name,
         cpu_id=cpu_id,
         cpu_cycle=cpu_cycle,
+        pid=pid,
     )
     if not log_file.exists():
         click.echo(f"文件不存在: {log_file}", err=True)

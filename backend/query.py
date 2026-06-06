@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from backend.utils import safe_log_filename, safe_path_segment
+
 
 class ResultQueryService:
     """从 output 目录中读取解析结果并提供查询方法。"""
@@ -105,17 +107,24 @@ class ResultQueryService:
         module_name: str | None = None,
         cpu_id: str | None = None,
         cpu_cycle: str | None = None,
+        pid: str | None = None,
     ) -> Path:
         """获取指定进程日志的文件路径。"""
         if module_name is None:
             module_name = self.first_module_name(task_id)
         base = self._output_dir / task_id / "mech_modules"
         if module_name:
-            base = base / module_name
-        target = base / f"slot_{slot_id}" / cycle
-        if cpu_id:
-            target = target / f"cpu_{cpu_id}" / (cpu_cycle or "unknown")
-        return target / f"{proc}.log"
+            base = base / safe_path_segment(module_name)
+        target = base / f"slot_{safe_path_segment(slot_id)}" / safe_path_segment(cycle)
+        if cpu_id and cpu_cycle:
+            target = (
+                target
+                / f"cpu_{safe_path_segment(cpu_id)}"
+                / safe_path_segment(cpu_cycle)
+            )
+        elif cpu_id:
+            target = target / f"cpu_{safe_path_segment(cpu_id)}"
+        return _proc_argument_path(target, proc, pid)
 
     def resolve_target_logs(
         self,
@@ -291,13 +300,18 @@ class _TargetCandidate:
         return target
 
     def resolve_log_path(self) -> dict:
-        proc_file = f"{self.process_name}-{self.pid}.log" if self.pid else f"{self.process_name}.log"
+        proc_file = safe_log_filename(self.process_name, self.pid)
         base = (
-            self.output_dir / self.task_id / "mech_modules" / self.module_name
-            / f"slot_{self.slot}" / self.board_cycle_name
+            self.output_dir / self.task_id / "mech_modules" / safe_path_segment(self.module_name)
+            / f"slot_{safe_path_segment(self.slot)}" / safe_path_segment(self.board_cycle_name)
         )
         if self.cpu_cycle:
-            path = base / f"cpu_{self.cpu_id}" / self.cpu_cycle_name / proc_file
+            path = (
+                base
+                / f"cpu_{safe_path_segment(self.cpu_id)}"
+                / safe_path_segment(self.cpu_cycle_name)
+                / proc_file
+            )
             if path.exists():
                 return {"status": "found", "path": path}
             return {"status": "missing", "reason": f"log file missing: {path}"}
@@ -328,6 +342,12 @@ def _normalize_slot(value) -> str:
     if text.lower().startswith("slot_"):
         return text[5:]
     return text
+
+
+def _proc_argument_path(base: Path, proc: str, pid: str | None) -> Path:
+    if pid is not None:
+        return base / safe_log_filename(proc, pid)
+    return base / safe_log_filename(proc)
 
 
 def _module_matches(module_item: dict, module: str) -> bool:

@@ -28,7 +28,7 @@ def sample_config() -> dict:
                 "enabled": True,
                 "config": {
                     "module_name": "EXAMPLE",
-                    "diag_pattern": r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$",
+                    "diag_pattern": r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]*).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$",
                     "active_master_keyword": "MASTER_ACTIVE",
                     "board_restart_indicator": "dhcp",
                     "process_name_mapping": {},

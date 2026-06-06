@@ -35,6 +35,19 @@ class MechanismModulePlugin(ABC):
     def parse(self, result: ParseResult) -> MechResult | None:
         ...
 
+    def build_diagnostic_line_scanner(self):
+        return None
+
+    def set_precomputed_diagnostic_entries(
+        self,
+        entries,
+        file_count: int = 0,
+        line_count: int = 0,
+    ) -> None:
+        self._precomputed_diagnostic_entries = list(entries)
+        self._precomputed_diagnostic_file_count = file_count
+        self._precomputed_diagnostic_line_count = line_count
+
     def apply_roles(self, result, mech_result) -> None:
         pass
 

@@ -10,6 +10,7 @@ from backend.models import (
     MechResult, MechSlotOutput,
 )
 from backend.parsing.output_writer import MechOutputWriter
+from backend.utils import safe_log_filename, safe_path_segment
 
 
 @pytest.fixture
@@ -51,8 +52,9 @@ class TestMechOutputWriter:
         output_dir = writer.write(mech_result, tmp_path)
 
         expected_log = (
-            tmp_path / "mech_modules" / "EXAMPLE" / "slot_1"
-            / "20260103T000100-20260103T000200" / "svc-100.log"
+            tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("20260103T000100-20260103T000200")
+            / safe_log_filename("svc", "100")
         )
         assert expected_log.exists()
 
@@ -61,8 +63,9 @@ class TestMechOutputWriter:
         writer.write(mech_result, tmp_path)
 
         log_path = (
-            tmp_path / "mech_modules" / "EXAMPLE" / "slot_1"
-            / "20260103T000100-20260103T000200" / "svc-100.log"
+            tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("20260103T000100-20260103T000200")
+            / safe_log_filename("svc", "100")
         )
         content = log_path.read_text(encoding="utf-8")
         assert "[0001]" in content
@@ -97,8 +100,9 @@ class TestMechOutputWriter:
         writer.write(result, tmp_path)
 
         expected = (
-            tmp_path / "mech_modules" / "EXAMPLE" / "slot_1"
-            / "20260103T000100-20260103T000200" / "cpu_1" / "svc-100.log"
+            tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("20260103T000100-20260103T000200")
+            / "cpu_1" / safe_log_filename("svc", "100")
         )
         assert expected.exists()
 
@@ -138,13 +142,126 @@ class TestMechOutputWriter:
         writer.write(result, tmp_path)
 
         expected = (
-            tmp_path / "mech_modules" / "EXAMPLE" / "slot_1"
-            / "20260103T000000-20260103T001000" / "cpu_1"
-            / "20260103T000100-20260103T000200" / "svc-100.log"
+            tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("20260103T000000-20260103T001000") / "cpu_1"
+            / safe_path_segment("20260103T000100-20260103T000200")
+            / safe_log_filename("svc", "100")
         )
         assert expected.exists()
+
+    def test_process_filename_is_sanitized(self, writer, tmp_path):
+        result = MechResult(module_name="EXAMPLE")
+        result.slots.append(
+            MechSlotOutput(
+                slot_id="1",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="cycle",
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name=r"..\..\escape",
+                                pid="10/20",
+                                logs=[
+                                    MechLogEntry(
+                                        source="diagnostic",
+                                        source_file="slot_1/diag.log",
+                                        slot="1",
+                                        cpu_id="",
+                                        process_name=r"..\..\escape",
+                                        pid="10/20",
+                                        raw="raw",
+                                    )
+                                ],
+                                total_count=1,
+                            )
+                        ],
+                    )
+                ],
+            )
+        )
+
+        writer.write(result, tmp_path)
+
+        safe_name = safe_log_filename(r"..\..\escape", "10/20")
+        expected = (
+            tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("cycle") / safe_name
+        )
+        assert expected.is_file()
+        assert expected.parent == (
+            tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("cycle")
+        )
+
+    def test_module_name_directory_is_sanitized(self, writer, tmp_path):
+        result = _make_mech_result()
+        result.module_name = r"..\..\MODULE"
+
+        mech_dir = writer.write(result, tmp_path)
+
+        expected_dir = tmp_path / "mech_modules" / safe_path_segment(r"..\..\MODULE")
+        assert mech_dir == expected_dir
+        assert (expected_dir / "slot_1" / safe_path_segment("20260103T000100-20260103T000200")).is_dir()
+        assert not (tmp_path / "MODULE").exists()
+
+    def test_process_pid_separator_avoids_filename_collision(self, writer, tmp_path):
+        result = MechResult(module_name="EXAMPLE")
+        result.slots.append(
+            MechSlotOutput(
+                slot_id="1",
+                board_cycles=[
+                    MechBoardCycle(
+                        dir_name="cycle",
+                        processes=[
+                            MechProcessLifecycle(
+                                process_name="svc-100",
+                                pid="",
+                                logs=[
+                                    MechLogEntry(
+                                        source="diagnostic",
+                                        source_file="slot_1/diag.log",
+                                        slot="1",
+                                        cpu_id="",
+                                        process_name="svc-100",
+                                        pid="",
+                                        raw="no pid",
+                                    )
+                                ],
+                                total_count=1,
+                            ),
+                            MechProcessLifecycle(
+                                process_name="svc",
+                                pid="100",
+                                logs=[
+                                    MechLogEntry(
+                                        source="diagnostic",
+                                        source_file="slot_1/diag.log",
+                                        slot="1",
+                                        cpu_id="",
+                                        process_name="svc",
+                                        pid="100",
+                                        raw="with pid",
+                                    )
+                                ],
+                                total_count=1,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        )
+
+        writer.write(result, tmp_path)
+        out_dir = (
+            tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("cycle")
+        )
+
+        assert (out_dir / safe_log_filename("svc-100", "")).read_text(encoding="utf-8").endswith("no pid\n")
+        assert (out_dir / safe_log_filename("svc", "100")).read_text(encoding="utf-8").endswith("with pid\n")
+        assert safe_log_filename("svc-100", "") != safe_log_filename("svc", "100")
 
     def test_returns_output_dir(self, writer, tmp_path):
         mech_result = _make_mech_result()
         result = writer.write(mech_result, tmp_path)
-        assert result == tmp_path / "mech_modules" / "EXAMPLE"
+        assert result == tmp_path / "mech_modules" / safe_path_segment("EXAMPLE")

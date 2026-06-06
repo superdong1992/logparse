@@ -6,6 +6,8 @@ import os
 import re
 import tarfile
 import zipfile
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from typing import Iterable
@@ -88,7 +90,14 @@ class Decompressor:
             return False
         return True
 
-    def extract_all(self, source: Path, dest_dir: Path, recursive: bool = True, expand_gz: bool = False) -> list[str]:
+    def extract_all(
+        self,
+        source: Path,
+        dest_dir: Path,
+        recursive: bool = True,
+        expand_gz: bool = False,
+        workers: int = 1,
+    ) -> list[str]:
         """
         解压 source 到 dest_dir。
         recursive=False 时只解压一层，不递归处理内部压缩包。
@@ -104,61 +113,46 @@ class Decompressor:
         if not recursive:
             return extracted_files
 
-        # 递归扫描解压出的新压缩包
+        # Queue only newly discovered archives instead of walking the whole tree
+        # after every recursive pass.
         passes = 0
-        changed = True
         pass_log: list[list[str]] = []
-        while changed:
+        queue: deque[tuple[Path, Path, bool, Path | None]] = deque()
+        queued: set[Path] = set()
+
+        def _enqueue(path: Path) -> None:
+            task = self._nested_task(path, dest_dir, expand_gz)
+            if task is None:
+                return
+            key = task[0].resolve()
+            if key in queued:
+                return
+            queued.add(key)
+            queue.append(task)
+
+        for file_name in extracted_files:
+            _enqueue(Path(file_name))
+
+        worker_count = max(1, int(workers or 1))
+        while queue:
             passes += 1
+            batch = list(queue)
+            queue.clear()
             this_pass: list[str] = []
-            changed = False
-            for root, dirs, files in os.walk(dest_dir):
-                for f in files:
-                    lower_name = f.lower()
 
-                    # Archive formats use *_extracted directories. Plain .gz log
-                    # files such as journal.log.1.gz expand in place when enabled
-                    # so the extracted/ workspace remains easy to full-text search.
-                    # 跳过普通 .gz 但保留 .tar.gz / .tgz
-                    is_plain_gz = (
-                        lower_name.endswith(".gz")
-                        and not lower_name.endswith(".tar.gz")
-                        and not lower_name.endswith(".tgz")
-                    )
-                    if is_plain_gz:
-                        file_path = Path(root) / f
-                        if not expand_gz:
-                            continue
-                        output_path = file_path.parent / file_path.stem
-                        if output_path.exists():
-                            continue
-                        try:
-                            self._extract_single(file_path, file_path.parent, extracted_files)
-                        except Exception as e:
-                            logger.warning("解压失败 %s: %s", file_path, e)
-                            if output_path.is_file():
-                                output_path.unlink()
-                            continue
-                        this_pass.append(str(file_path.relative_to(dest_dir)))
-                        changed = True
-                        continue
+            if worker_count > 1 and len(batch) > 1:
+                with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    results = list(executor.map(self._extract_nested_task, batch))
+            else:
+                results = [self._extract_nested_task(task) for task in batch]
 
-                    if self.is_compressed(f):
-                        file_path = Path(root) / f
-                        relative_parent = Path(root).relative_to(dest_dir)
-                        target_dir = dest_dir / relative_parent / f"{f}_extracted"
-                        if target_dir.exists():
-                            continue
-                        try:
-                            self._extract_single(file_path, target_dir, extracted_files)
-                        except Exception as e:
-                            logger.warning("解压失败 %s: %s", file_path, e)
-                            # 清理失败时可能已创建的空目录，避免阻止后续重试
-                            if target_dir.is_dir() and not any(target_dir.iterdir()):
-                                target_dir.rmdir()
-                            continue
-                        this_pass.append(str(file_path.relative_to(dest_dir)))
-                        changed = True
+            for source_path, new_files in results:
+                if new_files:
+                    extracted_files.extend(new_files)
+                    this_pass.append(str(source_path.relative_to(dest_dir)))
+                for file_name in new_files:
+                    _enqueue(Path(file_name))
+
             pass_log.append(this_pass)
             if passes > MAX_RECURSIVE_PASSES:
                 logger.warning(
@@ -173,6 +167,58 @@ class Decompressor:
                 break
 
         return extracted_files
+
+    def _nested_task(
+        self,
+        file_path: Path,
+        dest_dir: Path,
+        expand_gz: bool,
+    ) -> tuple[Path, Path, bool, Path | None] | None:
+        if not file_path.is_file():
+            return None
+
+        lower_name = file_path.name.lower()
+        is_plain_gz = (
+            lower_name.endswith(".gz")
+            and not lower_name.endswith(".tar.gz")
+            and not lower_name.endswith(".tgz")
+        )
+        if is_plain_gz:
+            if not expand_gz:
+                return None
+            output_path = file_path.parent / file_path.stem
+            if output_path.exists():
+                return None
+            return (file_path, file_path.parent, True, output_path)
+
+        if not self.is_compressed(file_path.name):
+            return None
+
+        try:
+            relative_parent = file_path.parent.relative_to(dest_dir)
+        except ValueError:
+            relative_parent = Path()
+        target_dir = dest_dir / relative_parent / f"{file_path.name}_extracted"
+        if target_dir.exists():
+            return None
+        return (file_path, target_dir, False, None)
+
+    def _extract_nested_task(
+        self,
+        task: tuple[Path, Path, bool, Path | None],
+    ) -> tuple[Path, list[str]]:
+        file_path, target_dir, is_plain_gz, plain_output = task
+        extracted: list[str] = []
+        try:
+            self._extract_single(file_path, target_dir, extracted)
+        except Exception as e:
+            logger.warning("解压失败 %s: %s", file_path, e)
+            if is_plain_gz and plain_output and plain_output.is_file():
+                plain_output.unlink()
+            elif target_dir.is_dir() and not any(target_dir.iterdir()):
+                target_dir.rmdir()
+            return file_path, []
+        return file_path, extracted
 
     def _extract_single(self, source: Path, dest_dir: Path, extracted_files: list[str]) -> None:
         if source.stat().st_size == 0:

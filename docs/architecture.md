@@ -56,5 +56,5 @@ flowchart TD
 - `DirectoryDiscoveryPlugin`：只扫描统一解压后的工作区，发现 slot、诊断日志和 private/journal 日志。
 - `LogParserPlugin`：负责产品级解析编排，提取基础时间戳、构建 `ActivePeriod`，并加载机制模块插件。
 - `MechanismModulePlugin`：机制模块自己的扩展点。`module1` 自己拥有特殊日志扫描、周期切分和主控角色信号。
-- `module2`：诊断日志-only 机制模块，依赖 `module1` 的生命周期结果；CPU 日志优先落到同 slot、同板卡周期下的嵌套 CPU 周期，无法匹配 CPU 周期时进入 `cpu_<id>/unknown/`。
-- `MechOutputWriter` / `MetadataGenerator`：负责结构化输出落盘；日志路径为 `slot_<id>/<board_cycle>/<proc>.log` 或 `slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>.log`。
+- `module2`：诊断日志-only 机制模块，依赖 `module1` 的生命周期结果；CPU 日志优先落到同 slot、同板卡周期下的嵌套 CPU 周期，无法匹配 CPU 周期但能匹配板卡周期时显式生成 `cpu_<id>/unknown/`。
+- `MechOutputWriter` / `MetadataGenerator`：负责结构化输出落盘；日志路径为 `slot_<id>/<board_cycle>/<proc>[~P<pid>].log`、`slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>[~P<pid>].log`，或兼容的 `slot_<id>/<board_cycle>/cpu_<id>/<proc>[~P<pid>].log`。

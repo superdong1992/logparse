@@ -12,6 +12,83 @@ from backend.config_validation import validate_config, validate_mechanism_module
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _minimal_valid_config() -> dict:
+    return {
+        "products": {
+            "default": {
+                "discovery": {
+                    "plugin": "backend.plugins.default.scanner.ScannerPlugin",
+                    "config": {},
+                },
+                "log_parser": {
+                    "plugin": "backend.plugins.default.parser.ParserPlugin",
+                    "config": {"timestamp_regex": r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"},
+                },
+            },
+        },
+    }
+
+
+class TestValidatePipelineConfig:
+    def test_valid_pipeline_performance_options(self):
+        cfg = _minimal_valid_config()
+        cfg["pipeline"] = {
+            "debug_expand_gz": False,
+            "extraction_workers": "auto",
+            "diagnostic_scan_workers": 4,
+        }
+
+        assert validate_config(cfg) == []
+
+    def test_rejects_invalid_worker_count(self):
+        cfg = _minimal_valid_config()
+        cfg["pipeline"] = {
+            "extraction_workers": 0,
+            "diagnostic_scan_workers": "many",
+        }
+
+        errors = validate_config(cfg)
+
+        assert "pipeline.extraction_workers" in errors[0]
+        assert "pipeline.diagnostic_scan_workers" in errors[1]
+
+    def test_rejects_unbounded_worker_count(self):
+        cfg = _minimal_valid_config()
+        cfg["pipeline"] = {"extraction_workers": 999999}
+
+        errors = validate_config(cfg)
+
+        assert errors == ["pipeline.extraction_workers must be 'auto' or a positive integer"]
+
+    def test_rejects_boolean_worker_count(self):
+        cfg = _minimal_valid_config()
+        cfg["pipeline"] = {
+            "extraction_workers": True,
+            "diagnostic_scan_workers": False,
+        }
+
+        errors = validate_config(cfg)
+
+        assert "pipeline.extraction_workers" in errors[0]
+        assert "pipeline.diagnostic_scan_workers" in errors[1]
+
+    def test_rejects_non_boolean_debug_expand_gz(self):
+        cfg = _minimal_valid_config()
+        cfg["pipeline"] = {"debug_expand_gz": "false"}
+
+        errors = validate_config(cfg)
+
+        assert errors == ["pipeline.debug_expand_gz must be a boolean"]
+
+    def test_rejects_null_pipeline_config(self):
+        cfg = _minimal_valid_config()
+        cfg["pipeline"] = None
+
+        errors = validate_config(cfg)
+
+        assert errors == ["pipeline must be an object"]
+
+
 class TestValidateMechanismModuleConfig:
     def test_valid_config_no_errors(self):
         cfg = {

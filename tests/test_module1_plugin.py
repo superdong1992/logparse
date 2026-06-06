@@ -21,7 +21,7 @@ def _module1_config() -> dict:
         "module_name": "EXAMPLE",
         "diag_pattern": (
             r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?"
-            r"CPU-Id=(?P<CPU_Id>[^;,)]+).*?"
+            r"CPU-Id=(?P<CPU_Id>[^;,)]*).*?"
             r"ProcessName=(?P<ProcessName>[^;,)]+).*?"
             r"Context=(?P<Context>.+?)\)$"
         ),
@@ -68,6 +68,30 @@ def test_module1_plugin_parses_diag_entries(tmp_path):
     assert mech.diag_entry_count == 1
     assert mech.active_master_slots == ["1"]
     assert mech.slots[0].board_cycles[0].processes[0].process_name == "SERVICE"
+
+
+def test_module1_empty_cpu_id_is_board_level(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        "2026-01-03T00:01:00 EXAMPLE Service=SERVICE; Slot=1; CPU-Id=; "
+        "ProcessName=SERVICE-12345; Context=No[1] ACTIVE)\n",
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(diagnostic_slots=[slot])
+    plugin = Module1Plugin(
+        _module1_config(),
+        module_key="module1",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    proc = mech.slots[0].board_cycles[0].processes[0]
+    assert proc.logs[0].cpu_id == ""
+    assert proc.logs[0].context == "No[1] ACTIVE"
 
 
 def test_module1_plugin_emits_perf_logs_with_elapsed(tmp_path, caplog):

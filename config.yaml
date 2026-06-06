@@ -16,7 +16,9 @@ pipeline:
   inner_extraction: true       # [通常不改] 是否解压诊断日志内层 .zip
   generate_metadata: true      # [通常不改] 是否生成 metadata.json
   output_base_dir: "./output"  # [按需修改] 输出根目录
-  debug_expand_gz: true        # [通常不改] 解析过程中将 .gz 日志就地展开，便于全文搜索
+  debug_expand_gz: false       # [通常不改] 正式解析不展开普通 .gz；人工全文搜索用 --debug-expand-gz
+  extraction_workers: "auto"   # [按需修改] 内层归档并行解压 worker：auto/1/N，N<=32
+  diagnostic_scan_workers: "auto" # [按需修改] 诊断日志共享扫描 worker：auto/1/N，N<=32
   result_json_mode: "compact"  # [按需修改] result.json 模式：compact=轻量摘要，full=完整对象
   cleanup_extracted: false     # [按需修改] 解析完成后是否删除 extracted/ 工作区
   cleanup_inner_archives: false # [按需修改] 保留 extracted/ 时，是否删除已展开的内层 zip/tar 副本
@@ -71,7 +73,7 @@ products:
               # [按需修改] 诊断日志匹配正则
               # 必须含命名组：Slot, CPU_Id, ProcessName, Context
               # 可用 test-pattern 命令验证是否匹配
-              diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]+).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
+              diag_pattern: 'Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]*).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$'
 
               # [按需修改] 主控判定关键字（正则），命中 Context 时该 Slot 判为 ACTIVE
               # 留空则仅靠 ActivePeriod 兜底判定
@@ -150,7 +152,7 @@ products:
               module_name: "MODULE2"
               identifying_keyword: "xxx"
               depends_on_module: "module1"
-              diag_pattern: 'Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>\d+),ProcessName=(?P<ProcessName>[^,]+),Context="(?P<Context>.*?)"'
+              diag_pattern: 'Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>[^,]*),ProcessName=(?P<ProcessName>[^,]+),Context="(?P<Context>.*?)"'
 
   # ── compact 产品示例 ──────────────────────────────────
   # 演示不同目录布局（boards/ + logs/）如何复用默认 ParserPlugin

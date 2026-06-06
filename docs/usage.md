@@ -15,6 +15,7 @@
 - 安全压缩包解压
 - Windows UTF-8 终端支持
 - 轻量 `result.json` 和解析后清理配置
+- 大包性能 profile 与结构化 `performance.json`
 
 ---
 
@@ -160,6 +161,7 @@ python cli.py parse compact_package_20260103.zip \
 | `--output` | 输出目录 |
 | `--product` | 产品类型 |
 | `--config` | 配置文件路径 |
+| `--profile` | 生成 `performance.json` 并打印性能摘要 |
 | `--debug-expand-gz` | 调试用：额外展开普通 `.gz` 日志 |
 
 ---
@@ -199,7 +201,7 @@ python cli.py parse xxx.zip \
 开启后，可能会额外生成：
 
 ```text
-journal.log.1.gz_extracted/
+journal.log.1
 ```
 
 或其他用于人工查看的展开文件。
@@ -211,6 +213,35 @@ journal.log.1.gz_extracted/
 - 日志内容比对
 
 不建议在正式批量解析中长期打开。
+
+---
+
+# 大包性能 profile
+
+隔离环境中的真实日志包通常不能交给 AI agent。排查 2GB 级大包性能时，由人类在隔离环境运行：
+
+```bash
+python cli.py parse diagnostic_information_20260103.zip \
+  --output output_optimized \
+  --product default \
+  --profile
+```
+
+该命令会生成：
+
+```text
+output_optimized/{task_id}/performance.json
+```
+
+`performance.json` 只记录阶段耗时、文件数、行数、module 命中数和配置快照，不记录原始日志行、raw 片段或敏感 context。stdout 只用于查看总耗时和慢阶段摘要；完整阶段树以 JSON 为准。
+
+对比优化前后业务输出：
+
+```bash
+python scripts/compare_parse_outputs.py output_baseline output_optimized
+```
+
+脚本会忽略 `performance.json` 与 `extracted/`，只比较 `result.json`、`metadata.json` 和 `mech_modules/` 等业务输出。
 
 ---
 
@@ -351,7 +382,8 @@ python cli.py mech-logs diagnostic_information_20260103 \
   --output output \
   -s 1 \
   -c 20260103T000100-20260103T000200 \
-  -p SERVICE-12345
+  -p SERVICE \
+  --pid 12345
 ```
 
 指定机制模块：
@@ -361,7 +393,8 @@ python cli.py mech-logs diagnostic_information_20260103 \
   --output output \
   -s 1 \
   -c 20260103T000100-20260103T000200 \
-  -p SERVICE-12345 \
+  -p SERVICE \
+  --pid 12345 \
   --module EXAMPLE
 ```
 
@@ -372,7 +405,8 @@ python cli.py mech-logs diagnostic_information_20260103 \
   --output output \
   -s 1 \
   -c 20260103T000100-20260103T000200 \
-  -p SERVICE-12345 \
+  -p SERVICE \
+  --pid 12345 \
   --module EXAMPLE \
   --cpu 1 \
   --cpu-cycle 20260103T000130-20260103T000180
@@ -384,10 +418,11 @@ python cli.py mech-logs diagnostic_information_20260103 \
 |---|---|
 | `-s / --slot` | slot 编号 |
 | `-c / --cycle` | 板卡周期目录名 |
-| `-p / --proc` | 进程名-PID 文件名前缀 |
+| `-p / --proc` | 进程名；PID 使用 `--pid` |
+| `--pid` | PID；提供时与 `--proc` 组合定位日志 |
 | `--module` | 机制模块名；`mech-logs` 不传时默认取第一个机制模块 |
 | `--cpu` | CPU ID；查询 CPU 日志时传入 |
-| `--cpu-cycle` | CPU 周期目录名；查询 CPU 日志时传入，不传则落到 `unknown` |
+| `--cpu-cycle` | CPU 周期目录名；查询嵌套 CPU 周期日志时传入；只传 `--cpu` 时查询 `cpu_<id>/<proc>[~P<pid>].log` 兼容路径 |
 
 ---
 
@@ -400,14 +435,15 @@ output/
 └── diagnostic_information_20260103/
     ├── extracted/                 # cleanup_extracted=true 时不保留
     ├── result.json
+    ├── metadata.json
     └── mech_modules/
         └── EXAMPLE/
             └── slot_1/
                 └── 20260103T000100-20260103T000200/
-                    ├── SERVICE-12345.log
+                    ├── SERVICE~P12345.log
                     └── cpu_1/
                         └── 20260103T000130-20260103T000180/
-                            └── TASK-888.log
+                            └── TASK~P888.log
 ```
 
 目录说明：
@@ -416,9 +452,10 @@ output/
 |---|---|
 | `extracted/` | 原始解压目录；`pipeline.cleanup_extracted: true` 时解析完成后删除 |
 | `result.json` | 结构化解析结果；默认 compact 摘要，不重复保存每条 raw 日志 |
+| `metadata.json` | 解析任务元数据和 slot/module 摘要 |
 | `mech_modules/` | 机制模块日志拆分结果 |
 
-机制模块日志使用板卡周期作为顶层目录。板卡日志直接写到板卡周期下；CPU 日志写到 `cpu_<id>/<cpu_cycle>/`，如果只匹配到板卡周期但没有匹配到 CPU 周期，则进入 `cpu_<id>/unknown/`。
+机制模块日志使用板卡周期作为顶层目录。板卡日志直接写到板卡周期下；CPU 日志写到 `cpu_<id>/<cpu_cycle>/`。若机制模块把 CPU 日志作为板卡周期 process 输出但带有 `cpu_id`，兼容落盘路径为 `cpu_<id>/<proc>[~P<pid>].log`；若模块显式生成 `cpu_cycle.dir_name="unknown"`，则落到 `cpu_<id>/unknown/<proc>[~P<pid>].log`。
 
 ---
 
@@ -430,6 +467,8 @@ output/
 pipeline:
   recursive_extraction: true
   debug_expand_gz: false
+  extraction_workers: "auto"
+  diagnostic_scan_workers: "auto"
   result_json_mode: "compact"
   cleanup_extracted: false
   cleanup_inner_archives: false
@@ -437,23 +476,26 @@ pipeline:
 products:
   default:
     discovery:
-      plugin: default
+      plugin: "backend.plugins.default.scanner.ScannerPlugin"
       config:
-        diag_dir_names:
-          - diagnostic_log
-        varlog_dir_names:
-          - varlog
+        diagnostic_dir: "diag"
+        private_dir: "varlog"
+        slot_dir_pattern: "slot_*"
+        diag_file_patterns:
+          - "diag.zip"
 
     log_parser:
-      plugin: default
+      plugin: "backend.plugins.default.parser.ParserPlugin"
       config:
-        timestamp_patterns:
-          - "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"
+        timestamp_regex: "(\\d{4}-\\d{1,2}-\\d{1,2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)([+-]\\d{2}:\\d{2})?"
 
         mechanism_modules:
           example:
-            module_name: EXAMPLE
-            diag_pattern: "..."
+            plugin: "backend.plugins.mechanisms.module1.Module1Plugin"
+            enabled: true
+            config:
+              module_name: "EXAMPLE"
+              diag_pattern: "..."
 ```
 
 主要字段：
@@ -462,6 +504,8 @@ products:
 |---|---|
 | `pipeline.recursive_extraction` | 是否递归解压归档压缩包 |
 | `pipeline.debug_expand_gz` | 是否调试展开普通 `.gz` 日志 |
+| `pipeline.extraction_workers` | 内层归档并行解压 worker：`auto` / `1` / 正整数，最大 32 |
+| `pipeline.diagnostic_scan_workers` | 诊断日志共享扫描 worker：`auto` / `1` / 正整数，最大 32 |
 | `pipeline.result_json_mode` | `compact` 写轻量结果摘要；`full` 写完整 ParseResult |
 | `pipeline.cleanup_extracted` | 解析完成后是否删除整个 `extracted/` 工作区 |
 | `pipeline.cleanup_inner_archives` | 保留 `extracted/` 时，是否删除已有 `_extracted/` 目录的内层归档副本 |
@@ -469,7 +513,7 @@ products:
 | `discovery` | 日志发现插件 |
 | `log_parser` | 日志解析插件 |
 | `mechanism_modules` | 机制模块配置 |
-| `timestamp_patterns` | 时间戳正则 |
+| `timestamp_regex` | 时间戳正则 |
 
 ---
 
@@ -511,7 +555,8 @@ python cli.py mech-logs diagnostic_information_20260103 \
   --output output \
   -s 1 \
   -c 20260103T000100-20260103T000200 \
-  -p SERVICE-12345
+  -p SERVICE \
+  --pid 12345
 ```
 
 ---

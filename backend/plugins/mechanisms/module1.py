@@ -29,6 +29,31 @@ class Module1Plugin(MechanismModulePlugin):
     def validate_config(cls, module_key: str, config: dict[str, Any]) -> list[str]:
         return validate_mechanism_module_config(module_key, config)
 
+    def build_diagnostic_line_scanner(self):
+        cfg = self.config
+        errors = self.validate_config(self.module_key, cfg)
+        if errors or not cfg.get("diag_pattern"):
+            return None
+
+        module_name: str = cfg["module_name"]
+        diag_re = re.compile(cfg["diag_pattern"])
+        seq_re = re.compile(cfg.get("sequence_pattern", r"No\[(\d+)\]"))
+        master_keyword = (
+            re.compile(cfg["active_master_keyword"])
+            if cfg.get("active_master_keyword")
+            else None
+        )
+        resolver = ProcessNameResolver(cfg.get("process_name_mapping", {}))
+        scanner = MechDiagScanner(
+            diag_re,
+            seq_re,
+            master_keyword,
+            resolver,
+            module_name.upper(),
+            self.ts_extractor,
+        )
+        return scanner.scan_line
+
     def parse(self, result: ParseResult) -> MechResult | None:
         cfg = self.config
         errors = self.validate_config(self.module_key, cfg)
@@ -92,7 +117,12 @@ class Module1Plugin(MechanismModulePlugin):
         diag_t0 = time.perf_counter()
         diag_file_count = 0
         diag_entry_count = 0
-        if diag_re:
+        precomputed_diag_entries = getattr(self, "_precomputed_diagnostic_entries", None)
+        if precomputed_diag_entries is not None:
+            diag_file_count = int(getattr(self, "_precomputed_diagnostic_file_count", 0))
+            all_entries.extend(list(precomputed_diag_entries))
+            diag_entry_count = len(precomputed_diag_entries)
+        elif diag_re:
             diag_scanner = MechDiagScanner(
                 diag_re,
                 seq_re,

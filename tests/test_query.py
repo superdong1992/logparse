@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from backend.query import ResultQueryService
+from backend.utils import safe_log_filename, safe_path_segment
 
 
 @pytest.fixture
@@ -45,32 +46,97 @@ class TestMechLogPath:
         (task_dir / "result.json").write_text(json.dumps({
             "mech_results": [{"module_name": "EXAMPLE"}]
         }), encoding="utf-8")
-        path = svc.mech_log_path("task1", "1", "cycle1", "PROC-123")
-        assert path == task_dir / "mech_modules" / "EXAMPLE" / "slot_1" / "cycle1" / "PROC-123.log"
+        path = svc.mech_log_path("task1", "1", "cycle1", "PROC", pid="123")
+        assert path == (
+            task_dir / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("cycle1") / safe_log_filename("PROC", "123")
+        )
 
     def test_explicit_module_name(self, svc, tmp_path):
-        path = svc.mech_log_path("task1", "2", "cycle1", "PROC-456", module_name="OTHER")
-        assert path == tmp_path / "task1" / "mech_modules" / "OTHER" / "slot_2" / "cycle1" / "PROC-456.log"
+        path = svc.mech_log_path("task1", "2", "cycle1", "PROC", module_name="OTHER", pid="456")
+        assert path == (
+            tmp_path / "task1" / "mech_modules" / safe_path_segment("OTHER") / "slot_2"
+            / safe_path_segment("cycle1") / safe_log_filename("PROC", "456")
+        )
+
+    def test_path_escapes_slot_separator(self, svc, tmp_path):
+        path = svc.mech_log_path("task1", "1/2", "cycle1", "PROC", module_name="OTHER", pid="456")
+        assert path == (
+            tmp_path / "task1" / "mech_modules" / safe_path_segment("OTHER")
+            / f"slot_{safe_path_segment('1/2')}" / safe_path_segment("cycle1")
+            / safe_log_filename("PROC", "456")
+        )
+
+    def test_path_escapes_module_name_separator(self, svc, tmp_path):
+        path = svc.mech_log_path("task1", "1", "cycle1", "PROC", module_name=r"..\..\OTHER", pid="456")
+        assert path == (
+            tmp_path
+            / "task1"
+            / "mech_modules"
+            / safe_path_segment(r"..\..\OTHER")
+            / "slot_1"
+            / safe_path_segment("cycle1")
+            / safe_log_filename("PROC", "456")
+        )
 
     def test_cpu_cycle_path(self, svc, tmp_path):
         path = svc.mech_log_path(
             "task1",
             "2",
             "board-cycle",
-            "PROC-456",
+            "PROC",
             module_name="OTHER",
             cpu_id="3",
             cpu_cycle="cpu-cycle",
+            pid="456",
         )
         assert path == (
-            tmp_path / "task1" / "mech_modules" / "OTHER" / "slot_2"
-            / "board-cycle" / "cpu_3" / "cpu-cycle" / "PROC-456.log"
+            tmp_path / "task1" / "mech_modules" / safe_path_segment("OTHER") / "slot_2"
+            / safe_path_segment("board-cycle") / "cpu_3" / safe_path_segment("cpu-cycle")
+            / safe_log_filename("PROC", "456")
+        )
+
+    def test_cpu_without_cpu_cycle_uses_writer_compat_path(self, svc, tmp_path):
+        path = svc.mech_log_path(
+            "task1",
+            "2",
+            "board-cycle",
+            "PROC",
+            module_name="OTHER",
+            cpu_id="3",
+            pid="456",
+        )
+        assert path == (
+            tmp_path / "task1" / "mech_modules" / safe_path_segment("OTHER") / "slot_2"
+            / safe_path_segment("board-cycle") / "cpu_3" / safe_log_filename("PROC", "456")
         )
 
     def test_fallback_without_module_name(self, svc, tmp_path):
         # No result.json → module_name is None → fallback path
-        path = svc.mech_log_path("task1", "1", "cycle1", "PROC-123")
-        assert path == tmp_path / "task1" / "mech_modules" / "slot_1" / "cycle1" / "PROC-123.log"
+        path = svc.mech_log_path("task1", "1", "cycle1", "PROC", pid="123")
+        assert path == (
+            tmp_path / "task1" / "mech_modules" / "slot_1"
+            / safe_path_segment("cycle1") / safe_log_filename("PROC", "123")
+        )
+
+    def test_proc_argument_without_pid_is_exact_process_name(self, svc, tmp_path):
+        path = svc.mech_log_path("task1", "1", "cycle1", "svc-100", module_name="OTHER")
+        assert path == (
+            tmp_path / "task1" / "mech_modules" / safe_path_segment("OTHER") / "slot_1"
+            / safe_path_segment("cycle1") / safe_log_filename("svc-100", "")
+        )
+
+    def test_proc_argument_without_pid_does_not_fall_back_to_dash_pid(self, svc, tmp_path):
+        base = (
+            tmp_path / "task1" / "mech_modules" / safe_path_segment("OTHER") / "slot_1"
+            / safe_path_segment("cycle1")
+        )
+        base.mkdir(parents=True)
+        (base / safe_log_filename("svc", "100")).write_text("with pid\n", encoding="utf-8")
+
+        path = svc.mech_log_path("task1", "1", "cycle1", "svc-100", module_name="OTHER")
+
+        assert path == base / safe_log_filename("svc-100", "")
 
 
 def _write_result(tmp_path, task_id, mech_results):
@@ -122,11 +188,18 @@ def _write_mech_log(
     cpu_id=None,
     cpu_cycle=None,
 ):
-    log_dir = tmp_path / task_id / "mech_modules" / module_name / f"slot_{slot}" / board_cycle
+    log_dir = (
+        tmp_path
+        / task_id
+        / "mech_modules"
+        / safe_path_segment(module_name)
+        / f"slot_{safe_path_segment(slot)}"
+        / safe_path_segment(board_cycle)
+    )
     if cpu_id:
-        log_dir = log_dir / f"cpu_{cpu_id}"
+        log_dir = log_dir / f"cpu_{safe_path_segment(cpu_id)}"
         if cpu_cycle:
-            log_dir = log_dir / cpu_cycle
+            log_dir = log_dir / safe_path_segment(cpu_cycle)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / proc_file
     log_path.write_text("matched log\n", encoding="utf-8")
@@ -296,7 +369,7 @@ class TestResolveTargetLogs:
             "EXAMPLE",
             "1",
             "20260103T000000-20260103T001000",
-            "SERVICE-123.log",
+            safe_log_filename("SERVICE", "123"),
         )
 
         payload = svc.resolve_target_logs(
@@ -321,6 +394,138 @@ class TestResolveTargetLogs:
         assert target["cpu_cycle"] is None
         assert target["log_path"] == str(log_path)
 
+    def test_exact_board_cycle_with_slash_slot_uses_safe_output_path(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {
+                "module_key": "module1",
+                "module_name": "EXAMPLE",
+                "slots": [
+                    {
+                        "slot_id": "1/2",
+                        "board_cycles": [
+                            _board_cycle(
+                                "cycle",
+                                "2026-01-03T00:00:00",
+                                "2026-01-03T00:10:00",
+                                [_proc("SERVICE", "123")],
+                            ),
+                        ],
+                    },
+                ],
+            },
+        ])
+        log_path = _write_mech_log(
+            tmp_path,
+            "task",
+            "EXAMPLE",
+            "1/2",
+            "cycle",
+            safe_log_filename("SERVICE", "123"),
+        )
+
+        payload = svc.resolve_target_logs(
+            "task",
+            problem_time="2026-01-03T00:05:00",
+            module="module1",
+            slot="1/2",
+            process_name="SERVICE",
+            pid="123",
+        )
+
+        target = payload["target_logs"][0]
+        assert target["match_status"] == "exact"
+        assert target["slot"] == "1/2"
+        assert target["log_path"] == str(log_path)
+        assert f"slot_{safe_path_segment('1/2')}" in str(log_path)
+
+    def test_exact_board_cycle_with_unsafe_process_uses_safe_filename(self, svc, tmp_path):
+        process_name = r"..\..\escape"
+        pid = "10/20"
+        _write_result(tmp_path, "task", [
+            {
+                "module_key": "module1",
+                "module_name": "EXAMPLE",
+                "slots": [
+                    {
+                        "slot_id": "1",
+                        "board_cycles": [
+                            _board_cycle(
+                                "cycle",
+                                "2026-01-03T00:00:00",
+                                "2026-01-03T00:10:00",
+                                [_proc(process_name, pid)],
+                            ),
+                        ],
+                    },
+                ],
+            },
+        ])
+        log_path = _write_mech_log(
+            tmp_path,
+            "task",
+            "EXAMPLE",
+            "1",
+            "cycle",
+            safe_log_filename(process_name, pid),
+        )
+
+        payload = svc.resolve_target_logs(
+            "task",
+            problem_time="2026-01-03T00:05:00",
+            module="module1",
+            slot="1",
+            process_name=process_name,
+            pid=pid,
+        )
+
+        target = payload["target_logs"][0]
+        assert target["match_status"] == "exact"
+        assert target["log_path"] == str(log_path)
+
+    def test_exact_board_cycle_with_unsafe_module_name_uses_safe_directory(self, svc, tmp_path):
+        module_name = r"..\..\EXAMPLE"
+        _write_result(tmp_path, "task", [
+            {
+                "module_key": "module1",
+                "module_name": module_name,
+                "slots": [
+                    {
+                        "slot_id": "1",
+                        "board_cycles": [
+                            _board_cycle(
+                                "cycle",
+                                "2026-01-03T00:00:00",
+                                "2026-01-03T00:10:00",
+                                [_proc("SERVICE", "123")],
+                            ),
+                        ],
+                    },
+                ],
+            },
+        ])
+        log_path = _write_mech_log(
+            tmp_path,
+            "task",
+            module_name,
+            "1",
+            "cycle",
+            safe_log_filename("SERVICE", "123"),
+        )
+
+        payload = svc.resolve_target_logs(
+            "task",
+            problem_time="2026-01-03T00:05:00",
+            module="module1",
+            slot="1",
+            process_name="SERVICE",
+            pid="123",
+        )
+
+        target = payload["target_logs"][0]
+        assert target["match_status"] == "exact"
+        assert target["log_path"] == str(log_path)
+        assert safe_path_segment(module_name) in str(log_path)
+
     def test_out_of_range_time_uses_unique_nearest_cycle(self, svc, tmp_path):
         _write_result(tmp_path, "task", [
             {
@@ -337,7 +542,14 @@ class TestResolveTargetLogs:
                 ],
             },
         ])
-        log_path = _write_mech_log(tmp_path, "task", "EXAMPLE", "1", "new", "SERVICE-123.log")
+        log_path = _write_mech_log(
+            tmp_path,
+            "task",
+            "EXAMPLE",
+            "1",
+            "new",
+            safe_log_filename("SERVICE", "123"),
+        )
 
         payload = svc.resolve_target_logs(
             "task",
@@ -420,7 +632,7 @@ class TestResolveTargetLogs:
             "EXAMPLE",
             "1",
             "board",
-            "WORKER-777.log",
+            safe_log_filename("WORKER", "777"),
             cpu_id="3",
             cpu_cycle="cpu-window",
         )
@@ -492,7 +704,7 @@ class TestResolveTargetLogs:
             "EXAMPLE",
             "1",
             "cycle",
-            "CPU_PROC-44.log",
+            safe_log_filename("CPU_PROC", "44"),
             cpu_id="2",
         )
 

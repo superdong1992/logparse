@@ -6,6 +6,7 @@ import importlib
 import re
 from typing import Any
 
+from backend.performance import resolve_worker_count
 from backend.plugins.base import DirectoryDiscoveryPlugin, LogParserPlugin
 from backend.plugins.mechanisms.base import MechanismModulePlugin
 
@@ -20,6 +21,7 @@ class ConfigValidationError(ValueError):
 def validate_config(config: dict[str, Any]) -> list[str]:
     """完整配置预飞检查，返回错误列表（空表示通过）。"""
     errors: list[str] = []
+    errors.extend(_validate_pipeline_config(config.get("pipeline", {})))
 
     products = config.get("products")
     if not isinstance(products, dict) or not products:
@@ -28,6 +30,27 @@ def validate_config(config: dict[str, Any]) -> list[str]:
 
     for product_name, product_cfg in products.items():
         errors.extend(_validate_product_config(product_name, product_cfg))
+
+    return errors
+
+
+def _validate_pipeline_config(raw: Any) -> list[str]:
+    if raw is None:
+        return ["pipeline must be an object"]
+    if not isinstance(raw, dict):
+        return ["pipeline must be an object"]
+
+    errors: list[str] = []
+    if "debug_expand_gz" in raw and not isinstance(raw["debug_expand_gz"], bool):
+        errors.append("pipeline.debug_expand_gz must be a boolean")
+
+    for field in ("extraction_workers", "diagnostic_scan_workers"):
+        if field not in raw:
+            continue
+        try:
+            resolve_worker_count(raw[field], default_cap=4)
+        except ValueError:
+            errors.append(f"pipeline.{field} must be 'auto' or a positive integer")
 
     return errors
 

@@ -149,6 +149,42 @@ class TestExtractAll:
         inner_extracted = dest / "inner.zip_extracted"
         assert (inner_extracted / "data.txt").read_text() == "content"
 
+    def test_recursive_processes_new_archive_queue_without_directory_walk(
+        self, decompressor, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "backend.decompressor.os.walk",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no walk")),
+        )
+        inner_zip = tmp_path / "inner.zip"
+        _create_zip(inner_zip, {"data.txt": "content"})
+
+        outer_zip = tmp_path / "outer.zip"
+        with zipfile.ZipFile(outer_zip, "w") as zf:
+            zf.write(inner_zip, "nested/inner.zip")
+
+        dest = tmp_path / "out"
+        decompressor.extract_all(outer_zip, dest, recursive=True)
+
+        assert (dest / "nested" / "inner.zip_extracted" / "data.txt").read_text() == "content"
+
+    def test_recursive_extracts_multiple_inner_archives_with_workers(self, decompressor, tmp_path):
+        inner_a = tmp_path / "inner_a.zip"
+        inner_b = tmp_path / "inner_b.zip"
+        _create_zip(inner_a, {"a.txt": "alpha"})
+        _create_zip(inner_b, {"b.txt": "beta"})
+
+        outer_zip = tmp_path / "outer.zip"
+        with zipfile.ZipFile(outer_zip, "w") as zf:
+            zf.write(inner_a, "nested/inner_a.zip")
+            zf.write(inner_b, "nested/inner_b.zip")
+
+        dest = tmp_path / "out"
+        decompressor.extract_all(outer_zip, dest, recursive=True, workers=2)
+
+        assert (dest / "nested" / "inner_a.zip_extracted" / "a.txt").read_text() == "alpha"
+        assert (dest / "nested" / "inner_b.zip_extracted" / "b.txt").read_text() == "beta"
+
     def test_empty_file_skipped(self, decompressor, tmp_path):
         zip_path = tmp_path / "empty.zip"
         zip_path.write_bytes(b"")

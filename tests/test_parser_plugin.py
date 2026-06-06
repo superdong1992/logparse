@@ -16,13 +16,83 @@ from backend.models import (
     MechLogEntry,
     MechProcessLifecycle,
     MechResult,
+    MechSlotOutput,
     ParseResult,
     PrivateSlotInfo,
     SlotInfo,
 )
+from backend.performance import PerformanceRecorder
 from backend.plugins.default.parser import ParserPlugin
+from backend.plugins.mechanisms.base import MechanismModulePlugin
 from backend.parsing.cycle_detector import CycleDetector
 from backend.parsing.role_identifier import RoleIdentifier
+
+
+class ExplodingDiagnosticScannerPlugin(MechanismModulePlugin):
+    def build_diagnostic_line_scanner(self):
+        def _scanner(line, log_entry, slot_id):
+            raise RuntimeError("scanner boom")
+
+        return _scanner
+
+    def parse(self, result):
+        return None
+
+
+class ExplodingDiagnosticScannerBuilderPlugin(MechanismModulePlugin):
+    def build_diagnostic_line_scanner(self):
+        raise RuntimeError("builder boom")
+
+    def parse(self, result):
+        return None
+
+
+class RecoveringDiagnosticScannerPlugin(MechanismModulePlugin):
+    def build_diagnostic_line_scanner(self):
+        def _scanner(line, log_entry, slot_id):
+            if "boom" in line:
+                raise RuntimeError("recoverable scanner boom")
+            if "RECOVER" not in line:
+                return None
+            return MechLogEntry(
+                timestamp=datetime(2026, 1, 3, 0, 2),
+                source="diagnostic",
+                source_file=f"slot_{slot_id}/{log_entry.name}",
+                slot=slot_id,
+                cpu_id="",
+                process_name="recover",
+                pid="1",
+                context="RECOVER",
+                raw=line.strip(),
+            )
+
+        return _scanner
+
+    def parse(self, result):
+        entries = list(getattr(self, "_precomputed_diagnostic_entries", []))
+        return MechResult(
+            module_name="RECOVER",
+            module_key=self.module_key,
+            diag_entry_count=len(entries),
+            slots=[
+                MechSlotOutput(
+                    slot_id="1",
+                    board_cycles=[
+                        MechBoardCycle(
+                            dir_name="unknown",
+                            processes=[
+                                MechProcessLifecycle(
+                                    process_name="recover",
+                                    pid="1",
+                                    logs=entries,
+                                    total_count=len(entries),
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
 
 
 @pytest.fixture
@@ -280,6 +350,199 @@ class TestMechanismPluginOrchestration:
 
     def test_parser_no_longer_exposes_module_specific_parse_method(self, plugin):
         assert not hasattr(plugin, "_parse_one_mech")
+
+    def test_parser_records_shared_diagnostic_scan_metrics(self, sample_config, tmp_path):
+        log_path = tmp_path / "diag.log"
+        log_path.write_text(
+            "\n".join(
+                [
+                    (
+                        "2026-01-03T00:01:00 EXAMPLE Service=EXAMPLE; Slot=1; "
+                        "CPU-Id=0; ProcessName=SERVICE-12345; Context=No[1] MASTER_ACTIVE)"
+                    ),
+                    (
+                        '2026-01-03T00:01:01 MODULE2 Slot=1,CPU-Id=0,'
+                        'ProcessName=WORKER[777],Context="hello"'
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        config = dict(sample_config)
+        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
+        config["mechanism_modules"]["module2"] = {
+            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+            "enabled": True,
+            "config": {
+                "module_name": "MODULE2",
+                "identifying_keyword": "MODULE2",
+                "depends_on_module": "module1",
+                "diag_pattern": (
+                    r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>[^,]*),"
+                    r"ProcessName=(?P<ProcessName>[^,]+),Context=\"(?P<Context>.*?)\""
+                ),
+            },
+        }
+        plugin = ParserPlugin(config)
+        plugin.performance_recorder = PerformanceRecorder(enabled=True)
+        result = ParseResult(
+            diagnostic_slots=[
+                SlotInfo(
+                    slot_id="1",
+                    name="slot_1",
+                    path=str(tmp_path),
+                    diagnostic_logs=[
+                        LogEntry(path=str(log_path), name=log_path.name, size_bytes=log_path.stat().st_size),
+                    ],
+                )
+            ]
+        )
+
+        plugin.parse(result)
+        perf = plugin.performance_recorder.to_dict()
+        shared = next(stage for stage in perf["stages"] if stage["name"] == "diagnostic_scan.shared")
+
+        assert shared["metrics"]["files"] == 1
+        assert shared["metrics"]["lines"] == 2
+        assert shared["metrics"]["timestamps"] == 2
+        assert shared["metrics"]["module1_entries"] == 1
+        assert shared["metrics"]["module2_entries"] == 1
+
+    def test_shared_scan_isolates_module_scanner_errors(self, sample_config, tmp_path):
+        log_path = tmp_path / "diag.log"
+        log_path.write_text(
+            (
+                "2026-01-03T00:01:00 EXAMPLE Service=EXAMPLE; Slot=1; "
+                "CPU-Id=0; ProcessName=SERVICE-12345; Context=No[1] MASTER_ACTIVE)\n"
+            ),
+            encoding="utf-8",
+        )
+        config = dict(sample_config)
+        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
+        config["mechanism_modules"]["bad_module"] = {
+            "plugin": "tests.test_parser_plugin.ExplodingDiagnosticScannerPlugin",
+            "enabled": True,
+            "config": {},
+        }
+        result = ParseResult(
+            diagnostic_slots=[
+                SlotInfo(
+                    slot_id="1",
+                    name="slot_1",
+                    path=str(tmp_path),
+                    diagnostic_logs=[
+                        LogEntry(path=str(log_path), name=log_path.name, size_bytes=log_path.stat().st_size),
+                    ],
+                )
+            ]
+        )
+
+        ParserPlugin(config).parse(result)
+
+        assert result.diagnostic_slots[0].diagnostic_logs[0].content_timestamps
+        assert any(mech.module_key == "module1" for mech in result.mech_results)
+        assert any("bad_module" in error and "shared diagnostic scan" in error for error in result.errors)
+
+    def test_shared_scan_continues_module_after_scanner_line_error(self, sample_config, tmp_path):
+        log_path = tmp_path / "diag.log"
+        log_path.write_text(
+            (
+                "2026-01-03T00:01:00 boom\n"
+                "2026-01-03T00:02:00 RECOVER\n"
+            ),
+            encoding="utf-8",
+        )
+        config = dict(sample_config)
+        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
+        config["mechanism_modules"]["recover"] = {
+            "plugin": "tests.test_parser_plugin.RecoveringDiagnosticScannerPlugin",
+            "enabled": True,
+            "config": {},
+        }
+        result = ParseResult(
+            diagnostic_slots=[
+                SlotInfo(
+                    slot_id="1",
+                    name="slot_1",
+                    path=str(tmp_path),
+                    diagnostic_logs=[
+                        LogEntry(path=str(log_path), name=log_path.name, size_bytes=log_path.stat().st_size),
+                    ],
+                )
+            ]
+        )
+
+        ParserPlugin(config).parse(result)
+
+        recover = next(mech for mech in result.mech_results if mech.module_key == "recover")
+        assert recover.diag_entry_count == 1
+        assert any("recover" in error and "shared diagnostic scan" in error for error in result.errors)
+
+    def test_shared_scan_preserves_sorted_content_timestamps(self, sample_config, tmp_path):
+        log_path = tmp_path / "diag.log"
+        log_path.write_text(
+            (
+                "2026-01-03T00:02:00 EXAMPLE later\n"
+                "2026-01-03T00:01:00 EXAMPLE earlier\n"
+            ),
+            encoding="utf-8",
+        )
+        result = ParseResult(
+            diagnostic_slots=[
+                SlotInfo(
+                    slot_id="1",
+                    name="slot_1",
+                    path=str(tmp_path),
+                    diagnostic_logs=[
+                        LogEntry(path=str(log_path), name=log_path.name, size_bytes=log_path.stat().st_size),
+                    ],
+                )
+            ]
+        )
+
+        ParserPlugin(sample_config).parse(result)
+
+        timestamps = result.diagnostic_slots[0].diagnostic_logs[0].content_timestamps
+        assert [ts.isoformat() for ts in timestamps] == [
+            "2026-01-03T00:01:00",
+            "2026-01-03T00:02:00",
+        ]
+
+    def test_shared_scan_isolates_module_scanner_builder_errors(self, sample_config, tmp_path):
+        log_path = tmp_path / "diag.log"
+        log_path.write_text(
+            (
+                "2026-01-03T00:01:00 EXAMPLE Service=EXAMPLE; Slot=1; "
+                "CPU-Id=0; ProcessName=SERVICE-12345; Context=No[1] MASTER_ACTIVE)\n"
+            ),
+            encoding="utf-8",
+        )
+        config = dict(sample_config)
+        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
+        config["mechanism_modules"]["bad_builder"] = {
+            "plugin": "tests.test_parser_plugin.ExplodingDiagnosticScannerBuilderPlugin",
+            "enabled": True,
+            "config": {},
+        }
+        result = ParseResult(
+            diagnostic_slots=[
+                SlotInfo(
+                    slot_id="1",
+                    name="slot_1",
+                    path=str(tmp_path),
+                    diagnostic_logs=[
+                        LogEntry(path=str(log_path), name=log_path.name, size_bytes=log_path.stat().st_size),
+                    ],
+                )
+            ]
+        )
+
+        ParserPlugin(config).parse(result)
+
+        assert result.diagnostic_slots[0].diagnostic_logs[0].content_timestamps
+        assert any(mech.module_key == "module1" for mech in result.mech_results)
+        assert any("bad_builder" in error and "shared diagnostic scanner setup" in error for error in result.errors)
 
 
 class TestFmtDir:

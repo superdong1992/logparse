@@ -14,7 +14,7 @@ Checklist:
 
 - `CPU_Id=0 is board-level`.
 - Empty `cpu_id` is board-level.
-- Only non-zero CPU ids produce nested `cpu_<id>/<cpu_cycle>/...` output.
+- Only non-zero CPU ids produce CPU-specific `cpu_<id>/...` output.
 - Do not treat `slot_1_cpu_0` or `CPU_Id=0` as proof of a CPU-local lifecycle.
 
 ## rules:nested-cycle-output
@@ -27,7 +27,7 @@ Checklist:
 - Board cycles are the top-level lifecycle output.
 - CPU cycles are nested under the matching board cycle.
 - Board-level process logs live directly under the board cycle directory.
-- CPU process logs live under `cpu_<id>/<cpu_cycle>/`.
+- CPU-cycle process logs live under `cpu_<id>/<cpu_cycle>/`; board-cycle processes that directly carry `cpu_id` use the compatibility path `cpu_<id>/<proc>[~P<pid>].log`.
 
 ## rules:module2-upstream-lifecycle
 

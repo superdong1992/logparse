@@ -1600,10 +1600,10 @@ class CycleDetector:
             if key in seen_proc:
                 continue
             seen_proc.add(key)
-            proc_arg = f"{proc}-{pid}" if pid else proc
+            pid_arg = f" --pid {pid}" if pid else ""
             cmd = (
                 f"python cli.py mech-logs <task_id> -s {slot or '-'} "
-                f"-c <board_cycle> -p {proc_arg} -m {module_name}"
+                f"-c <board_cycle> -p {proc}{pid_arg} -m {module_name}"
             )
             if cpu:
                 cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"
@@ -1621,10 +1621,10 @@ class CycleDetector:
                 if not proc or key in seen_proc:
                     continue
                 seen_proc.add(key)
-                proc_arg = f"{proc}-{pid}" if pid else proc
+                pid_arg = f" --pid {pid}" if pid else ""
                 cmd = (
                     f"python cli.py mech-logs <task_id> -s {boundary_slot} "
-                    f"-c <board_cycle> -p {proc_arg} -m {module_name}"
+                    f"-c <board_cycle> -p {proc}{pid_arg} -m {module_name}"
                 )
                 if cpu:
                     cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"
@@ -1638,10 +1638,10 @@ class CycleDetector:
             if not proc or key in seen_proc:
                 continue
             seen_proc.add(key)
-            proc_arg = f"{proc}-{pid}" if pid else proc
+            pid_arg = f" --pid {pid}" if pid else ""
             cmd = (
                 f"python cli.py mech-logs <task_id> -s {evidence_slot} "
-                f"-c <board_cycle> -p {proc_arg} -m {module_name}"
+                f"-c <board_cycle> -p {proc}{pid_arg} -m {module_name}"
             )
             if cpu:
                 cmd += f" --cpu {cpu} --cpu-cycle <cpu_cycle>"

@@ -35,37 +35,47 @@ class MechDiagScanner:
         entries: list[MechLogEntry] = []
 
         for line in iter_log_entry_lines(log_entry):
-            if self._mod_upper not in line:
-                continue
-            m = self._diag_re.search(line)
-            if not m:
-                continue
-
-            slot = m.group("Slot")
-            cpu_id = m.group("CPU_Id")
-            if cpu_id == "0":
-                cpu_id = ""
-            raw_proc_name = m.group("ProcessName")
-            context = m.group("Context")
-
-            proc_name, pid = self._resolver.parse_diag_process_name(raw_proc_name)
-
-            seq = self._extract_sequence(line)
-
-            is_active = bool(self._master_keyword and self._master_keyword.search(context))
-            ts = self._extract_first_ts(line)
-
-            src_file = f"slot_{slot_id}/{log_entry.name}"
-            entries.append(MechLogEntry(
-                timestamp=ts, source="diagnostic",
-                source_file=src_file,
-                slot=slot, cpu_id=cpu_id,
-                process_name=proc_name, pid=pid,
-                context=context, sequence=seq,
-                is_active_signal=is_active, raw=line.strip()[:500],
-            ))
+            entry = self.scan_line(line, log_entry, slot_id)
+            if entry:
+                entries.append(entry)
 
         return entries
+
+    def scan_line(
+        self,
+        line: str,
+        log_entry: LogEntry,
+        slot_id: str,
+    ) -> MechLogEntry | None:
+        if self._mod_upper not in line:
+            return None
+        m = self._diag_re.search(line)
+        if not m:
+            return None
+
+        slot = (m.group("Slot") or "").strip()
+        cpu_id = (m.group("CPU_Id") or "").strip()
+        if cpu_id == "0":
+            cpu_id = ""
+        raw_proc_name = m.group("ProcessName")
+        context = m.group("Context")
+
+        proc_name, pid = self._resolver.parse_diag_process_name(raw_proc_name)
+
+        seq = self._extract_sequence(line)
+
+        is_active = bool(self._master_keyword and self._master_keyword.search(context))
+        ts = self._extract_first_ts(line)
+
+        src_file = f"slot_{slot_id}/{log_entry.name}"
+        return MechLogEntry(
+            timestamp=ts, source="diagnostic",
+            source_file=src_file,
+            slot=slot, cpu_id=cpu_id,
+            process_name=proc_name, pid=pid,
+            context=context, sequence=seq,
+            is_active_signal=is_active, raw=line.strip()[:500],
+        )
 
     def _extract_sequence(self, line: str) -> int:
         sm = self._seq_re.search(line)

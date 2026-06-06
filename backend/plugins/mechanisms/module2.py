@@ -119,6 +119,18 @@ class Module2Plugin(MechanismModulePlugin):
 
         return errors
 
+    def build_diagnostic_line_scanner(self):
+        errors = self.validate_config(self.module_key, self.config)
+        if errors:
+            return None
+        diag_re = re.compile(self.config["diag_pattern"])
+        keyword = str(self.config["identifying_keyword"])
+
+        def _scanner(line: str, log_entry: LogEntry, slot_id: str) -> MechLogEntry | None:
+            return self._scan_line(line, log_entry, slot_id, diag_re, keyword)
+
+        return _scanner
+
     def parse(self, result: ParseResult) -> MechResult | None:
         errors = self.validate_config(self.module_key, self.config)
         if errors:
@@ -189,6 +201,10 @@ class Module2Plugin(MechanismModulePlugin):
         return None
 
     def _scan_diagnostic_entries(self, result: ParseResult) -> list[MechLogEntry]:
+        precomputed_diag_entries = getattr(self, "_precomputed_diagnostic_entries", None)
+        if precomputed_diag_entries is not None:
+            return list(precomputed_diag_entries)
+
         diag_re = re.compile(self.config["diag_pattern"])
         keyword = str(self.config["identifying_keyword"])
         entries: list[MechLogEntry] = []
@@ -231,35 +247,47 @@ class Module2Plugin(MechanismModulePlugin):
     ) -> list[MechLogEntry]:
         entries: list[MechLogEntry] = []
         for line in iter_log_entry_lines(log_entry):
-            if keyword not in line:
-                continue
-            m = diag_re.search(line)
-            if not m:
-                continue
-
-            slot = _extract_slot_id(m.group("Slot"))
-            cpu_id = m.group("CPU_Id")
-            if cpu_id == "0":
-                cpu_id = ""
-            process_name, pid = _parse_bracket_process_name(m.group("ProcessName"))
-            context = m.group("Context")
-            timestamp = self._extract_first_ts(line)
-            source_file = f"slot_{source_slot_id}/{log_entry.name}"
-
-            entries.append(MechLogEntry(
-                timestamp=timestamp,
-                source="diagnostic",
-                source_file=source_file,
-                slot=slot,
-                cpu_id=cpu_id,
-                process_name=process_name,
-                pid=pid,
-                context=context,
-                sequence=0,
-                raw=line.strip()[:500],
-            ))
+            entry = self._scan_line(line, log_entry, source_slot_id, diag_re, keyword)
+            if entry:
+                entries.append(entry)
 
         return entries
+
+    def _scan_line(
+        self,
+        line: str,
+        log_entry: LogEntry,
+        source_slot_id: str,
+        diag_re: re.Pattern,
+        keyword: str,
+    ) -> MechLogEntry | None:
+        if keyword not in line:
+            return None
+        m = diag_re.search(line)
+        if not m:
+            return None
+
+        slot = _extract_slot_id(m.group("Slot"))
+        cpu_id = (m.group("CPU_Id") or "").strip()
+        if cpu_id == "0":
+            cpu_id = ""
+        process_name, pid = _parse_bracket_process_name(m.group("ProcessName"))
+        context = m.group("Context")
+        timestamp = self._extract_first_ts(line)
+        source_file = f"slot_{source_slot_id}/{log_entry.name}"
+
+        return MechLogEntry(
+            timestamp=timestamp,
+            source="diagnostic",
+            source_file=source_file,
+            slot=slot,
+            cpu_id=cpu_id,
+            process_name=process_name,
+            pid=pid,
+            context=context,
+            sequence=0,
+            raw=line.strip()[:500],
+        )
 
     def _extract_first_ts(self, line: str) -> datetime | None:
         stamps = self.ts_extractor.extract_from_text(line)
@@ -323,14 +351,7 @@ def _parse_bracket_process_name(raw: str) -> tuple[str, str]:
 
 
 def _extract_slot_id(raw: str) -> str:
-    """从 '框号/slot' 格式中提取 slot_id，纯数字则直接返回。
-
-    TODO 临时规避：当前只取 '/' 后面的 slot 号，丢弃了前面的框号。
-    正式方案应保留完整 '框号/slot' 语义，在周期匹配时按框号+slot
-    联合定位上游模块的 SlotOutput。
-    """
-    if "/" in raw:
-        return raw.rsplit("/", 1)[-1].strip()
+    """Preserve the configured slot identity, including frame/slot forms."""
     return raw.strip()
 
 

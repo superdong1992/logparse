@@ -6,8 +6,9 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from backend.models import (
     LogEntry,
@@ -15,7 +16,9 @@ from backend.models import (
     ParseResult,
     SlotInfo,
 )
+from backend.performance import resolve_worker_count
 from backend.parsing.active_period_builder import ActivePeriodBuilder
+from backend.parsing.file_iter import iter_log_entry_lines
 from backend.parsing.output_writer import MechOutputWriter
 from backend.parsing.role_identifier import RoleIdentifier
 from backend.parsing.timestamp_extractor import TimestampExtractor
@@ -46,9 +49,26 @@ class ParserPlugin(LogParserPlugin):
     # ── parse() ───────────────────────────────────────────
 
     def parse(self, result: ParseResult) -> ParseResult:
-        # 1. 提取所有内容时间戳
+        # 1. 加载并编排机制模块插件
+        mechanism_plugins: list[MechanismModulePlugin] = []
+        for module_key, module_entry in self._mech_modules.items():
+            if not module_entry.get("enabled", True):
+                logger.info("[%s] 已禁用，跳过", module_key)
+                continue
+
+            plugin = instantiate_plugin(
+                module_entry["plugin"],
+                MechanismModulePlugin,
+                module_entry.get("config", {}),
+                module_key=module_key,
+                ts_extractor=self._ts_extractor,
+            )
+            mechanism_plugins.append(plugin)
+            logger.info("[%s] 已加载 %s", module_key, module_entry["plugin"])
+
+        # 2. 单次共享扫描诊断日志，产出 timestamps 和机制模块诊断条目
         t0 = time.perf_counter()
-        self._extract_all_timestamps(result.diagnostic_slots)
+        self._shared_diagnostic_scan(result, mechanism_plugins)
         elapsed = time.perf_counter() - t0
         diag_file_count = sum(len(slot.diagnostic_logs) for slot in result.diagnostic_slots)
         ts_total = sum(
@@ -76,23 +96,6 @@ class ParserPlugin(LogParserPlugin):
             len(result.diagnostic_slots),
             period_total,
         )
-
-        # 3. 加载并编排机制模块插件
-        mechanism_plugins: list[MechanismModulePlugin] = []
-        for module_key, module_entry in self._mech_modules.items():
-            if not module_entry.get("enabled", True):
-                logger.info("[%s] 已禁用，跳过", module_key)
-                continue
-
-            plugin = instantiate_plugin(
-                module_entry["plugin"],
-                MechanismModulePlugin,
-                module_entry.get("config", {}),
-                module_key=module_key,
-                ts_extractor=self._ts_extractor,
-            )
-            mechanism_plugins.append(plugin)
-            logger.info("[%s] 已加载 %s", module_key, module_entry["plugin"])
 
         for mechanism in mechanism_plugins:
             t0 = time.perf_counter()
@@ -157,6 +160,143 @@ class ParserPlugin(LogParserPlugin):
 
     # ── 时间戳提取 ────────────────────────────────────────
 
+    def _shared_diagnostic_scan(
+        self,
+        result: ParseResult,
+        mechanism_plugins: list[MechanismModulePlugin],
+    ) -> None:
+        slots = result.diagnostic_slots
+        scanner_items: list[tuple[str, Callable[[str, LogEntry, str], Any]]] = []
+        for mechanism in mechanism_plugins:
+            try:
+                scanner = mechanism.build_diagnostic_line_scanner()
+            except Exception as exc:
+                result.errors.append(
+                    f"[{mechanism.module_key}] shared diagnostic scanner setup failed: {exc}"
+                )
+                continue
+            if callable(scanner):
+                scanner_items.append((mechanism.module_key, scanner))
+
+        log_tasks = [
+            (slot.slot_id, entry)
+            for slot in slots
+            for entry in slot.diagnostic_logs
+        ]
+        pipeline_cfg = self.config.get("_pipeline", {})
+        worker_count = int(
+            pipeline_cfg.get(
+                "diagnostic_scan_workers_resolved",
+                resolve_worker_count(
+                    pipeline_cfg.get("diagnostic_scan_workers", "auto"),
+                    default_cap=4,
+                ),
+            )
+        )
+
+        scan_t0 = time.perf_counter()
+        if worker_count > 1 and len(log_tasks) > 1:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                scan_results = list(
+                    executor.map(
+                        lambda task: self._scan_diagnostic_log(task, scanner_items),
+                        log_tasks,
+                    )
+                )
+        else:
+            scan_results = [
+                self._scan_diagnostic_log(task, scanner_items)
+                for task in log_tasks
+            ]
+
+        entries_by_module: dict[str, list[Any]] = {
+            module_key: [] for module_key, _scanner in scanner_items
+        }
+        total_lines = 0
+        total_timestamps = 0
+        seen_errors: set[str] = set()
+        for entry, timestamps, module_entries, line_count, scan_errors in scan_results:
+            entry.content_timestamps = self._sort_timestamps(timestamps)
+            total_lines += line_count
+            total_timestamps += len(timestamps)
+            for module_key, entries in module_entries.items():
+                entries_by_module[module_key].extend(entries)
+            for error in scan_errors:
+                if error not in seen_errors:
+                    seen_errors.add(error)
+                    result.errors.append(error)
+
+        self._normalize_timestamp_timezones(slots)
+        for slot in slots:
+            for entry in slot.diagnostic_logs:
+                entry.content_timestamps = self._sort_timestamps(entry.content_timestamps)
+
+        module_keys_with_scanners = set(entries_by_module)
+        for mechanism in mechanism_plugins:
+            if mechanism.module_key not in module_keys_with_scanners:
+                continue
+            mechanism.set_precomputed_diagnostic_entries(
+                entries_by_module.get(mechanism.module_key, []),
+                file_count=len(log_tasks),
+                line_count=total_lines,
+            )
+
+        recorder = getattr(self, "performance_recorder", None)
+        if recorder:
+            metrics = {
+                "files": len(log_tasks),
+                "lines": total_lines,
+                "timestamps": total_timestamps,
+            }
+            for module_key, entries in sorted(entries_by_module.items()):
+                metrics[f"{module_key}_entries"] = len(entries)
+            recorder.record_stage(
+                "diagnostic_scan.shared",
+                elapsed_seconds=time.perf_counter() - scan_t0,
+                **metrics,
+            )
+
+    def _scan_diagnostic_log(
+        self,
+        task: tuple[str, LogEntry],
+        scanner_items: list[tuple[str, Callable[[str, LogEntry, str], Any]]],
+    ) -> tuple[LogEntry, list[Any], dict[str, list[Any]], int, list[str]]:
+        slot_id, log_entry = task
+        timestamps: list[Any] = []
+        entries_by_module: dict[str, list[Any]] = {
+            module_key: [] for module_key, _scanner in scanner_items
+        }
+        line_count = 0
+        reported_failures: set[str] = set()
+        scan_errors: list[str] = []
+
+        for line in iter_log_entry_lines(log_entry):
+            line_count += 1
+            timestamps.extend(self._ts_extractor.extract_from_text(line))
+            for module_key, scanner in scanner_items:
+                try:
+                    entry = scanner(line, log_entry, slot_id)
+                except Exception as exc:
+                    error = (
+                        f"[{module_key}] shared diagnostic scan failed "
+                        f"in slot_{slot_id}/{log_entry.name}: {exc}"
+                    )
+                    if error not in reported_failures:
+                        reported_failures.add(error)
+                        scan_errors.append(error)
+                    continue
+                if entry:
+                    entries_by_module[module_key].append(entry)
+
+        return log_entry, timestamps, entries_by_module, line_count, scan_errors
+
+    @staticmethod
+    def _sort_timestamps(timestamps: list[Any]) -> list[Any]:
+        try:
+            return sorted(timestamps)
+        except TypeError:
+            return list(timestamps)
+
     def _extract_all_timestamps(self, slots: list[SlotInfo]) -> None:
         for slot in slots:
             for entry in slot.diagnostic_logs:
@@ -182,6 +322,26 @@ class ParserPlugin(LogParserPlugin):
                     ]
 
     # ── 输出落盘 ──────────────────────────────────────────
+
+    def _normalize_timestamp_timezones(self, slots: list[SlotInfo]) -> None:
+        tzinfo = None
+        for slot in slots:
+            for entry in slot.diagnostic_logs:
+                for ts in entry.content_timestamps:
+                    if ts.tzinfo:
+                        tzinfo = ts.tzinfo
+                        break
+                if tzinfo:
+                    break
+            if tzinfo:
+                break
+        if tzinfo:
+            for slot in slots:
+                for entry in slot.diagnostic_logs:
+                    entry.content_timestamps = [
+                        ts.replace(tzinfo=tzinfo) if ts.tzinfo is None else ts
+                        for ts in entry.content_timestamps
+                    ]
 
     def write_output(
         self, mech_result: MechResult, output_dir: Path,

@@ -113,8 +113,8 @@ class TestBasicDetection:
         ]
         assert issue.suggested_commands == [
             "python cli.py mech-lifecycles <task_id> -s 1 -m m1 --show-boundaries",
-            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-100 -m m1",
-            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-200 -m m1",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp --pid 100 -m m1",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp --pid 200 -m m1",
         ]
 
     def test_indicator_pid_reuse_across_restarts_is_warned_as_bounce(self):
@@ -602,7 +602,7 @@ class TestWhitelistSafeSplit:
         assert issue.evidence[0]["source"] == "diagnostic"
         assert issue.suggested_commands == [
             "python cli.py mech-lifecycles <task_id> -s 1 -m m1 --show-boundaries",
-            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p other-500 -m m1",
+            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p other --pid 500 -m m1",
         ]
 
     def test_whitelist_pid_spanning_indicator_adjusts_without_overlap(self):

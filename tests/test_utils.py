@@ -14,6 +14,8 @@ from backend.utils import (
     extract_slot_id,
     glob_to_regex,
     is_compressed,
+    safe_log_filename,
+    safe_path_segment,
 )
 
 
@@ -65,6 +67,48 @@ class TestExtractPrivateSlotInfo:
         slot_id, cpu_id = extract_private_slot_info("other")
         assert slot_id == "other"
         assert cpu_id is None
+
+
+class TestSafePathSegment:
+    def test_preserves_simple_segment(self):
+        assert safe_path_segment("2") == "2"
+        assert safe_path_segment("1_2") == "1_2"
+
+    def test_replaces_path_separators(self):
+        assert safe_path_segment("1/2").startswith("1~U0000002f2~H")
+        assert safe_path_segment(r"1\2").startswith("1~U0000005c2~H")
+
+    def test_replaces_windows_forbidden_characters(self):
+        segment = safe_path_segment('a:b*?c"d<e>f|g')
+        assert segment.startswith(
+            "a~U0000003ab~U0000002a~U0000003fc~U00000022d"
+            "~U0000003ce~U0000003ef~U0000007cg~H"
+        )
+
+    def test_avoids_escape_collisions(self):
+        assert safe_path_segment("a") != safe_path_segment("a.")
+        assert safe_path_segment("a") != safe_path_segment(" a")
+        assert safe_path_segment("a") != safe_path_segment("a ")
+        assert safe_path_segment("A") != safe_path_segment("a")
+        assert safe_path_segment("1/2") != safe_path_segment("1_2")
+        assert safe_path_segment("1/2") != safe_path_segment("1~U0000002f2")
+        assert safe_path_segment(chr(0x1000) + "0") != safe_path_segment(chr(0x10000))
+
+    def test_avoids_windows_case_insensitive_collisions(self):
+        assert safe_path_segment("A").lower() != safe_path_segment("a").lower()
+        assert safe_path_segment("EXAMPLE").lower() != safe_path_segment("example").lower()
+
+    def test_safe_log_filename_escapes_process_fields(self):
+        filename = safe_log_filename(r"..\..\escape", "10/20")
+        expected_name = safe_path_segment(r"..\..\escape")
+        expected_pid = safe_path_segment("10/20")
+        assert filename == f"{expected_name}~P{expected_pid}.log"
+        assert "/" not in filename
+        assert "\\" not in filename
+
+    def test_safe_log_filename_avoids_pid_separator_collision(self):
+        assert safe_log_filename("svc-100", "") != safe_log_filename("svc", "100")
+        assert safe_log_filename("SERVICE", "123").lower() != safe_log_filename("service", "123").lower()
 
 
 class TestExtractDumpTime:

@@ -15,6 +15,7 @@ from backend.parsing.lifecycle_splitter import LifecycleSplitConfig, LifecycleSp
 from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.plugins.mechanisms.module1 import Module1Plugin
 from backend.query import ResultQueryService
+from backend.utils import safe_log_filename, safe_path_segment
 from backend.models import (
     LogEntry,
     MechBoardCycle,
@@ -33,7 +34,7 @@ def _module1_v2_test_config() -> dict:
         "module_name": "EXAMPLE",
         "diag_pattern": (
             r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?"
-            r"CPU-Id=(?P<CPU_Id>[^;,)]+).*?"
+            r"CPU-Id=(?P<CPU_Id>[^;,)]*).*?"
             r"ProcessName=(?P<ProcessName>[^;,)]+).*?"
             r"Context=(?P<Context>.+?)\)$"
         ),
@@ -255,6 +256,59 @@ def test_parse_accepts_config_option_after_subcommand(tmp_path, monkeypatch):
     assert seen_config["sentinel"] == "from-command-option"
 
 
+def test_parse_profile_passes_profile_and_prints_summary(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            _valid_parse_config({
+                "pipeline": {"debug_expand_gz": False},
+            }),
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    seen = {}
+    cli_module = importlib.import_module("cli")
+
+    class FakePerformance:
+        def summary_lines(self):
+            return [
+                "性能DFX: total=1.2s",
+                "慢阶段: pipeline.parse 1.0s",
+            ]
+
+    class FakePipeline:
+        def __init__(self, config):
+            assert config["pipeline"]["debug_expand_gz"] is False
+            self.performance = FakePerformance()
+
+        def run(self, source, output_dir, product="default", verbose=False, profile=False):
+            seen["profile"] = profile
+            return ParseResult(task_id="task", package_name=source.name)
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "-o",
+            str(tmp_path / "out"),
+            "--profile",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["profile"] is True
+    assert "性能DFX: total=1.2s" in result.output
+    assert "慢阶段: pipeline.parse 1.0s" in result.output
+
+
 def _write_target_log_result(tmp_path, *, with_log=True):
     task_dir = tmp_path / "task"
     task_dir.mkdir(exist_ok=True)
@@ -295,9 +349,12 @@ def _write_target_log_result(tmp_path, *, with_log=True):
         encoding="utf-8",
     )
     if with_log:
-        log_dir = task_dir / "mech_modules" / "EXAMPLE" / "slot_1" / "cycle"
+        log_dir = (
+            task_dir / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            / safe_path_segment("cycle")
+        )
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "SERVICE-123.log").write_text("matched log\n", encoding="utf-8")
+        (log_dir / safe_log_filename("SERVICE", "123")).write_text("matched log\n", encoding="utf-8")
 
 
 def test_mech_target_logs_outputs_json_without_cycle_argument(tmp_path):
@@ -331,7 +388,7 @@ def test_mech_target_logs_outputs_json_without_cycle_argument(tmp_path):
     assert target["label"] == "client"
     assert target["match_status"] == "exact"
     assert target["board_cycle"] == "cycle"
-    assert target["log_path"].endswith("SERVICE-123.log")
+    assert target["log_path"].endswith(safe_log_filename("SERVICE", "123"))
 
 
 def test_mech_target_logs_reports_missing_log_without_guessing(tmp_path):
@@ -363,6 +420,96 @@ def test_mech_target_logs_reports_missing_log_without_guessing(tmp_path):
     assert target["match_status"] == "missing"
     assert "log_path" not in target
     assert any("log file missing" in caveat for caveat in target["caveats"])
+
+
+def _write_mech_log_file(tmp_path, process_name, pid, content):
+    log_dir = (
+        tmp_path / "task" / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+        / safe_path_segment("cycle")
+    )
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / safe_log_filename(process_name, pid)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def test_mech_logs_uses_explicit_pid_option(tmp_path):
+    _write_mech_log_file(tmp_path, "SERVICE", "123", "matched log\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-logs",
+            "task",
+            "-s",
+            "1",
+            "-c",
+            "cycle",
+            "-p",
+            "SERVICE",
+            "--pid",
+            "123",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "matched log"
+
+
+def test_mech_logs_treats_dash_digit_proc_as_exact_name_without_pid(tmp_path):
+    _write_mech_log_file(tmp_path, "svc-100", "", "exact log\n")
+    _write_mech_log_file(tmp_path, "svc", "100", "legacy log\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-logs",
+            "task",
+            "-s",
+            "1",
+            "-c",
+            "cycle",
+            "-p",
+            "svc-100",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "exact log"
+
+
+def test_mech_logs_requires_explicit_pid_for_pid_lookup(tmp_path):
+    _write_mech_log_file(tmp_path, "svc", "100", "legacy log\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-logs",
+            "task",
+            "-s",
+            "1",
+            "-c",
+            "cycle",
+            "-p",
+            "svc-100",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert safe_log_filename("svc-100", "") in result.output
+    assert "legacy log" not in result.output
 
 
 def test_parse_validates_config_before_running_pipeline(tmp_path, monkeypatch):
@@ -1262,7 +1409,7 @@ def test_mech_lifecycles_show_boundaries(tmp_path):
                                             },
                                         ],
                                         "suggested_commands": [
-                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p other-500 -m EXAMPLE",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p other --pid 500 -m EXAMPLE",
                                         ],
                                     },
                                 ],
@@ -1314,7 +1461,64 @@ def test_mech_lifecycles_show_boundaries(tmp_path):
     ) in result.output
     assert "before diagnostic|slot_1/diag.log seq=0 raw=before raw" in result.output
     assert "evidence diagnostic|slot_1/diag.log" not in result.output
-    assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p other-500 -m EXAMPLE" in result.output
+    assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p other --pid 500 -m EXAMPLE" in result.output
+
+
+def test_mech_lifecycles_normalizes_legacy_dash_pid_hints(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "mech_results": [
+                    {
+                        "module_name": "EXAMPLE",
+                        "slots": [
+                            {
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "boundary_issues": [
+                                    {
+                                        "kind": "unsafe_cycle_split",
+                                        "severity": "error",
+                                        "action": "kept",
+                                        "reason": "legacy",
+                                        "suggested_commands": [
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc-100 -m EXAMPLE",
+                                        ],
+                                    },
+                                ],
+                                "board_cycles": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-lifecycles",
+            "task",
+            "-s",
+            "1",
+            "-m",
+            "EXAMPLE",
+            "-o",
+            str(tmp_path),
+            "--show-boundaries",
+            "--boundary-detail",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p svc --pid 100 -m EXAMPLE" in result.output
+    assert "-p svc-100" not in result.output
 
 
 def test_mech_lifecycles_show_boundaries_displays_lifecycle_split_v2(tmp_path):
@@ -2165,9 +2369,9 @@ def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(t
                                         ],
                                         "suggested_commands": [
                                             "python cli.py mech-lifecycles <task_id> -s 1 -m EXAMPLE --show-boundaries",
-                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp-200 -m EXAMPLE",
-                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-300 -m EXAMPLE",
-                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a-400 -m EXAMPLE",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p dhcp --pid 200 -m EXAMPLE",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a --pid 300 -m EXAMPLE",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p svc_a --pid 400 -m EXAMPLE",
                                         ],
                                     },
                                 ],
@@ -2207,7 +2411,7 @@ def test_mech_lifecycles_compact_restart_overlap_shows_only_endpoint_processes(t
     assert "new-side dhcp-200@board role=indicator new_start=2026-01-03T00:00:09+08:00 raw=dhcp new" in result.output
     assert "noise" not in result.output
     assert result.output.count("hint ") == 1
-    assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p svc_a-300 -m EXAMPLE" in result.output
+    assert "hint python cli.py mech-logs task -s 1 -c <board_cycle> -p svc_a --pid 300 -m EXAMPLE" in result.output
 
 
 def test_mech_lifecycles_restart_overlap_infers_conflict_pair_from_boundaries(tmp_path):
@@ -2762,7 +2966,7 @@ def test_mech_lifecycles_boundary_detail_full_expands_all_evidence(tmp_path):
                                         ],
                                         "suggested_commands": [
                                             "python cli.py mech-lifecycles <task_id> -s 1 -m EXAMPLE --show-boundaries",
-                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p noise-901 -m EXAMPLE",
+                                            "python cli.py mech-logs <task_id> -s 1 -c <board_cycle> -p noise --pid 901 -m EXAMPLE",
                                         ],
                                     },
                                 ],

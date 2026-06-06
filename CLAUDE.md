@@ -16,6 +16,16 @@ rule ids you used in the final answer. In particular, do not infer CPU scope:
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 隔离环境与性能 DFX 约束
+
+本项目常运行在隔离环境中，真实日志压缩包通常不能提供给 AI agent 直接分析。后续功能设计必须假设 agent 无法读取真实 2GB 级日志包，只能依赖人类在隔离环境运行命令后转述结构化证据。
+
+- 新增性能或解析能力必须提供人类可运行的命令、稳定输出路径和无原始日志内容的 DFX。
+- 性能证据以 `parse --profile` 生成的 `output/{task_id}/performance.json` 为准；stdout 只保留摘要和慢阶段线索。
+- 性能 DFX 禁止携带原始日志行、raw 片段、敏感 context 或 module2 unknown 的 raw 级定位信息。
+- 业务等价性对比使用 `scripts/compare_parse_outputs.py <before> <after>`，忽略 `performance.json` 与 `extracted/`。
+- 大包优化不能通过裁剪 slot/cpu 达成；module1 日志可能分布在非主控 slot/cpu 下，必须保持原业务语义。
+
 ## 项目概述
 
 日志解析维护工具，用于预处理产品设备的日志压缩包。支持多层解压，发现诊断日志和私有日志（varlog），通过可配置的机制模块优先判定主控，兜底通过目录+时间戳推断。输出结构化元数据供 AI agent 消费。
@@ -27,13 +37,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -r requirements.txt
 
 # CLI 解析（默认使用 default 产品插件管道）
-python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--lifecycle-dfx errors|summary|decisions|full|off] [--product default|compact] [--debug-expand-gz]
+python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--verbose] [--profile] [--lifecycle-dfx errors|summary|decisions|full|off] [--product default|compact] [--debug-expand-gz]
 python cli.py info <task_id>
 python cli.py list-slots <task_id>
 python cli.py query-diag <task_id> -s <slot_id>
 python cli.py mech-slots <task_id> [-m <module_name>]
 python cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>]
-python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <proc_name-pid> [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
+python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <proc_name> [--pid <pid>] [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
 
 # 调试工具
 python cli.py check-config [-c config.yaml]            # 检查配置有效性
@@ -57,7 +67,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 - **`--lifecycle-dfx`**：控制生命周期中文 DFX 输出，`parse` 默认 `errors`，`mech-lifecycles --show-boundaries` 默认 `summary`；`decisions/full` 展开 V3 候选切分和聚合原因
 - **`--debug-expand-gz`**：强制将普通 `.gz` 日志就地展开（如 `journal.log.1.gz` → `journal.log.1`），便于全文搜索 `extracted/`
 - **`--module` / `-m`**：`mech-slots` / `mech-lifecycles` 不传时展示全部模块；`mech-logs` 不传时默认取第一个机制模块
-- **`--cpu` / `--cpu-cycle`**：`mech-logs` 查询嵌套 CPU 周期日志时使用；路径为 `.../<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>.log`
+- **`--cpu` / `--cpu-cycle`**：`mech-logs` 查询嵌套 CPU 周期日志时使用；路径为 `.../<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>[~P<pid>].log`。兼容查询板卡周期下直接带 `cpu_id` 的 process 时只传 `--cpu`。
 - **Windows 编码**：CLI 入口自动将 stdout/stderr 切换为 UTF-8，避免 GBK 编码下 Unicode 符号报错
 
 ## 架构
@@ -70,7 +80,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 ### 数据流
 
 ```
-外层压缩包 → Decompressor(按配置统一解压外层和内层归档；普通 .gz 默认就地展开)
+外层压缩包 → Decompressor(按配置统一解压外层和内层归档；普通 .gz 默认不展开)
 → DirectoryDiscoveryPlugin(发现 slot+文件，产品插件)
 → LogParserPlugin(时间戳→ActivePeriod→机制模块→角色判定，产品插件)
 → MechOutputWriter(板卡周期 + 嵌套 CPU 周期落盘) → MetadataGenerator(JSON输出)
@@ -78,7 +88,7 @@ python cli.py parse tests/mock_data/diagnostic_information_20260103.zip
 
 关键设计决策：
 - **解压与扫描分离**：`Pipeline` 在 Step 1 通过 `Decompressor.extract_all()` 统一处理外层和内层归档；`config.yaml` 默认 `recursive_extraction: true`。Scanner 插件只扫描统一解压后的工作区，不再承担中间内层解压阶段。
-- **普通 `.gz` 就地展开**：默认将普通 `.gz` 日志（如 `journal.log.1.gz`）展开成同目录明文文件（如 `journal.log.1`），原 `.gz` 保留；配置 `debug_expand_gz: false` 时不展开，parser 仍可流式读取。`.tar.gz` / `.tgz` 归档不受此控制
+- **普通 `.gz` 就地展开**：默认不展开普通 `.gz` 日志，parser 直接流式读取；仅在人工全文搜索时使用 `--debug-expand-gz` 或 `pipeline.debug_expand_gz: true` 展开成同目录明文文件。`.tar.gz` / `.tgz` 归档不受此控制
 - **机制模块优先主控判定**：indicator 进程 PID 变化 + 序号回绕反向扫描确定重启边界
 - **时区对齐**：诊断日志时间戳含时区（如 `+08:00`），journal 不含。从全部条目中检测时区并归一化所有 naive timestamp
 - **journal 双正则 fallback**：`line_pattern` 匹配完整元数据格式，`line_pattern2` 兜底匹配无元数据块格式；`line_pattern2_required_substrings` 可对 `line_pattern2` / 自动无序号 fallback 增加大小写敏感整行字符串约束
@@ -153,12 +163,11 @@ diagnostic_information_xxx.zip     ← 外层包
 output/{task_id}/mech_modules/{module_name}/
 ├── slot_1/
 │   ├── 20260430T103707-20260430T113708/    ← 周期起止时间
-│   │   ├── SERVICE-12345.log               ← 板卡级进程（cpu_id=""）直接放周期下
+│   │   ├── SERVICE~P12345.log              ← 板卡级进程（cpu_id=""）直接放周期下
 │   │   └── cpu_1/                          ← CPU 子卡进程放 cpu_N/ 子目录
 │   │       ├── 20260430T103800-20260430T104500/
-│   │       │   └── SERVICE-67890.log        ← 嵌套 CPU 周期内的进程日志
-│   │       └── unknown/
-│   │           └── WORKER-777.log           ← 匹配到板卡周期但未匹配到 CPU 周期
+│   │       │   └── SERVICE~P67890.log       ← 嵌套 CPU 周期内的进程日志
+│   │       └── WORKER~P777.log              ← 板卡周期 process 携带 cpu_id 的兼容输出
 │   └── 20260430T120000-20260430T130000/
 └── slot_2/
 
@@ -179,13 +188,15 @@ output/{task_id}/mech_modules/{module_name}/
    - 切分点 = 安全候选中的最早值，保证同 PID 段不被拆断
 3. **Journal 序号前移**：对白名单内进程，从诊断日志获取旧 PID 最后 No，在全部条目（含 journal）中找序号跳变（从大号跳到小号），尝试前移切分点（受安全约束限制）
 4. **层级传播**：板卡级 PID 变化 → 所有子 cpu 组同步切分；cpu 级 PID 变化 → 仅该 cpu 组切分
-5. **嵌套输出**：板卡日志进入 `MechBoardCycle.processes`；CPU 日志进入对应 `MechBoardCycle.cpu_cycles[].processes`。找不到可用板卡周期时使用 `unknown`，找不到 CPU 周期时使用 `cpu_<id>/unknown`。
+5. **嵌套输出**：板卡日志进入 `MechBoardCycle.processes`；CPU 日志进入对应 `MechBoardCycle.cpu_cycles[].processes`。找不到可用板卡周期时使用 `unknown`；模块显式生成 `cpu_cycle.dir_name="unknown"` 时写入 `cpu_<id>/unknown`，板卡周期 process 直接带 `cpu_id` 时兼容写入 `cpu_<id>/<proc>[~P<pid>].log`。
 
 ### 配置驱动
 
 所有匹配规则在 `config.yaml` 的 `products.{name}` 下配置，代码不做硬编码：
 - `pipeline.recursive_extraction` — 外层包是否递归解压
-- `pipeline.debug_expand_gz` — 是否就地展开普通 `.gz` 日志，默认开启以便全文搜索 `extracted/`
+- `pipeline.debug_expand_gz` — 是否就地展开普通 `.gz` 日志，默认关闭；人工全文搜索用 `--debug-expand-gz`
+- `pipeline.extraction_workers` — 内层归档并行解压 worker，支持 `auto`、`1` 或正整数，最大 32
+- `pipeline.diagnostic_scan_workers` — 诊断日志共享扫描 worker，支持 `auto`、`1` 或正整数，最大 32
 - `discovery.config.diagnostic_dir` / `private_dir` — 目录名
 - `discovery.config.slot_dir_pattern` — slot 目录匹配 (glob)
 - `discovery.config.diag_file_patterns` — 诊断日志文件名匹配 (glob)
@@ -225,7 +236,7 @@ slot_1_cpu_2/    ← slot_1 的 2 号 CPU 子卡
 Source Archive
   → [Decompressor]              通用
   → [DirectoryDiscoveryPlugin]   产品插件：找到 slot、文件
-  → [No middle extraction]       内层归档已由统一解压阶段处理；普通 .gz 默认就地展开，关闭后由 parser 流式读取
+  → [No middle extraction]       内层归档已由统一解压阶段处理；普通 .gz 默认不展开，由 parser 流式读取
   → [LogParserPlugin]            产品插件：解析内容、构建周期、判定角色
   → [MechOutputWriter]           通用：板卡周期 + 嵌套 CPU 周期落盘
   → [MetadataGenerator]          通用：输出 metadata.json

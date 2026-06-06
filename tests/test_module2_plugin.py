@@ -19,6 +19,7 @@ from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.parsing.output_writer import MechOutputWriter
 from backend.plugins.mechanisms import module2 as module2_impl
 from backend.plugins.mechanisms.module2 import Module2Plugin
+from backend.utils import safe_log_filename, safe_path_segment
 
 
 def _ts(hour: int, minute: int = 0) -> datetime:
@@ -37,7 +38,7 @@ def _module2_config() -> dict:
         "identifying_keyword": "xxx",
         "depends_on_module": "module1",
         "diag_pattern": (
-            r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>\d+),"
+            r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>[^,]*),"
             r"ProcessName=(?P<ProcessName>[^,]+),Context=\"(?P<Context>.*?)\""
         ),
     }
@@ -781,10 +782,10 @@ def test_module2_output_uses_existing_mech_layout(tmp_path):
     out_file = (
         mech_dir
         / "slot_2"
-        / "20260103T000000-20260103T010000"
+        / safe_path_segment("20260103T000000-20260103T010000")
         / "cpu_3"
-        / "unknown"
-        / "hellokitty-123.log"
+        / safe_path_segment("unknown")
+        / safe_log_filename("hellokitty", "123")
     )
     assert out_file.is_file()
     assert "Context=\"xxxxx\"" in out_file.read_text(encoding="utf-8")
@@ -813,9 +814,39 @@ def test_module2_unknown_output_uses_existing_mech_layout(tmp_path):
     assert mech is not None
     mech_dir = MechOutputWriter().write(mech, tmp_path / "output")
 
-    out_file = mech_dir / "slot_2" / "unknown" / "cpu_3" / "unknown" / "hellokitty-123.log"
+    out_file = (
+        mech_dir / "slot_2" / safe_path_segment("unknown") / "cpu_3" / safe_path_segment("unknown")
+        / safe_log_filename("hellokitty", "123")
+    )
     assert out_file.is_file()
     assert "outside cycle" in out_file.read_text(encoding="utf-8")
+
+
+def test_module2_empty_cpu_id_is_board_level(tmp_path):
+    log_file = tmp_path / "diag.log"
+    log_file.write_text(
+        '2026-01-03T00:10:00+08:00 xxx Slot=2,CPU-Id=,'
+        'ProcessName=other[999],Context="empty cpu id"\n',
+        encoding="utf-8",
+    )
+    slot = SlotInfo(slot_id="2", name="slot_2", path=str(tmp_path))
+    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
+    result = ParseResult(
+        diagnostic_slots=[slot],
+        mech_results=[_module1_result()],
+    )
+    plugin = Module2Plugin(
+        _module2_config(),
+        module_key="module2",
+        ts_extractor=_timestamp_extractor(),
+    )
+
+    mech = plugin.parse(result)
+
+    assert mech is not None
+    proc = mech.slots[0].board_cycles[0].processes[0]
+    assert proc.logs[0].cpu_id == ""
+    assert proc.logs[0].context == "empty cpu id"
 
 
 def test_module2_logs_unknown_reason_when_no_board_cycle_contains_timestamp(tmp_path, caplog):
@@ -974,13 +1005,14 @@ def test_module2_merges_unknown_entries_into_unique_same_process_lifecycle(tmp_p
     merged_file = (
         mech_dir
         / "slot_2"
-        / "20260103T000000-20260103T021000"
+        / safe_path_segment("20260103T000000-20260103T021000")
         / "cpu_3"
-        / "unknown"
-        / "hellokitty-123.log"
+        / safe_path_segment("unknown")
+        / safe_log_filename("hellokitty", "123")
     )
     unknown_file = (
-        mech_dir / "slot_2" / "unknown" / "cpu_3" / "unknown" / "hellokitty-123.log"
+        mech_dir / "slot_2" / safe_path_segment("unknown") / "cpu_3" / safe_path_segment("unknown")
+        / safe_log_filename("hellokitty", "123")
     )
     assert merged_file.is_file()
     assert "inside cycle" in merged_file.read_text(encoding="utf-8")
@@ -1313,7 +1345,7 @@ def test_module2_resolves_projected_unknown_to_nearest_admissible_target(tmp_pat
     assert "归属到unknown" not in caplog.text
 
 
-def test_module2_extracts_slot_from_slash_format(tmp_path):
+def test_module2_preserves_slot_from_slash_format(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
         '2026-01-03T00:10:00+08:00 xxx Slot=1/2,CPU-Id=0,'
@@ -1335,14 +1367,21 @@ def test_module2_extracts_slot_from_slash_format(tmp_path):
     mech = plugin.parse(result)
 
     assert mech is not None
-    assert mech.slots[0].slot_id == "2"
+    assert mech.slots[0].slot_id == "1/2"
     cycle = mech.slots[0].board_cycles[0]
-    assert cycle.dir_name == "20260103T000000-20260103T010000"
+    assert cycle.dir_name == "unknown"
     proc = cycle.processes[0]
     assert proc.process_name == "hellocat"
     assert proc.pid == "456"
     assert proc.logs[0].cpu_id == ""
     assert proc.logs[0].context == "slash slot"
+
+    mech_dir = MechOutputWriter().write(mech, tmp_path / "output")
+    assert (
+        mech_dir / f"slot_{safe_path_segment('1/2')}" / safe_path_segment("unknown")
+        / safe_log_filename("hellocat", "456")
+    ).is_file()
+    assert not (mech_dir / "slot_1" / "2").exists()
 
 
 def test_module2_logs_when_no_diagnostic_entries_found(tmp_path, caplog):
@@ -1406,7 +1445,7 @@ def test_module2_logs_when_config_invalid(caplog):
 def test_module2_normalizes_naive_timestamps_to_match_aware_cycles(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
-        '2026-01-03T00:10:00 xxx Slot=1/2,CPU-Id=0,'
+        '2026-01-03T00:10:00 xxx Slot=2,CPU-Id=0,'
         'ProcessName=svc[100],Context="no tz"\n',
         encoding="utf-8",
     )

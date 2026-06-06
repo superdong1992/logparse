@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from datetime import datetime
 from pathlib import Path
 
@@ -33,6 +34,32 @@ def extract_private_slot_info(dir_name: str) -> tuple[str, str | None]:
     if match:
         return match.group(1), None
     return dir_name, None
+
+
+def safe_path_segment(value: object) -> str:
+    """Return a deterministic, collision-resistant path segment."""
+    text = "" if value is None else str(value)
+    if not text:
+        return "unknown"
+    encoded = "".join(
+        ch
+        if ch.isascii() and (ch.isalnum() or ch in "_-")
+        else f"~U{ord(ch):08x}"
+        for ch in text
+    )
+    if any(not (ch.isascii() and (ch.isdigit() or ch in "_-")) for ch in text):
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        encoded = f"{encoded}~H{digest}"
+    return encoded or "unknown"
+
+
+def safe_log_filename(process_name: object, pid: object = "") -> str:
+    """Return the mechanism log filename for a process lifecycle."""
+    name = safe_path_segment(process_name)
+    pid_text = "" if pid is None else str(pid)
+    if pid_text:
+        return f"{name}~P{safe_path_segment(pid_text)}.log"
+    return f"{name}.log"
 
 
 def extract_dump_time(
