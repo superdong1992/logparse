@@ -146,9 +146,6 @@ def _board_cycle_to_dict(cycle: MechBoardCycle) -> dict[str, Any]:
         "dir_name": cycle.dir_name,
         "start_time": _dt(cycle.start_time),
         "end_time": _dt(cycle.end_time),
-        "split_traces": [
-            trace.model_dump(mode="json") for trace in cycle.split_traces
-        ],
         "processes": [_process_to_dict(process) for process in cycle.processes],
         "cpu_cycles": [
             _cpu_cycle_to_dict(cpu_cycle) for cpu_cycle in cycle.cpu_cycles
@@ -162,9 +159,6 @@ def _cpu_cycle_to_dict(cycle: MechCpuCycle) -> dict[str, Any]:
         "dir_name": cycle.dir_name,
         "start_time": _dt(cycle.start_time),
         "end_time": _dt(cycle.end_time),
-        "split_traces": [
-            trace.model_dump(mode="json") for trace in cycle.split_traces
-        ],
         "processes": [_process_to_dict(process) for process in cycle.processes],
     }
 

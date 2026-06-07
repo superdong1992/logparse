@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import hashlib
 from datetime import datetime
-from pathlib import Path
 
 
 def glob_to_regex(pattern: str) -> re.Pattern:
@@ -89,23 +88,6 @@ def extract_journal_sequence(
         return 0
 
 
-def extract_content_timestamps(
-    text: str, ts_regex: re.Pattern,
-) -> list[datetime]:
-    """从日志文本中提取所有时间戳（含可选时区偏移）。"""
-    stamps: list[datetime] = []
-    for m in ts_regex.finditer(text):
-        ts_str = m.group(1)
-        tz_str = m.group(2)
-        if tz_str:
-            ts_str = ts_str + tz_str
-        try:
-            stamps.append(datetime.fromisoformat(ts_str))
-        except ValueError:
-            continue
-    return stamps
-
-
 def is_compressed(name: str, extensions: list[str]) -> bool:
     """检查文件名是否属于已知压缩格式。"""
     name_lower = name.lower()
@@ -113,14 +95,3 @@ def is_compressed(name: str, extensions: list[str]) -> bool:
         if name_lower.endswith(ext):
             return True
     return False
-
-
-def read_text_file(file_path: Path) -> str:
-    """读取文本文件，UTF-8 优先，GBK 兜底，都失败返回空串。"""
-    try:
-        return file_path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        try:
-            return file_path.read_text(encoding="gbk", errors="replace")
-        except Exception:
-            return ""

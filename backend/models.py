@@ -19,11 +19,6 @@ class BoardRole(str, Enum):
     UNKNOWN = "unknown"
 
 
-class LogType(str, Enum):
-    DIAGNOSTIC = "diagnostic"
-    PRIVATE = "private"
-
-
 class ActivePeriod(BaseModel):
     """一个连续的主控时段段。"""
     start: datetime
@@ -113,24 +108,12 @@ class MechProcessLifecycle(BaseModel):
     missing_sequences: list[int] = Field(default_factory=list)
 
 
-class MechCycleSplitTrace(BaseModel):
-    """重启周期切分原因追踪。"""
-    timestamp: datetime
-    reason: str = ""
-    cpu_id: str = ""
-    indicator: str = ""
-    old_pid: str = ""
-    new_pid: str = ""
-    detail: str = ""
-
-
 class MechCpuCycle(BaseModel):
     """CPU-local lifecycle nested inside a board lifecycle."""
     cpu_id: str = ""
     dir_name: str = ""
     start_time: datetime | None = None
     end_time: datetime | None = None
-    split_traces: list[MechCycleSplitTrace] = Field(default_factory=list)
     processes: list[MechProcessLifecycle] = Field(default_factory=list)
 
 
@@ -139,7 +122,6 @@ class MechBoardCycle(BaseModel):
     dir_name: str = ""              # "{启动时间}-{恢复时间}"
     start_time: datetime | None = None
     end_time: datetime | None = None
-    split_traces: list[MechCycleSplitTrace] = Field(default_factory=list)
     processes: list[MechProcessLifecycle] = Field(default_factory=list)
     cpu_cycles: list[MechCpuCycle] = Field(default_factory=list)
 
@@ -172,20 +154,3 @@ class ParseResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
     extracted_root: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class TaskStatus(str, Enum):
-    PENDING = "pending"
-    EXTRACTING = "extracting"
-    SCANNING = "scanning"
-    IDENTIFYING = "identifying"
-    DONE = "done"
-    ERROR = "error"
-
-
-class TaskInfo(BaseModel):
-    task_id: str
-    status: TaskStatus = TaskStatus.PENDING
-    progress: float = 0.0
-    message: str = ""
-    result: Optional[ParseResult] = None

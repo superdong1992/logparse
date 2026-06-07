@@ -18,7 +18,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.models import (
     MechBoardCycle,
     MechCpuCycle,
-    MechCycleSplitTrace,
     MechLogEntry,
 )
 from backend.parsing.lifecycle_common import (
@@ -92,7 +91,7 @@ class LifecycleV3MergeDecision(BaseModel):
     decision: str
     decision_label_zh: str
     blocking_reason: str = ""
-    whitelist_pid_counts: list[dict[str, Any]] = Field(default_factory=list)
+    reliable_pid_counts: list[dict[str, Any]] = Field(default_factory=list)
     journal_evidence: list[dict[str, Any]] = Field(default_factory=list)
     reason_zh: str
 
@@ -257,7 +256,6 @@ class LifecycleSplitterV3:
                 dir_name=_format_cycle_dir(start, end),
                 start_time=start,
                 end_time=end,
-                split_traces=self._split_traces_for_lifecycle(lifecycle),
                 processes=_build_process_lifecycles(board_entries),
             )
             board_cycles.append(board_cycle)
@@ -280,7 +278,6 @@ class LifecycleSplitterV3:
                     dir_name=_format_cycle_dir(start, end),
                     start_time=start,
                     end_time=end,
-                    split_traces=self._split_traces_for_lifecycle(lifecycle),
                     processes=_build_process_lifecycles(cpu_entries),
                 )
             )
@@ -440,7 +437,7 @@ class LifecycleSplitterV3:
                     decision="kept_split",
                     decision_label_zh="保留切分",
                     blocking_reason="journal_wrap",
-                    whitelist_pid_counts=pid_counts,
+                    reliable_pid_counts=pid_counts,
                     journal_evidence=[item.model_dump(mode="json") for item in journal_evidence],
                     reason_zh=(
                         "两个候选生命周期之间存在 journal 序号回绕，且回绕前日志在前段、"
@@ -470,7 +467,7 @@ class LifecycleSplitterV3:
                     decision="kept_split",
                     decision_label_zh="保留切分",
                     blocking_reason="reliable_pid_conflict",
-                    whitelist_pid_counts=pid_counts,
+                    reliable_pid_counts=pid_counts,
                     reason_zh=(
                         f"合并后白名单进程出现多个 PID：{conflict_text}。"
                         "这更像跨重启边界，保留候选切分。"
@@ -502,7 +499,7 @@ class LifecycleSplitterV3:
                 silent_gap_seconds=gap,
                 decision="merged",
                 decision_label_zh="聚合",
-                whitelist_pid_counts=pid_counts,
+                reliable_pid_counts=pid_counts,
                 reason_zh=reason,
             ),
             [],
@@ -762,23 +759,6 @@ class LifecycleSplitterV3:
             ),
             None,
         )
-
-    def _split_traces_for_lifecycle(
-        self,
-        lifecycle: LifecycleV3Lifecycle,
-    ) -> list[MechCycleSplitTrace]:
-        if lifecycle.lifecycle_index == 0:
-            return []
-        return [
-            MechCycleSplitTrace(
-                timestamp=lifecycle.start_time,
-                reason="lifecycle_split_v3",
-                cpu_id=lifecycle.cpu_id or "",
-                indicator="interval_v3",
-                detail="v3 candidate split kept after whitelist/journal merge check",
-            )
-        ]
-
 
 def _segment_id(segment: _WorkingSegment, indices: list[int]) -> str:
     joined = "-".join(str(index + 1) for index in indices)

@@ -7,7 +7,6 @@ from datetime import datetime
 import pytest
 
 from backend.utils import (
-    extract_content_timestamps,
     extract_dump_time,
     extract_journal_sequence,
     extract_private_slot_info,
@@ -134,37 +133,6 @@ class TestExtractJournalSequence:
     def test_gz(self):
         regex = re.compile(r"journal\.log(?:\.(\d+))?(?:\.gz)?", re.IGNORECASE)
         assert extract_journal_sequence("journal.log.1.gz", regex) == 1
-
-
-class TestExtractContentTimestamps:
-    def test_with_timezone(self):
-        regex = re.compile(
-            r"(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?"
-        )
-        stamps = extract_content_timestamps(
-            "2026-01-03T00:01:00.100000+08:00 some log line", regex
-        )
-        assert len(stamps) == 1
-        assert stamps[0].tzinfo is not None
-
-    def test_without_timezone(self):
-        regex = re.compile(
-            r"(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?"
-        )
-        stamps = extract_content_timestamps(
-            "2026-01-03T00:01:00.100000 some log line", regex
-        )
-        assert len(stamps) == 1
-        assert stamps[0].tzinfo is None
-
-    def test_multiple_timestamps(self):
-        regex = re.compile(
-            r"(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?"
-        )
-        stamps = extract_content_timestamps(
-            "2026-01-03T00:01:00 first\n2026-01-03T00:02:00+08:00 second", regex
-        )
-        assert len(stamps) == 2
 
 
 class TestIsCompressed:

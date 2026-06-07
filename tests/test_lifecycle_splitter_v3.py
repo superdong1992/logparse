@@ -87,8 +87,9 @@ def test_reliable_pid_conflict_keeps_candidate_split():
     decision = result.merge_decisions[0]
     assert decision.decision == "kept_split"
     assert decision.blocking_reason == "reliable_pid_conflict"
-    assert decision.whitelist_pid_counts[0]["process_name"] == "anchor"
-    assert decision.whitelist_pid_counts[0]["pids"] == ["100", "200"]
+    assert decision.reliable_pid_counts[0]["process_name"] == "anchor"
+    assert decision.reliable_pid_counts[0]["pids"] == ["100", "200"]
+    assert ("whitelist_" + "pid_counts") not in decision.model_dump()
     assert result.lifecycle_reliable is True
 
 
@@ -261,7 +262,7 @@ def test_process_name_mapping_is_applied_before_v3_reliable_pid_counting():
 
     assert len(result.lifecycles) == 2
     assert result.merge_decisions[0].blocking_reason == "reliable_pid_conflict"
-    assert result.merge_decisions[0].whitelist_pid_counts[0]["process_name"] == "anchor"
+    assert result.merge_decisions[0].reliable_pid_counts[0]["process_name"] == "anchor"
 
 
 def test_build_board_cycles_archives_each_log_once_and_nests_nonzero_cpu_logs():
@@ -277,6 +278,8 @@ def test_build_board_cycles_archives_each_log_once_and_nests_nonzero_cpu_logs():
 
     assert len(board_cycles) == 1
     assert len(board_cycles[0].cpu_cycles) == 1
+    assert not hasattr(board_cycles[0], "split_" + "traces")
+    assert not hasattr(board_cycles[0].cpu_cycles[0], "split_" + "traces")
     assert _log_count(board_cycles[0]) == 2
     assert _log_count(board_cycles[0].cpu_cycles[0]) == 2
     assert all(

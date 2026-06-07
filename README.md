@@ -7,13 +7,13 @@ logparse preprocesses device diagnostic packages. It extracts archives, discover
 ```bash
 pip install -r requirements.txt
 python cli.py check-config -c config.yaml
-python cli.py parse diagnostic_information_20260103.zip -c config.yaml --product default
+python cli.py parse tests\mock_data\diagnostic_information_20260103.zip -c config.yaml --product default
 ```
 
 Compact product example:
 
 ```bash
-python cli.py parse compact_package_20260103.zip -c config.yaml --product compact
+python cli.py parse tests\mock_data_compact\compact_package_20260103.zip -c config.yaml --product compact
 ```
 
 ## Commands
@@ -73,9 +73,12 @@ Board cycles are top-level lifecycles. CPU cycles are nested under the matching 
 `Decompressor` owns archive extraction. Scanner plugins inspect the already extracted workspace only. Plain `.gz` logs are streamed by parsers unless debug expansion is enabled. For manual full-text inspection, use `--debug-expand-gz` or `pipeline.debug_expand_gz: true`.
 
 ```bash
-python cli.py parse diagnostic_information_20260103.zip --profile --output output
+python cli.py parse tests\mock_data\diagnostic_information_20260103.zip --profile --output output
 python scripts/compare_parse_outputs.py output_baseline output_optimized
 ```
+
+The checked-in `tests/mock_data*` packages and generator scripts are demo/smoke
+assets. Unit tests should use focused fixtures unless they need a full package.
 
 ## Verification
 

@@ -72,10 +72,6 @@ To choose upstream module1 context for a module2 anchor:
 
 For CPU anchors, "derived context" means same slot, same `cpu_id`, and the module1 V3 CPU lifecycle that contains or is nearest to the anchor time. If no CPU lifecycle exists, fall back to the parent board V3 lifecycle and mark CPU context absent.
 
-## Legacy Lifecycle Compatibility
-
-If `lifecycle_split_result.algorithm == "interval_v3"` is missing, fall back to legacy `boundary_issues[]`, CycleDetector `split_traces`, and timed `board_cycles[]` only as compatibility evidence. Label this explicitly as non-V3 or legacy output.
-
 ## Multi-Anchor Guidance
 
 - Treat every user-specified process as a target anchor, not as secondary context.

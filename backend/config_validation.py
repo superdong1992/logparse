@@ -11,10 +11,6 @@ from backend.plugins.base import DirectoryDiscoveryPlugin, LogParserPlugin
 from backend.plugins.mechanisms.base import MechanismModulePlugin
 
 
-class ConfigValidationError(ValueError):
-    pass
-
-
 # ── 顶层入口 ──────────────────────────────────────────
 
 

@@ -7,10 +7,10 @@ Use this reference when locating issues from logparse output. The input can be a
 When the user gives a raw log package instead of a result root, run the repository parser before diagnosis:
 
 ```bash
-python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>
 ```
 
-Use config/output values from the prompt. For official V3 diagnosis of a raw package, require an explicit config path whose module1 `lifecycle_split.algorithm` is `interval_v3`. Do not infer lifecycle version from `cli.py` option defaults, `config.yaml`, or `config.lifecycle-v2.yaml`; the checked-in defaults are not an implicit V3 profile. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
+Use config/output values from the prompt. If no config path is provided, use the repository `config.yaml`; current module1 lifecycle splitting is V3-only. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
 
 Run all repository Python commands through Python 3.12. Prefer `python3.12`; on Windows only fall back to `py -3.12` if `python3.12` is unavailable. Install dependencies with the same interpreter, for example `python3.12 -m pip install -r requirements.txt`, and do not use bare `python`.
 
@@ -45,7 +45,6 @@ Use this file as the primary compact index for locating target logs and V3 lifec
 - `slots[].slot_id`: slot identifier used in `slot_{slot_id}` directories.
 - `slots[].lifecycle_reliable`: false when V3 lifecycle evidence has known error-level issues.
 - `slots[].lifecycle_split_result`: official lifecycle_split payload when present.
-- `slots[].boundary_issues[]`: legacy CycleDetector diagnostics; use only when no V3 payload exists.
 - `board_cycles[].dir_name`: board cycle directory name, usually `{start}-{end}` like `20260103T000100-20260103T000200`; `unknown` means no bounded board cycle.
 - `board_cycles[].start_time` / `end_time`: machine-readable board cycle interval for problem-time matching.
 - `board_cycles[].processes[]`: board-level process lifecycle summaries.
@@ -116,8 +115,8 @@ These commands are useful for quick checks. Use the repository root as the worki
 
 ```bash
 python3.12 cli.py info <task_id> -o <output_dir>
-python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
-python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir> --verbose
+python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir> --verbose
 python3.12 cli.py list-slots <task_id> -o <output_dir>
 python3.12 cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
 python3.12 cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>

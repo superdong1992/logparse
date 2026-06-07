@@ -5,7 +5,7 @@
 Default product:
 
 ```bash
-python cli.py parse diagnostic_information_20260103.zip \
+python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
   --config config.yaml \
   --output output \
   --product default
@@ -14,7 +14,7 @@ python cli.py parse diagnostic_information_20260103.zip \
 Compact product example:
 
 ```bash
-python cli.py parse compact_package_20260103.zip \
+python cli.py parse tests\mock_data_compact\compact_package_20260103.zip \
   --config config.yaml \
   --output output \
   --product compact
@@ -30,6 +30,10 @@ Common options:
 | `--lifecycle-dfx` | V3 lifecycle DFX level: `errors`, `summary`, `decisions`, `full`, `off` |
 | `--debug-expand-gz` | Debug-only plain `.gz` expansion |
 | `--profile` | Generate `performance.json` and print a performance summary |
+
+The checked-in `tests/mock_data*` packages are demo/smoke assets. Their
+generator scripts can refresh those packages, but pytest unit tests should use
+focused fixtures unless they explicitly need a full-package smoke input.
 
 ## Lifecycle Split V3
 
@@ -107,7 +111,7 @@ This uses the supported `Decompressor.extract_all(..., expand_gz=True)` path.
 ## Profile
 
 ```bash
-python cli.py parse diagnostic_information_20260103.zip \
+python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
   --output output_optimized \
   --product default \
   --profile

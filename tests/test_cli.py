@@ -510,7 +510,7 @@ def test_parse_lifecycle_dfx_decisions_prints_v3_chinese_report(tmp_path, monkey
                                             "silent_gap_seconds": 30,
                                             "decision": "merged",
                                             "blocking_reason": "",
-                                            "whitelist_pid_counts": [
+                                            "reliable_pid_counts": [
                                                 {
                                                     "process_name": "procA",
                                                     "pids": ["100"],
@@ -893,7 +893,7 @@ def test_mech_lifecycles_show_boundaries_dispatches_lifecycle_split_v3(tmp_path)
                                             "silent_gap_seconds": 30,
                                             "decision": "kept_split",
                                             "blocking_reason": "reliable_pid_conflict",
-                                            "whitelist_pid_counts": [
+                                            "reliable_pid_counts": [
                                                 {
                                                     "process_name": "anchor",
                                                     "pids": ["10", "11"],

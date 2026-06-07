@@ -49,7 +49,7 @@ type: project
    - requirements.txt 从 7 个依赖减到 3 个：pyyaml, pydantic, click
 
 4. **插件框架 Phase 1 完成**（新建文件）
-   - `backend/utils.py` — 纯函数：glob_to_regex, extract_slot_id, extract_private_slot_info, extract_dump_time, extract_journal_sequence, extract_content_timestamps, is_compressed, read_text_file
+   - `backend/utils.py` — current pure helpers: glob matching, slot parsing, dump-time parsing, journal sequence parsing, compression checks, and safe log path naming
    - `backend/plugins/__init__.py` — 空
    - `backend/plugins/base.py` — DirectoryDiscoveryPlugin (ABC): discover(root)→(slots, private_slots)；LogParserPlugin (ABC): parse(result)→result + write_output(mech_result, dir)→path
    - `backend/plugins/loader.py` — instantiate_plugin(class_path, base, config, **extra)

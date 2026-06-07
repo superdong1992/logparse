@@ -21,7 +21,6 @@ import json
 import re
 import sys
 import time
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -362,21 +361,6 @@ def _format_issue_counts(counts: dict[str, int]) -> str:
     return f"ERROR={counts['ERROR']} WARNING={counts['WARNING']} INFO={counts['INFO']}"
 
 
-def _boundary_issue_counts(issues) -> dict[str, int]:
-    counts = _empty_issue_counts()
-    for issue in issues:
-        counts[_severity_key(_issue_get(issue, "severity"))] += 1
-    return counts
-
-
-def _issue_kind_counts(issues) -> Counter[str]:
-    return Counter(str(_issue_get(issue, "kind") or "-") for issue in issues)
-
-
-def _format_kind_counts(counts: Counter[str]) -> str:
-    return " ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
-
-
 def _as_plain(value):
     if isinstance(value, dict):
         return value
@@ -404,26 +388,6 @@ def _iter_result_lifecycle_issues(result: ParseResult):
     for module_name, slot_id, lifecycle_result in _iter_result_lifecycle_results(result):
         for issue in lifecycle_result.get("issues") or []:
             yield module_name, slot_id, issue
-
-
-def _is_lifecycle_dfx_error(message: str) -> bool:
-    return (
-        "unsafe cycle split" in message
-        or "cycle split diagnostic:" in message
-        or "forced protected pid split:" in message
-    )
-
-
-def _lifecycle_error_severity(message: str) -> str:
-    if (
-        "unsafe cycle split kept" in message
-        or "restart_boundary_overlap" in message
-        or "same_pid_kept" in message
-    ):
-        return "ERROR"
-    if "scoped_cpu_split" in message or "suspect_over_split" in message:
-        return "INFO"
-    return "WARNING"
 
 
 def _lifecycle_algorithm(result: dict) -> str:
@@ -649,7 +613,7 @@ def _print_lifecycle_split_v3_decisions(decisions: list[dict], *, indent: str) -
         right = _format_candidate_indices(decision.get("right_candidate_indices") or [])
         click.echo(f"{indent}聚合检查 #{decision_index}：候选生命周期 {left} + {right}")
         click.echo(f"{indent}可靠边界进程 PID 统计（白名单）：")
-        pid_counts = decision.get("whitelist_pid_counts") or []
+        pid_counts = decision.get("reliable_pid_counts") or []
         if pid_counts:
             for item in pid_counts:
                 pids = item.get("pids") or []

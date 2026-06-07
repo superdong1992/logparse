@@ -170,11 +170,6 @@ class TestParseDiagProcName:
         resolver = ProcessNameResolver()
         assert resolver.parse_diag_process_name("SERVICE") == ("SERVICE", "")
 
-    def test_name_mapping(self, plugin):
-        from backend.parsing.process_name_resolver import ProcessNameResolver
-        resolver = ProcessNameResolver(name_map={"DHCP": "dhcpd"})
-        assert resolver.parse_diag_process_name("DHCP-9881") == ("DHCP", "9881")
-
     def test_non_numeric_suffix(self, plugin):
         from backend.parsing.process_name_resolver import ProcessNameResolver
         resolver = ProcessNameResolver()

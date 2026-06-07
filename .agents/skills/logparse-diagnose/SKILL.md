@@ -16,7 +16,7 @@ Load `references/preprocess-output.md` when you need field meanings, path layout
 For weak-model or generated diagnosis callers, follow this path first:
 
 1. Collect `input_path`, `problem_time`, and one target anchor per requested process: `module + slot + process_name + optional pid + optional label`.
-2. Resolve `input_path` to a result root containing `result.json`. If parsing a raw package is needed, require an explicit V3 config path whose module1 `lifecycle_split.algorithm` is `interval_v3`; do not use `config.yaml`, `config.lifecycle-v2.yaml`, or CLI defaults as an implicit V3 config.
+2. Resolve `input_path` to a result root containing `result.json`. If parsing a raw package is needed, use the provided config path or the repository `config.yaml`; current module1 lifecycle splitting is V3-only.
 3. Run `python3.12 cli.py mech-target-logs ...` once per target anchor and use the returned JSON as the only target-log selection result.
 4. Return `target_logs` plus matched log content/windows. Stop on missing or ambiguous requested targets instead of substituting related logs.
 
@@ -35,7 +35,7 @@ Collect or infer these inputs:
 - Input path: either a raw log package such as `.zip`, `.tar`, `.tar.gz`, `.tgz`, or `.gz`, or a preprocessed result directory such as `output/{task_id}` containing `result.json`.
 - Approximate problem time. Preserve the user's timezone wording if present.
 - One or more target anchors. Each anchor should include `module`, `slot`, and `process_name`; `pid` and a user label such as `client` or `server` are optional.
-- Parse settings when the input is a raw package: explicit V3 config path, output directory, and whether verbose output is desired. The V3 config path is required for raw-package parsing unless the prompt explicitly asks for legacy/non-V3 output.
+- Parse settings when the input is a raw package: config path, output directory, product name, and whether verbose output is desired. `config.yaml` is the current V3-only default.
 
 If the input path, problem time, module, slot, or process name is missing and cannot be inferred, ask for it. If a PID is supplied, use it as a strict additional match.
 
@@ -44,8 +44,8 @@ If the input path, problem time, module, slot, or process name is missing and ca
 1. Resolve the input into a preprocessed result root.
    - Prefer the directory containing `result.json`.
    - If only an output base and task id are given, use `output/{task_id}/result.json`.
-   - If the input is a raw package file or a directory without `result.json`, parse it first with `python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>`.
-   - Use parse settings from the prompt. If no explicit V3 config path is provided, ask for it or stop with a missing-input error; do not infer lifecycle version from `cli.py` option defaults, `config.yaml`, or `config.lifecycle-v2.yaml`.
+   - If the input is a raw package file or a directory without `result.json`, parse it first with `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`.
+   - Use parse settings from the prompt. If no config path is provided, use `config.yaml`.
    - After parsing, verify the parsed result has V3 lifecycle payloads before diagnosing.
    - After parsing, derive `task_id` from the CLI output or package stem, then use `<output_dir>/<task_id>/result.json`.
    - Read `metadata.json` when available for scanner coverage, original paths, active periods, private slots, and parse errors.
@@ -53,7 +53,7 @@ If the input path, problem time, module, slot, or process name is missing and ca
 
 2. Confirm V3 readiness.
    - Open `result.json` and find module1 slots with `lifecycle_split_result.algorithm == "interval_v3"`.
-   - If V3 payloads are missing after a fresh parse, report the config/result mismatch before diagnosing. Do not silently treat V2 or CycleDetector output as official V3.
+   - If V3 payloads are missing after a fresh parse, report the config/result mismatch before diagnosing.
    - If the user explicitly asks to inspect legacy output, continue with a clear non-V3 caveat.
 
 3. Resolve each target anchor with the deterministic CLI.
@@ -77,7 +77,7 @@ If the input path, problem time, module, slot, or process name is missing and ca
    - Use `merge_decisions[]` to explain why adjacent candidates were merged or kept split; important `blocking_reason` values include journal wrap and reliable PID conflict.
    - Use `journal_evidence[]` to connect sequence wraps or journal signals to candidate boundaries.
    - Use `issues[]` and `lifecycle_reliable=false` to caveat unsafe or incomplete V3 evidence.
-   - Use legacy `boundary_issues[]` or CycleDetector wording only when no V3 payload exists in the result.
+   - If legacy lifecycle output is encountered, label it unsupported for current diagnosis and do not substitute legacy fields for V3 evidence.
 
 6. Expand related logs.
    - Read `references/relation-rules.md`.
@@ -133,8 +133,8 @@ Use normal shell and JSON tooling available in the current environment. These co
 
 ```bash
 python3.12 cli.py info <task_id> -o <output_dir>
-python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir>
-python3.12 cli.py parse <package_path> -c <v3_config_path> -o <output_dir> --verbose
+python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>
+python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir> --verbose
 python3.12 cli.py list-slots <task_id> -o <output_dir>
 python3.12 cli.py mech-slots <task_id> -o <output_dir>
 python3.12 cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module_key_or_name> --slot <slot_id> --process-name <process_name> --pid <pid> --label <label> -o <output_dir>

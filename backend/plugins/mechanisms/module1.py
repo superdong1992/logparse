@@ -42,7 +42,7 @@ class Module1Plugin(MechanismModulePlugin):
             if cfg.get("active_master_keyword")
             else None
         )
-        resolver = ProcessNameResolver({})
+        resolver = ProcessNameResolver()
         scanner = MechDiagScanner(
             diag_re,
             seq_re,
@@ -88,7 +88,7 @@ class Module1Plugin(MechanismModulePlugin):
             return None
 
         all_entries: list[MechLogEntry] = []
-        resolver = ProcessNameResolver({})
+        resolver = ProcessNameResolver()
 
         diag_t0 = time.perf_counter()
         diag_file_count = 0
@@ -138,7 +138,6 @@ class Module1Plugin(MechanismModulePlugin):
                 line_pattern2_required_substrings,
                 master_keyword,
                 resolver,
-                None,
                 mod_upper,
                 self.ts_extractor,
             )

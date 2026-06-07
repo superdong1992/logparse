@@ -1276,25 +1276,6 @@ def _known_bucket_cache_key(target: _KnownBucketTarget) -> tuple[int, int, int]:
     )
 
 
-def _known_bucket_target_range(
-    target: _KnownBucketTarget,
-    upstream_slot: MechSlotOutput | None,
-) -> tuple[datetime | None, datetime | None]:
-    lower_bound, upper_bound = _extension_limits_for_target(
-        target.board_cycle,
-        target.cpu_cycle,
-        upstream_slot,
-    )
-    start_time, end_time = _target_base_range(target.board_cycle, target.cpu_cycle)
-    return _projected_bounds(
-        start_time,
-        end_time,
-        target.entries,
-        lower_bound,
-        upper_bound,
-    )
-
-
 def _candidate_admissible_range(
     board_cycle: MechBoardCycle,
     cpu_cycle: MechCpuCycle | None,

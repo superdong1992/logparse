@@ -30,7 +30,6 @@ class MechJournalScanner:
         line_pattern2_required_substrings: list[str] | None,
         master_keyword: re.Pattern | None,
         resolver: ProcessNameResolver,
-        indicator: str | None,
         module_name_upper: str,
         ts_extractor: TimestampExtractor,
     ):
@@ -42,7 +41,6 @@ class MechJournalScanner:
         self._matcher = JournalPatternMatcher(journal_re, journal_re2, seq_re)
         self._master_keyword = master_keyword
         self._resolver = resolver
-        self._indicator = indicator
         self._mod_upper = module_name_upper
         self._ts_extractor = ts_extractor
 
@@ -75,9 +73,7 @@ class MechJournalScanner:
                 seq = match.sequence
                 context = match.context
 
-                proc_name, pid = self._resolver.resolve_journal_process_name(
-                    raw_name, raw_pid, self._indicator,
-                )
+                proc_name, pid = self._resolver.resolve_journal_process_name(raw_name, raw_pid)
                 is_active = bool(self._master_keyword and self._master_keyword.search(context))
                 ts = self._extract_first_ts(line)
                 if ts and ts.tzinfo is None and tzinfo is not None:
