@@ -111,10 +111,6 @@ def _mech_to_dict(mech: MechResult) -> dict[str, Any]:
             {
                 "slot_id": slot.slot_id,
                 "lifecycle_reliable": slot.lifecycle_reliable,
-                "boundary_issues": [
-                    _omit_raw_fields(issue.model_dump(mode="json"))
-                    for issue in slot.boundary_issues
-                ],
                 "lifecycle_split_result": _model_to_json(slot.lifecycle_split_result),
                 "board_cycles": [
                     _board_cycle_to_dict(cycle) for cycle in slot.board_cycles

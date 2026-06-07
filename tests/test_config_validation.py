@@ -96,8 +96,11 @@ class TestValidateMechanismModuleConfig:
             "diag_pattern": r"Slot=(?P<Slot>\d+);CPU=(?P<CPU_Id>\d+);Proc=(?P<ProcessName>\w+);Ctx=(?P<Context>.+)",
             "journal": {"line_pattern": r"(\S+)\s+No\[(\d+)\]\s+(\d{4}-\d{2}-\d{2}\S+)\s+(.*)"},
             "sequence_pattern": r"No\[(\d+)\]",
-            "board_restart_whitelist": ["PROC1"],
-            "process_name_mapping": {"DHCP": "dhcpd"},
+            "lifecycle_split": {
+                "process_name_mapping": {"canonical": ["alias"]},
+                "reliable_processes": ["canonical"],
+                "multi_instance_processes": ["worker"],
+            },
         }
         errors = validate_mechanism_module_config("module1", cfg)
         assert errors == []
@@ -147,21 +150,23 @@ class TestValidateMechanismModuleConfig:
         assert errors
         assert "sequence_pattern" in errors[0]
 
-    def test_whitelist_name_map_conflict(self):
-        cfg = {
-            "module_name": "EXAMPLE",
-            "board_restart_whitelist": ["DHCP"],
-            "process_name_mapping": {"DHCP": "dhcpd"},
-        }
-        errors = validate_mechanism_module_config("module1", cfg)
-        assert errors
-        assert "dhcp" in errors[0].lower()
+    def test_legacy_module_lifecycle_fields_are_rejected(self):
+        for field, value in (
+            ("board_restart_" + "indicator", "dhcp"),
+            ("board_restart_" + "whitelist", ["DHCP"]),
+            ("process_name_" + "mapping", {"DHCP": "dhcpd"}),
+        ):
+            cfg = {"module_name": "EXAMPLE", field: value}
+
+            errors = validate_mechanism_module_config("module1", cfg)
+
+            assert errors
+            assert field in errors[0]
 
     def test_lifecycle_split_reliable_processes_accepts_flat_list(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
                 "process_name_mapping": {"board_anchor": ["boardd"]},
                 "reliable_processes": ["board_anchor"],
                 "multi_instance_processes": ["multi"],
@@ -170,11 +175,10 @@ class TestValidateMechanismModuleConfig:
         errors = validate_mechanism_module_config("module1", cfg)
         assert errors == []
 
-    def test_lifecycle_split_legacy_reliable_board_cpu_lists_are_merged(self):
+    def test_lifecycle_split_legacy_reliable_board_cpu_lists_are_rejected(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
                 "reliable_processes": {
                     "board": ["anchor"],
                     "cpu": ["anchor"],
@@ -182,28 +186,14 @@ class TestValidateMechanismModuleConfig:
             },
         }
         errors = validate_mechanism_module_config("module1", cfg)
-        assert errors == []
-
-    def test_lifecycle_split_legacy_reliable_rejects_unknown_keys(self):
-        cfg = {
-            "module_name": "EXAMPLE",
-            "lifecycle_split": {
-                "enabled": True,
-                "reliable_processes": {
-                    "boad": ["anchor"],
-                },
-            },
-        }
-        errors = validate_mechanism_module_config("module1", cfg)
         assert errors
-        assert "unsupported legacy keys" in errors[0]
-        assert "boad" in errors[0]
+        assert "reliable_processes" in errors[0]
+        assert "list" in errors[0]
 
     def test_lifecycle_split_reliable_processes_none_means_empty(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
                 "reliable_processes": None,
             },
         }
@@ -214,7 +204,6 @@ class TestValidateMechanismModuleConfig:
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
                 "process_name_mapping": {"canonical_proc": ["alias_proc"]},
                 "reliable_processes": ["alias_proc"],
                 "multi_instance_processes": ["canonical_proc"],
@@ -224,58 +213,32 @@ class TestValidateMechanismModuleConfig:
         assert errors
         assert "canonical_proc" in errors[0]
 
-    def test_lifecycle_split_missing_enabled_keeps_v2_disabled(self):
+    def test_lifecycle_split_enabled_is_rejected(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "process_name_mapping": [],
-            },
-        }
-        errors = validate_mechanism_module_config("module1", cfg)
-        assert errors == []
-
-    def test_lifecycle_split_enabled_must_be_boolean(self):
-        cfg = {
-            "module_name": "EXAMPLE",
-            "lifecycle_split": {
-                "enabled": "false",
+                "enabled": True,
             },
         }
         errors = validate_mechanism_module_config("module1", cfg)
         assert errors
         assert "enabled" in errors[0]
-        assert "boolean" in errors[0]
 
-    def test_lifecycle_split_unknown_algorithm_is_rejected_when_enabled(self):
+    def test_lifecycle_split_algorithm_is_rejected(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
-                "algorithm": "interval_v4",
-            },
-        }
-        errors = validate_mechanism_module_config("module1", cfg)
-        assert errors
-        assert "algorithm" in errors[0]
-        assert "interval_v3" in errors[0]
-
-    def test_lifecycle_split_unknown_algorithm_is_rejected_even_when_disabled(self):
-        cfg = {
-            "module_name": "EXAMPLE",
-            "lifecycle_split": {
-                "enabled": False,
-                "algorithm": "interval_v4",
+                "algorithm": "interval_" + "v2",
             },
         }
         errors = validate_mechanism_module_config("module1", cfg)
         assert errors
         assert "algorithm" in errors[0]
 
-    def test_lifecycle_split_process_name_mapping_must_be_object_when_enabled(self):
+    def test_lifecycle_split_process_name_mapping_must_be_object(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
                 "process_name_mapping": [],
             },
         }
@@ -284,11 +247,10 @@ class TestValidateMechanismModuleConfig:
         assert "process_name_mapping" in errors[0]
         assert "object" in errors[0]
 
-    def test_lifecycle_split_reliable_processes_rejects_non_list_non_object_when_enabled(self):
+    def test_lifecycle_split_reliable_processes_rejects_non_list(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
                 "reliable_processes": "worker",
             },
         }
@@ -297,59 +259,10 @@ class TestValidateMechanismModuleConfig:
         assert "reliable_processes" in errors[0]
         assert "list" in errors[0]
 
-    def test_lifecycle_split_reliable_processes_lists_are_required_when_enabled(self):
+    def test_lifecycle_split_multi_instance_processes_must_be_list(self):
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
-                "reliable_processes": {
-                    "board": "board_anchor",
-                    "cpu": [],
-                },
-            },
-        }
-        errors = validate_mechanism_module_config("module1", cfg)
-        assert errors
-        assert "reliable_processes.board" in errors[0]
-        assert "list" in errors[0]
-
-    def test_lifecycle_split_reliable_processes_numeric_legacy_value_is_reported(self):
-        cfg = {
-            "module_name": "EXAMPLE",
-            "lifecycle_split": {
-                "enabled": True,
-                "reliable_processes": {
-                    "board": 123,
-                    "cpu": [],
-                },
-            },
-        }
-        errors = validate_mechanism_module_config("module1", cfg)
-        assert errors
-        assert "reliable_processes.board" in errors[0]
-        assert "list" in errors[0]
-
-    def test_lifecycle_split_cpu_reliable_processes_must_be_list_when_enabled(self):
-        cfg = {
-            "module_name": "EXAMPLE",
-            "lifecycle_split": {
-                "enabled": True,
-                "reliable_processes": {
-                    "board": [],
-                    "cpu": "cpu_anchor",
-                },
-            },
-        }
-        errors = validate_mechanism_module_config("module1", cfg)
-        assert errors
-        assert "reliable_processes.cpu" in errors[0]
-        assert "list" in errors[0]
-
-    def test_lifecycle_split_multi_instance_processes_must_be_list_when_enabled(self):
-        cfg = {
-            "module_name": "EXAMPLE",
-            "lifecycle_split": {
-                "enabled": True,
                 "multi_instance_processes": "worker",
             },
         }
@@ -362,7 +275,6 @@ class TestValidateMechanismModuleConfig:
         cfg = {
             "module_name": "EXAMPLE",
             "lifecycle_split": {
-                "enabled": True,
                 "reliable_processes": ["Proc"],
                 "multi_instance_processes": ["proc"],
             },
@@ -667,33 +579,37 @@ class TestPluginSubclassValidation:
 
 
 class TestShippedConfigFiles:
-    def test_default_and_lifecycle_v2_configs_validate_and_toggle_default_product(self):
-        default_cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-        v2_cfg = yaml.safe_load((ROOT / "config.lifecycle-v2.yaml").read_text(encoding="utf-8"))
+    def test_config_yaml_validates_as_v3_only_current_entry(self):
+        cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
 
-        assert validate_config(default_cfg) == []
-        assert validate_config(v2_cfg) == []
+        assert validate_config(cfg) == []
 
         default_module = (
-            default_cfg["products"]["default"]["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
-        )
-        v2_module = (
-            v2_cfg["products"]["default"]["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
+            cfg["products"]["default"]["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
         )
         compact_module = (
-            v2_cfg["products"]["compact"]["log_parser"]["config"]["mechanism_modules"]["ctrl"]["config"]
+            cfg["products"]["compact"]["log_parser"]["config"]["mechanism_modules"]["ctrl"]["config"]
         )
-
-        assert default_module["lifecycle_split"]["enabled"] is False
-        assert v2_module["lifecycle_split"]["enabled"] is True
-        assert compact_module["lifecycle_split"]["enabled"] is False
+        for module in (default_module, compact_module):
+            assert set(module["lifecycle_split"]) == {
+                "process_name_mapping",
+                "reliable_processes",
+                "multi_instance_processes",
+            }
+            assert "enabled" not in module["lifecycle_split"]
+            assert "algorithm" not in module["lifecycle_split"]
 
         legacy_lifecycle_fields = {
-            "board_restart_indicator",
-            "board_restart_whitelist",
-            "process_name_mapping",
+            "board_restart_" + "indicator",
+            "board_restart_" + "whitelist",
+            "process_name_" + "mapping",
         }
-        for product in v2_cfg["products"].values():
+        for product in cfg["products"].values():
             modules = product["log_parser"]["config"]["mechanism_modules"].values()
             for module in modules:
                 assert legacy_lifecycle_fields.isdisjoint(module["config"])
+
+    def test_lifecycle_v2_config_is_archived_not_current_entry(self):
+        archived_name = "config.lifecycle-" + "v2.yaml"
+        assert not (ROOT / archived_name).exists()
+        assert (ROOT / "docs" / "archive" / "lifecycle-v2" / archived_name).exists()

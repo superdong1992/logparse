@@ -21,7 +21,7 @@ from backend.models import (
     MechCycleSplitTrace,
     MechLogEntry,
 )
-from backend.parsing.lifecycle_splitter import (
+from backend.parsing.lifecycle_common import (
     LifecycleSplitConfig,
     _build_process_lifecycles,
     _entry_sort_key,

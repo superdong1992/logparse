@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from backend.models import MechLogEntry
-from backend.parsing.lifecycle_splitter import LifecycleSplitConfig
+from backend.parsing.lifecycle_common import LifecycleSplitConfig
 from backend.parsing.lifecycle_splitter_v3 import LifecycleSplitterV3
 
 
@@ -38,8 +38,6 @@ def _entry(
 def _splitter(*, reliable: list[str] | None = None, multi: list[str] | None = None) -> LifecycleSplitterV3:
     return LifecycleSplitterV3(
         LifecycleSplitConfig.from_mapping({
-            "enabled": True,
-            "algorithm": "interval_v3",
             "reliable_processes": reliable or [],
             "multi_instance_processes": multi or [],
         })
@@ -251,8 +249,6 @@ def test_cpu_reliable_pid_conflict_still_records_cpu_scoped_error():
 def test_process_name_mapping_is_applied_before_v3_reliable_pid_counting():
     splitter = LifecycleSplitterV3(
         LifecycleSplitConfig.from_mapping({
-            "enabled": True,
-            "algorithm": "interval_v3",
             "process_name_mapping": {"anchor": ["anchord"]},
             "reliable_processes": ["anchor"],
         })
@@ -298,8 +294,6 @@ def test_build_board_cycles_archives_each_log_once_and_nests_nonzero_cpu_logs():
 def test_build_board_cycles_merges_pidless_journal_after_process_name_mapping():
     splitter = LifecycleSplitterV3(
         LifecycleSplitConfig.from_mapping({
-            "enabled": True,
-            "algorithm": "interval_v3",
             "process_name_mapping": {"svc": ["svc_journal"]},
         })
     )

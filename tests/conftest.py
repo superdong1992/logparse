@@ -30,8 +30,11 @@ def sample_config() -> dict:
                     "module_name": "EXAMPLE",
                     "diag_pattern": r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]*).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\)$",
                     "active_master_keyword": "MASTER_ACTIVE",
-                    "board_restart_indicator": "dhcp",
-                    "process_name_mapping": {},
+                    "lifecycle_split": {
+                        "process_name_mapping": {},
+                        "reliable_processes": [],
+                        "multi_instance_processes": [],
+                    },
                     "journal": {
                         "line_pattern": r"^\S+\s+\S+\s+\S+?:\s+\[slotId\s*=\s*\d+,\s*cpuId\s*=\s*\d+,\s*processName\s*=\s*(\S+?)-(\d+)\]:\s+No\[(\d+)\](.+)$",
                         "line_pattern2": r"^\S+\s+\S+\s+(\S+?)(?:-(\d+))?:\s+No\[(\d+)\](.+)$",

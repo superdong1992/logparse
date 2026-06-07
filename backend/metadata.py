@@ -90,10 +90,6 @@ class MetadataGenerator:
                 {
                     "slot_id": s.slot_id,
                     "lifecycle_reliable": s.lifecycle_reliable,
-                    "boundary_issues": [
-                        issue.model_dump(mode="json")
-                        for issue in s.boundary_issues
-                    ],
                     "board_cycles": [
                         {
                             "dir_name": c.dir_name,

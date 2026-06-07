@@ -10,8 +10,7 @@ from typing import Any
 
 from backend.config_validation import validate_mechanism_module_config
 from backend.models import MechLogEntry, MechResult, MechSlotOutput, ParseResult
-from backend.parsing.cycle_detector import CycleDetector
-from backend.parsing.lifecycle_splitter import LifecycleSplitConfig, LifecycleSplitter
+from backend.parsing.lifecycle_common import LifecycleSplitConfig
 from backend.parsing.lifecycle_splitter_v3 import LifecycleSplitterV3
 from backend.parsing.mech_diag_scanner import MechDiagScanner
 from backend.parsing.mech_journal_scanner import MechJournalScanner
@@ -43,7 +42,7 @@ class Module1Plugin(MechanismModulePlugin):
             if cfg.get("active_master_keyword")
             else None
         )
-        resolver = ProcessNameResolver(cfg.get("process_name_mapping", {}))
+        resolver = ProcessNameResolver({})
         scanner = MechDiagScanner(
             diag_re,
             seq_re,
@@ -82,37 +81,14 @@ class Module1Plugin(MechanismModulePlugin):
             if cfg.get("active_master_keyword")
             else None
         )
-        indicator = (
-            cfg.get("board_restart_indicator", "").lower()
-            if cfg.get("board_restart_indicator")
-            else None
-        )
-        whitelist = cfg.get("board_restart_whitelist", [])
-        name_map: dict[str, str] = cfg.get("process_name_mapping", {})
-        lifecycle_split_cfg = cfg.get("lifecycle_split")
-        use_lifecycle_split_v2 = (
-            isinstance(lifecycle_split_cfg, dict)
-            and lifecycle_split_cfg.get("enabled", False) is True
-        )
-        split_config: LifecycleSplitConfig | None = None
-        if use_lifecycle_split_v2:
-            try:
-                split_config = LifecycleSplitConfig.from_mapping(lifecycle_split_cfg)
-            except ValueError as exc:
-                result.errors.append(f"{self.module_key}: {exc}")
-                return None
-
-        whitelist_set = {w.lower() for w in whitelist}
-        map_keys = {k.lower() for k in name_map}
-        conflict = whitelist_set & map_keys
-        if conflict:
-            result.errors.append(
-                f"{self.module_key}: board_restart_whitelist conflicts with process_name_mapping: {sorted(conflict)}"
-            )
+        try:
+            split_config = LifecycleSplitConfig.from_mapping(cfg.get("lifecycle_split", {}))
+        except ValueError as exc:
+            result.errors.append(f"{self.module_key}: {exc}")
             return None
 
         all_entries: list[MechLogEntry] = []
-        resolver = ProcessNameResolver(name_map)
+        resolver = ProcessNameResolver({})
 
         diag_t0 = time.perf_counter()
         diag_file_count = 0
@@ -162,7 +138,7 @@ class Module1Plugin(MechanismModulePlugin):
                 line_pattern2_required_substrings,
                 master_keyword,
                 resolver,
-                indicator,
+                None,
                 mod_upper,
                 self.ts_extractor,
             )
@@ -199,32 +175,15 @@ class Module1Plugin(MechanismModulePlugin):
         for slot_id, entries in sorted(by_slot.items()):
             slot_t0 = time.perf_counter()
             slot_output = MechSlotOutput(slot_id=slot_id)
-            if use_lifecycle_split_v2 and split_config is not None:
-                splitter_cls = (
-                    LifecycleSplitterV3
-                    if split_config.algorithm == "interval_v3"
-                    else LifecycleSplitter
-                )
-                splitter = splitter_cls(
-                    split_config,
-                    module_key=self.module_key,
-                    module_name=module_name,
-                )
-                split_result = splitter.split(entries)
-                slot_output.board_cycles = splitter.build_board_cycles(split_result)
-                slot_output.lifecycle_reliable = split_result.lifecycle_reliable
-                slot_output.lifecycle_split_result = split_result
-            else:
-                detector = CycleDetector(
-                    indicator=indicator,
-                    whitelist=whitelist,
-                    module_key=self.module_key,
-                    module_name=module_name,
-                )
-                slot_output.board_cycles = detector.detect(entries)
-                slot_output.lifecycle_reliable = detector.lifecycle_reliable
-                slot_output.boundary_issues = detector.boundary_issues
-                result.errors.extend(detector.errors)
+            splitter = LifecycleSplitterV3(
+                split_config,
+                module_key=self.module_key,
+                module_name=module_name,
+            )
+            split_result = splitter.split(entries)
+            slot_output.board_cycles = splitter.build_board_cycles(split_result)
+            slot_output.lifecycle_reliable = split_result.lifecycle_reliable
+            slot_output.lifecycle_split_result = split_result
             mech_result.slots.append(slot_output)
             logger.info(
                 "LOGPARSE_PERF module1.slot_cycle module=%s slot=%s elapsed=%.3fs "
@@ -234,7 +193,7 @@ class Module1Plugin(MechanismModulePlugin):
                 time.perf_counter() - slot_t0,
                 len(entries),
                 len(slot_output.board_cycles),
-                str(use_lifecycle_split_v2).lower(),
+                "interval_v3",
             )
 
         active_slots = {entry.slot for entry in all_entries if entry.is_active_signal}

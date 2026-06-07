@@ -31,7 +31,7 @@
 <line x1="550.0" y1="475" x2="550.0" y2="505" stroke="#533483" stroke-width="2" marker-end="url(#arrow)"/>
 <rect x="220.0" y="594" width="175" height="38" rx="8" fill="#2d1b69" stroke="#533483" stroke-width="1.5"/><text x="307.5" y="605.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">TimestampExtractor</text><text x="307.5" y="620.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">时间戳提取 + 时区对齐</text>
 <line x1="450.0" y1="559" x2="307.5" y2="594" stroke="#533483" stroke-width="2" marker-end="url(#arrow)"/>
-<rect x="462.5" y="594" width="175" height="38" rx="8" fill="#2d1b69" stroke="#533483" stroke-width="1.5"/><text x="550.0" y="605.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">CycleDetector</text><text x="550.0" y="620.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">PID变化 + 序号回绕切分</text>
+<rect x="462.5" y="594" width="175" height="38" rx="8" fill="#2d1b69" stroke="#533483" stroke-width="1.5"/><text x="550.0" y="605.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">LifecycleSplitterV3</text><text x="550.0" y="620.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">30s候选 + 证据聚合</text>
 <line x1="550.0" y1="559" x2="550.0" y2="594" stroke="#533483" stroke-width="2" marker-end="url(#arrow)"/>
 <rect x="680.0" y="594" width="175" height="38" rx="8" fill="#2d1b69" stroke="#533483" stroke-width="1.5"/><text x="767.5" y="605.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">RoleIdentifier</text><text x="767.5" y="620.5" text-anchor="middle" fill="#e0e0e0" font-size="11" font-weight="normal" font-family="system-ui,sans-serif">机制优先 + 兜底判定</text>
 <line x1="650.0" y1="559" x2="767.5" y2="594" stroke="#533483" stroke-width="2" marker-end="url(#arrow)"/>
@@ -50,7 +50,7 @@
 <circle cx="325.0" cy="888" r="5" fill="#e94560"/>
 <text x="340.0" y="892" fill="#e0e0e0" font-size="11" font-family="system-ui,sans-serif">ParserPlugin — 解析编排，委托给 3 个子组件</text>
 <circle cx="325.0" cy="906" r="5" fill="#533483"/>
-<text x="340.0" y="910" fill="#e0e0e0" font-size="11" font-family="system-ui,sans-serif">TimestampExtractor / CycleDetector / RoleIdentifier — 核心解析组件</text>
+<text x="340.0" y="910" fill="#e0e0e0" font-size="11" font-family="system-ui,sans-serif">TimestampExtractor / LifecycleSplitterV3 / RoleIdentifier — 核心解析组件</text>
 <circle cx="325.0" cy="924" r="5" fill="#2ecc71"/>
 <text x="340.0" y="928" fill="#e0e0e0" font-size="11" font-family="system-ui,sans-serif">MechOutputWriter — slot/board_cycle/[cpu_N/cpu_cycle/] 嵌套落盘</text>
 <circle cx="325.0" cy="942" r="5" fill="#f0a500"/>

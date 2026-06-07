@@ -280,7 +280,7 @@ class TestMechLifecyclesMultiModule:
         assert len(groups) == 1
         assert groups[0]["module_name"] == "EXAMPLE"
 
-    def test_returns_lifecycle_reliability_and_boundary_issues(self, svc, tmp_path):
+    def test_returns_lifecycle_reliability_without_legacy_issue_field(self, svc, tmp_path):
         _write_result(tmp_path, "task", [
             {
                 "module_name": "EXAMPLE",
@@ -288,41 +288,14 @@ class TestMechLifecyclesMultiModule:
                     {
                         "slot_id": "1",
                         "lifecycle_reliable": False,
-                        "boundary_issues": [
-                            {
-                                "kind": "unsafe_cycle_split",
-                                "severity": "error",
-                                "split_time": "2026-01-03T00:00:10+08:00",
-                            },
-                        ],
-                        "board_cycles": [{"dir_name": "c1"}],
-                    },
-                ],
-            },
-        ])
-
-        groups = svc.mech_lifecycles("task", slot_id="1", module_name="EXAMPLE")
-
-        assert groups[0]["lifecycle_reliable"] is False
-        assert groups[0]["boundary_issues"][0]["kind"] == "unsafe_cycle_split"
-
-    def test_returns_lifecycle_split_v2_result(self, svc, tmp_path):
-        _write_result(tmp_path, "task", [
-            {
-                "module_name": "EXAMPLE",
-                "slots": [
-                    {
-                        "slot_id": "1",
-                        "lifecycle_reliable": True,
                         "lifecycle_split_result": {
-                            "boundaries": [
-                                {
-                                    "origin_scope": "board",
-                                    "timestamp": "2026-01-03T00:01:00",
-                                    "type": "journal_sequence_wrapped",
-                                },
-                            ],
+                            "algorithm": "interval_v3",
+                            "candidate_segments": [],
+                            "merge_decisions": [],
+                            "lifecycles": [],
+                            "journal_evidence": [],
                             "issues": [],
+                            "lifecycle_reliable": False,
                         },
                         "board_cycles": [{"dir_name": "c1"}],
                     },
@@ -332,7 +305,43 @@ class TestMechLifecyclesMultiModule:
 
         groups = svc.mech_lifecycles("task", slot_id="1", module_name="EXAMPLE")
 
-        assert groups[0]["lifecycle_split_result"]["boundaries"][0]["type"] == "journal_sequence_wrapped"
+        assert groups[0]["lifecycle_reliable"] is False
+        assert ("boundary_" + "issues") not in groups[0]
+        assert groups[0]["lifecycle_split_result"]["algorithm"] == "interval_v3"
+
+    def test_returns_lifecycle_split_v3_result(self, svc, tmp_path):
+        _write_result(tmp_path, "task", [
+            {
+                "module_name": "EXAMPLE",
+                "slots": [
+                    {
+                        "slot_id": "1",
+                        "lifecycle_reliable": True,
+                        "lifecycle_split_result": {
+                            "algorithm": "interval_v3",
+                            "candidate_segments": [
+                                {
+                                    "scope": "board",
+                                    "slot": "1",
+                                    "candidate_index": 0,
+                                },
+                            ],
+                            "merge_decisions": [],
+                            "lifecycles": [],
+                            "journal_evidence": [],
+                            "issues": [],
+                            "lifecycle_reliable": True,
+                        },
+                        "board_cycles": [{"dir_name": "c1"}],
+                    },
+                ],
+            },
+        ])
+
+        groups = svc.mech_lifecycles("task", slot_id="1", module_name="EXAMPLE")
+
+        assert groups[0]["lifecycle_split_result"]["algorithm"] == "interval_v3"
+        assert groups[0]["lifecycle_split_result"]["candidate_segments"][0]["scope"] == "board"
 
     def test_returns_empty_when_no_match(self, svc, tmp_path):
         _write_result(tmp_path, "task", [

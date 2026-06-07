@@ -1,6 +1,6 @@
 from backend.parsing.active_period_builder import ActivePeriodBuilder
-from backend.parsing.cycle_detector import CycleDetector
-from backend.parsing.lifecycle_splitter import LifecycleSplitConfig, LifecycleSplitter
+from backend.parsing.lifecycle_common import LifecycleSplitConfig
+from backend.parsing.lifecycle_splitter_v3 import LifecycleSplitterV3
 from backend.parsing.mech_diag_scanner import MechDiagScanner
 from backend.parsing.mech_journal_scanner import MechJournalScanner
 from backend.parsing.output_writer import MechOutputWriter
@@ -10,9 +10,8 @@ from backend.parsing.timestamp_extractor import TimestampExtractor
 
 __all__ = [
     "ActivePeriodBuilder",
-    "CycleDetector",
     "LifecycleSplitConfig",
-    "LifecycleSplitter",
+    "LifecycleSplitterV3",
     "MechDiagScanner",
     "MechJournalScanner",
     "MechOutputWriter",

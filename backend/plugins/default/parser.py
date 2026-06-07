@@ -297,11 +297,7 @@ class ParserPlugin(LogParserPlugin):
         except TypeError:
             return list(timestamps)
 
-    def _extract_all_timestamps(self, slots: list[SlotInfo]) -> None:
-        for slot in slots:
-            for entry in slot.diagnostic_logs:
-                entry.content_timestamps = self._ts_extractor.extract_from_entry(entry)
-        # 时区归一化：在排序/构建 ActivePeriod 前，将 naive datetime 统一时区
+    # 时区归一化：在排序/构建 ActivePeriod 前，将 naive datetime 统一时区
         tzinfo = None
         for slot in slots:
             for entry in slot.diagnostic_logs:

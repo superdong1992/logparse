@@ -5,7 +5,7 @@ from scripts import rule_preflight
 
 def test_rule_preflight_maps_lifecycle_paths_to_cpu0_board_contract():
     rules = rule_preflight.select_rules_for_paths([
-        "backend/parsing/lifecycle_splitter.py",
+        "backend/parsing/lifecycle_splitter_v3.py",
     ])
 
     rendered = rule_preflight.render_rules(rules)
@@ -40,8 +40,8 @@ def test_rule_preflight_changed_uses_git_paths(monkeypatch):
         "backend/config_validation.py",
         "cli.py",
     ]
-    assert "rules:lifecycle-config" in rendered
-    assert "enabled must be an explicit boolean true to enable v2" in rendered
+    assert "rules:lifecycle-v3-config" in rendered
+    assert "Module1Plugin always uses LifecycleSplitterV3" in rendered
     assert "rules:nested-cycle-output" in rendered
     assert "rules:compact-result-contract" in rendered
 

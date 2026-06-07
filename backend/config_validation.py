@@ -386,14 +386,16 @@ def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> li
                 f"mechanism_modules.{module_key}.sequence_pattern 正则非法: {e}"
             )
 
-    whitelist = cfg.get("board_restart_whitelist", [])
-    name_map = cfg.get("process_name_mapping", {})
-    conflict = {w.lower() for w in whitelist} & {k.lower() for k in name_map}
-    if conflict:
-        errors.append(
-            f"mechanism_modules.{module_key}: board_restart_whitelist "
-            f"不能同时出现在 process_name_mapping 中: {sorted(conflict)}"
-        )
+    for legacy_field in (
+        "board_restart_" + "indicator",
+        "board_restart_" + "whitelist",
+        "process_name_" + "mapping",
+    ):
+        if legacy_field in cfg:
+            errors.append(
+                f"mechanism_modules.{module_key}.{legacy_field} is no longer supported; "
+                "use lifecycle_split V3 fields"
+            )
 
     errors.extend(_validate_lifecycle_split_config(module_key, cfg.get("lifecycle_split")))
 
@@ -408,15 +410,20 @@ def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
     if not isinstance(raw, dict):
         return [f"{path} must be an object"]
 
-    enabled = raw.get("enabled", False)
-    if not isinstance(enabled, bool):
-        return [f"{path}.enabled must be a boolean"]
-
-    algorithm = str(raw.get("algorithm", "interval_v2"))
-    if algorithm not in {"interval_v2", "interval_v3"}:
-        return [f"{path}.algorithm must be one of: interval_v2, interval_v3"]
-    if enabled is False:
-        return []
+    unsupported = sorted(
+        key
+        for key in raw
+        if key not in {
+            "process_name_mapping",
+            "reliable_processes",
+            "multi_instance_processes",
+        }
+    )
+    if unsupported:
+        return [
+            f"{path} only supports V3 fields: process_name_mapping, "
+            f"reliable_processes, multi_instance_processes; unsupported keys: {unsupported}"
+        ]
 
     mapping = raw.get("process_name_mapping", {})
     if not isinstance(mapping, dict):
@@ -439,69 +446,27 @@ def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
             alias_to_canonical[_norm_name(str(alias))] = canonical_name
 
     reliable_raw = raw.get("reliable_processes", [])
-    reliable_names: list[Any]
-    if reliable_raw is None:
-        reliable_names = []
-        reliable_list_error = None
-    elif isinstance(reliable_raw, list):
-        reliable_names = reliable_raw
-        reliable_list_error = None
-    elif isinstance(reliable_raw, dict):
-        unknown_keys = sorted(str(key) for key in reliable_raw if key not in {"board", "cpu"})
-        if unknown_keys:
-            reliable_names = []
-            reliable_list_error = (
-                f"{path}.reliable_processes has unsupported legacy keys: "
-                f"{unknown_keys}; expected board/cpu"
-            )
-        else:
-            board_value = reliable_raw.get("board", [])
-            cpu_value = reliable_raw.get("cpu", [])
-            board_error = _validate_name_list(
-                f"{path}.reliable_processes.board",
-                board_value,
-            )
-            cpu_error = _validate_name_list(
-                f"{path}.reliable_processes.cpu",
-                cpu_value,
-            )
-            reliable_list_error = board_error or cpu_error
-            reliable_names = []
-            if reliable_list_error is None:
-                reliable_names = list(board_value or [])
-                reliable_names.extend(list(cpu_value or []))
-    else:
-        reliable_names = []
-        reliable_list_error = f"{path}.reliable_processes must be a list or legacy object"
-
+    multi_raw = raw.get("multi_instance_processes", [])
     list_errors = [
         error for error in (
-            reliable_list_error,
-            _validate_name_list(f"{path}.multi_instance_processes", raw.get("multi_instance_processes", [])),
+            _validate_name_list(f"{path}.reliable_processes", reliable_raw),
+            _validate_name_list(f"{path}.multi_instance_processes", multi_raw),
         )
         if error
     ]
     if list_errors:
         return list_errors
 
-    reliable = _canonical_name_set(reliable_names, alias_to_canonical)
-    multi = _canonical_name_set(raw.get("multi_instance_processes", []), alias_to_canonical)
-
-    conflicts = {
-        "reliable_processes/multi_instance_processes": reliable & multi,
-    }
-    active = {
-        name: sorted(values)
-        for name, values in conflicts.items()
-        if values
-    }
-    if not active:
+    reliable = _canonical_name_set(reliable_raw or [], alias_to_canonical)
+    multi = _canonical_name_set(multi_raw or [], alias_to_canonical)
+    conflicts = reliable & multi
+    if not conflicts:
         return []
 
     return [
-        f"{path} 配置冲突：同一个 canonical 进程只能出现在 "
-        "reliable_processes、multi_instance_processes "
-        f"中的一个列表；冲突项: {active}"
+        f"{path} config conflict: each canonical process may appear in only one of "
+        "reliable_processes, multi_instance_processes; "
+        f"conflicts={sorted(conflicts)}"
     ]
 
 

@@ -26,9 +26,11 @@ def _module1_config() -> dict:
             r"Context=(?P<Context>.+?)\)$"
         ),
         "active_master_keyword": "ACTIVE",
-        "board_restart_indicator": "",
-        "board_restart_whitelist": [],
-        "process_name_mapping": {},
+        "lifecycle_split": {
+            "process_name_mapping": {},
+            "reliable_processes": [],
+            "multi_instance_processes": [],
+        },
         "journal": {
             "line_pattern": "",
             "line_pattern2": "",
@@ -248,85 +250,7 @@ def test_module1_plugin_parses_diag_entries_without_no(tmp_path):
     assert mech.active_master_slots == ["1"]
 
 
-def test_module1_plugin_propagates_cycle_detector_errors(tmp_path):
-    log_file = tmp_path / "diag.log"
-    log_file.write_text(
-        "\n".join([
-            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=dhcp-100; Context=old)",
-            "2026-01-03T06:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=dhcp-200; Context=new)",
-            "2026-01-03T05:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=other-500; Context=before split)",
-            "2026-01-03T07:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=other-500; Context=after split)",
-            "2026-01-03T08:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=late-900; Context=after adjusted split)",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
-    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
-    result = ParseResult(diagnostic_slots=[slot])
-    cfg = _module1_config()
-    cfg["board_restart_indicator"] = "dhcp"
-    plugin = Module1Plugin(
-        cfg,
-        module_key="module1",
-        ts_extractor=_timestamp_extractor(),
-    )
-
-    mech = plugin.parse(result)
-
-    assert mech is not None
-    assert any("unsafe cycle split adjusted_backward" in error for error in result.errors)
-    assert any("cycle split diagnostic: same_pid_adjusted_backward" in error for error in result.errors)
-    assert any("m=module1" in error and "s=1" in error for error in result.errors)
-    assert any("module=module1" in error and "slot=1" in error for error in result.errors)
-    assert any("same_pid_conflicts=other-500@board" in error for error in result.errors)
-    assert any("protected_boundaries=dhcp@board role=indicator" in error for error in result.errors)
-    assert any("protected_gap=" in error for error in result.errors)
-
-
-def test_module1_plugin_uses_lifecycle_split_v2_when_enabled(tmp_path):
-    log_file = tmp_path / "diag.log"
-    log_file.write_text(
-        "\n".join([
-            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=dhcp-100; Context=old)",
-            "2026-01-03T01:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=dhcp-200; Context=new)",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
-    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
-    result = ParseResult(diagnostic_slots=[slot])
-    cfg = _module1_config()
-    cfg["lifecycle_split"] = {
-        "enabled": True,
-        "reliable_processes": ["dhcp"],
-        "multi_instance_processes": [],
-    }
-    plugin = Module1Plugin(
-        cfg,
-        module_key="module1",
-        ts_extractor=_timestamp_extractor(),
-    )
-
-    mech = plugin.parse(result)
-
-    assert mech is not None
-    slot_output = mech.slots[0]
-    assert slot_output.lifecycle_split_result is not None
-    assert slot_output.lifecycle_reliable is True
-    assert len(slot_output.board_cycles) == 2
-    expected_boundary = _timestamp_extractor().extract_from_text("2026-01-03T01:00:00")[0]
-    assert slot_output.lifecycle_split_result.boundaries[0].timestamp == expected_boundary
-    assert not result.errors
-
-
-def test_module1_plugin_dispatches_lifecycle_split_v3_by_algorithm(tmp_path):
+def test_module1_plugin_defaults_to_lifecycle_split_v3(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
         "\n".join([
@@ -342,9 +266,8 @@ def test_module1_plugin_dispatches_lifecycle_split_v3_by_algorithm(tmp_path):
     result = ParseResult(diagnostic_slots=[slot])
     cfg = _module1_config()
     cfg["lifecycle_split"] = {
-        "enabled": True,
-        "algorithm": "interval_v3",
         "reliable_processes": ["dhcp"],
+        "multi_instance_processes": [],
     }
     plugin = Module1Plugin(
         cfg,
@@ -363,42 +286,7 @@ def test_module1_plugin_dispatches_lifecycle_split_v3_by_algorithm(tmp_path):
     assert not result.errors
 
 
-def test_module1_plugin_lifecycle_split_enabled_false_uses_cycle_detector(tmp_path):
-    log_file = tmp_path / "diag.log"
-    log_file.write_text(
-        "\n".join([
-            "2026-01-03T00:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=dhcp-100; Context=old)",
-            "2026-01-03T01:00:00 EXAMPLE Service=S; Slot=1; CPU-Id=0; "
-            "ProcessName=dhcp-200; Context=new)",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-    slot = SlotInfo(slot_id="1", name="slot_1", path=str(tmp_path))
-    slot.add_diagnostic_log(LogEntry(path=str(log_file), name="diag.log"))
-    result = ParseResult(diagnostic_slots=[slot])
-    cfg = _module1_config()
-    cfg["board_restart_indicator"] = "dhcp"
-    cfg["lifecycle_split"] = {
-        "enabled": False,
-        "process_name_mapping": [],
-    }
-    plugin = Module1Plugin(
-        cfg,
-        module_key="module1",
-        ts_extractor=_timestamp_extractor(),
-    )
-
-    mech = plugin.parse(result)
-
-    assert mech is not None
-    slot_output = mech.slots[0]
-    assert slot_output.lifecycle_split_result is None
-    assert len(slot_output.board_cycles) == 2
-    assert not result.errors
-
-
-def test_module1_plugin_v2_treats_cpu_id_zero_as_board_scope(tmp_path):
+def test_module1_plugin_v3_treats_cpu_id_zero_as_board_scope(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
         "\n".join([
@@ -414,7 +302,6 @@ def test_module1_plugin_v2_treats_cpu_id_zero_as_board_scope(tmp_path):
     result = ParseResult(diagnostic_slots=[slot])
     cfg = _module1_config()
     cfg["lifecycle_split"] = {
-        "enabled": True,
         "reliable_processes": ["dhcp"],
     }
     plugin = Module1Plugin(
@@ -428,8 +315,8 @@ def test_module1_plugin_v2_treats_cpu_id_zero_as_board_scope(tmp_path):
     assert mech is not None
     split_result = mech.slots[0].lifecycle_split_result
     assert split_result is not None
-    assert [boundary.origin_scope for boundary in split_result.boundaries] == ["board"]
-    assert all(scope.scope == "board" for scope in split_result.scopes)
+    assert split_result.algorithm == "interval_v3"
+    assert {lifecycle.scope for lifecycle in split_result.lifecycles} == {"board"}
     assert all(
         log.cpu_id == ""
         for cycle in mech.slots[0].board_cycles
@@ -438,7 +325,7 @@ def test_module1_plugin_v2_treats_cpu_id_zero_as_board_scope(tmp_path):
     )
 
 
-def test_module1_plugin_v2_ignores_no_pid_no_sequence_journal_for_reliable_process(tmp_path):
+def test_module1_plugin_v3_ignores_no_pid_no_sequence_journal_for_reliable_process(tmp_path):
     diag_file = tmp_path / "diag.log"
     diag_file.write_text(
         "\n".join([
@@ -473,7 +360,6 @@ def test_module1_plugin_v2_ignores_no_pid_no_sequence_journal_for_reliable_proce
         "identifying_keyword": "example",
     }
     cfg["lifecycle_split"] = {
-        "enabled": True,
         "reliable_processes": ["dhcp"],
     }
     plugin = Module1Plugin(
@@ -489,7 +375,7 @@ def test_module1_plugin_v2_ignores_no_pid_no_sequence_journal_for_reliable_proce
     assert slot_output.lifecycle_reliable is True
     assert slot_output.lifecycle_split_result is not None
     assert slot_output.lifecycle_split_result.issues == []
-    assert len(slot_output.lifecycle_split_result.boundaries) == 1
+    assert slot_output.lifecycle_split_result.algorithm == "interval_v3"
     assert mech.journal_entry_count == 2
 
 

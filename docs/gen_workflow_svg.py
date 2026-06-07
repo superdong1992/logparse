@@ -161,10 +161,10 @@ def generate() -> str:
                      fill="#2d1b69", border=C_PURPLE, text_color=C_TEXT, font_size=11))
     parts.append(arrow(s4x, s4y + BOX_H, ts_x + sub_w/2, sub_y))
 
-    # CycleDetector
+    # LifecycleSplitterV3
     cd_x = cx - sub_w/2
     parts.append(box(cd_x, sub_y, sub_w, sub_h,
-                     "CycleDetector\nPID变化 + 序号回绕切分",
+                     "LifecycleSplitterV3\n30s候选 + 证据聚合",
                      fill="#2d1b69", border=C_PURPLE, text_color=C_TEXT, font_size=11))
     parts.append(arrow(cx, s4y + BOX_H, cd_x + sub_w/2, sub_y))
 
@@ -211,7 +211,7 @@ def generate() -> str:
 
     legends = [
         (C_ACCENT, "ParserPlugin — 解析编排，委托给 3 个子组件"),
-        (C_PURPLE, "TimestampExtractor / CycleDetector / RoleIdentifier — 核心解析组件"),
+        (C_PURPLE, "TimestampExtractor / LifecycleSplitterV3 / RoleIdentifier — 核心解析组件"),
         (C_GREEN, "MechOutputWriter — slot/board_cycle/[cpu_N/cpu_cycle/] 嵌套落盘"),
         (C_GOLD, "MetadataGenerator — 输出 metadata.json"),
     ]
@@ -232,8 +232,44 @@ def generate() -> str:
     return "\n".join(line.rstrip() for line in svg.splitlines()) + "\n"
 
 
+def generate_html() -> str:
+    svg = generate()
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>logparse workflow</title>
+<style>
+body {{
+  margin: 0;
+  padding: 24px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+h1 {{ text-align: center; margin: 0 0 6px; }}
+p {{ text-align: center; margin: 0 0 20px; color: #a8a8b3; }}
+.canvas {{ display: flex; justify-content: center; overflow-x: auto; }}
+</style>
+</head>
+<body>
+<h1>logparse workflow</h1>
+<p>V3-only lifecycle split pipeline</p>
+<div class="canvas">
+{svg}
+</div>
+</body>
+</html>
+"""
+
+
 if __name__ == "__main__":
     from pathlib import Path
-    out = Path(__file__).parent / "workflow.svg"
-    out.write_text(generate(), encoding="utf-8", newline="\n")
-    print(f"已生成: {out}")
+    base = Path(__file__).parent
+    svg_out = base / "workflow.svg"
+    html_out = base / "workflow.html"
+    svg_out.write_text(generate(), encoding="utf-8", newline="\n")
+    html_out.write_text(generate_html(), encoding="utf-8", newline="\n")
+    print(f"generated: {svg_out}")
+    print(f"generated: {html_out}")

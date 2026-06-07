@@ -24,7 +24,7 @@ from backend.models import (
 from backend.performance import PerformanceRecorder
 from backend.plugins.default.parser import ParserPlugin
 from backend.plugins.mechanisms.base import MechanismModulePlugin
-from backend.parsing.cycle_detector import CycleDetector
+from backend.parsing.lifecycle_common import _build_process_lifecycles, _format_cycle_dir
 from backend.parsing.role_identifier import RoleIdentifier
 
 
@@ -183,7 +183,7 @@ class TestParseDiagProcName:
 
 class TestBuildProcesses:
     def test_single_process(self, sample_mech_entries):
-        procs = CycleDetector._build_processes(sample_mech_entries[:5], "sequence")
+        procs = _build_process_lifecycles(sample_mech_entries[:5])
         assert len(procs) == 1
         assert procs[0].process_name == "dhcp"
         assert procs[0].pid == "100"
@@ -194,7 +194,7 @@ class TestBuildProcesses:
             MechLogEntry(process_name="svc", pid="1", sequence=i, raw=f"line{i}")
             for i in [1, 2, 4, 5, 8]
         ]
-        procs = CycleDetector._build_processes(entries, "sequence")
+        procs = _build_process_lifecycles(entries)
         assert len(procs) == 1
         assert procs[0].missing_sequences == [3, 6, 7]
 
@@ -204,89 +204,9 @@ class TestBuildProcesses:
             MechLogEntry(process_name="svc", pid="2", sequence=1, raw="b"),
             MechLogEntry(process_name="other", pid="1", sequence=1, raw="c"),
         ]
-        procs = CycleDetector._build_processes(entries, "sequence")
+        procs = _build_process_lifecycles(entries)
         assert len(procs) == 3
 
-
-class TestBuildCycles:
-    def test_single_cycle_no_restart(self):
-        entries = [
-            MechLogEntry(
-                timestamp=datetime(2026, 1, 3, 0, i, 0),
-                source="journal", slot="1", cpu_id="",
-                process_name="svc", pid="100", sequence=i,
-                raw=f"line{i}",
-            )
-            for i in range(1, 6)
-        ]
-        detector = CycleDetector(indicator=None)
-        cycles = detector.detect(entries)
-        assert len(cycles) == 1
-
-    def test_pid_change_creates_two_cycles(self):
-        entries = [
-            MechLogEntry(
-                timestamp=datetime(2026, 1, 3, 0, i, 0),
-                source="journal", slot="1", cpu_id="",
-                process_name="dhcp", pid="100", sequence=i,
-                raw=f"line{i}",
-            )
-            for i in range(1, 4)
-        ] + [
-            MechLogEntry(
-                timestamp=datetime(2026, 1, 3, 1, i, 0),
-                source="journal", slot="1", cpu_id="",
-                process_name="dhcp", pid="200", sequence=i,
-                raw=f"line{i+10}",
-            )
-            for i in range(1, 4)
-        ]
-        detector = CycleDetector(indicator="dhcp")
-        cycles = detector.detect(entries)
-        assert len(cycles) == 2
-
-    def test_cpu_subcard_isolation(self):
-        board_entries = [
-            MechLogEntry(
-                timestamp=datetime(2026, 1, 3, 0, i, 0),
-                source="journal", slot="1", cpu_id="",
-                process_name="svc", pid="100", sequence=i,
-                raw=f"board_line{i}",
-            )
-            for i in range(1, 6)
-        ]
-        cpu_entries = [
-            MechLogEntry(
-                timestamp=datetime(2026, 1, 3, 0, i, 0),
-                source="journal", slot="1", cpu_id="1",
-                process_name="dhcp", pid="50", sequence=i,
-                raw=f"cpu_line{i}",
-            )
-            for i in range(1, 4)
-        ] + [
-            MechLogEntry(
-                timestamp=datetime(2026, 1, 3, 1, i, 0),
-                source="journal", slot="1", cpu_id="1",
-                process_name="dhcp", pid="60", sequence=i,
-                raw=f"cpu_line2_{i}",
-            )
-            for i in range(1, 4)
-        ]
-        all_entries = board_entries + cpu_entries
-        detector = CycleDetector(indicator="dhcp")
-        cycles = detector.detect(all_entries)
-        board_cycles = [c for c in cycles if any(
-            p.pid == "100" for p in c.processes
-        )]
-        assert len(board_cycles) == 1
-        cpu_cycles = board_cycles[0].cpu_cycles
-        assert len(cpu_cycles) == 2
-        assert {
-            p.pid
-            for cpu_cycle in cpu_cycles
-            for p in cpu_cycle.processes
-            if p.process_name == "dhcp"
-        } == {"50", "60"}
 
 
 class TestRoleIdentification:
@@ -549,10 +469,10 @@ class TestFmtDir:
     def test_both_times(self):
         s = datetime(2026, 1, 3, 10, 37, 7)
         e = datetime(2026, 1, 3, 11, 37, 8)
-        assert CycleDetector._fmt_dir(s, e) == "20260103T103707-20260103T113708"
+        assert _format_cycle_dir(s, e) == "20260103103707-20260103113708"
 
     def test_start_only(self):
-        assert CycleDetector._fmt_dir(datetime(2026, 1, 3, 0, 0, 0), None) == "20260103T000000"
+        assert _format_cycle_dir(datetime(2026, 1, 3, 0, 0, 0), None) == "unknown"
 
     def test_none(self):
-        assert CycleDetector._fmt_dir(None, None) == "unknown"
+        assert _format_cycle_dir(None, None) == "unknown"

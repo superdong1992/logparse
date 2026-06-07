@@ -319,39 +319,3 @@ class Pipeline:
         ):
             return False
         return self.decompressor.is_compressed(name)
-
-    @staticmethod
-    def _decompress_gz_in_dir(directory: Path) -> int:
-        """解压目录下所有 .gz 文件（就地展开），方便手工浏览。"""
-        import gzip
-
-        from backend.decompressor import MAX_UNCOMPRESSED_SIZE
-
-        count = 0
-        for gz_path in sorted(directory.rglob("*.gz")):
-            if not gz_path.is_file():
-                continue
-            output_path = gz_path.parent / gz_path.stem
-            if output_path.exists():
-                continue
-            try:
-                exceeded = False
-                with gzip.open(gz_path, "rb") as f_in, open(output_path, "wb") as f_out:
-                    written = 0
-                    while True:
-                        chunk = f_in.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        written += len(chunk)
-                        if written > MAX_UNCOMPRESSED_SIZE:
-                            logger.warning("gzip 解压后超过大小上限，跳过: %s", gz_path)
-                            exceeded = True
-                            break
-                        f_out.write(chunk)
-                if exceeded:
-                    output_path.unlink(missing_ok=True)
-                else:
-                    count += 1
-            except Exception as e:
-                logger.warning("解压 .gz 失败 %s: %s", gz_path, e)
-        return count

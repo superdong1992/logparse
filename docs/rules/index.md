@@ -7,8 +7,7 @@ or `python scripts/rule_preflight.py --changed` before reviewing a local diff.
 ## rules:cpu-id-board
 
 Source: `backend/parsing/mech_diag_scanner.py`,
-`backend/parsing/mech_journal_scanner.py`, `backend/plugins/mechanisms/module2.py`,
-and `docs/superpowers/plans/2026-05-26-module2-dependent-cycle-output.md`.
+`backend/parsing/mech_journal_scanner.py`, and `backend/plugins/mechanisms/module2.py`.
 
 Checklist:
 
@@ -19,38 +18,36 @@ Checklist:
 
 ## rules:nested-cycle-output
 
-Source: `README.md`, `docs/lifecycle-split-logic.md`, and
-`.agents/skills/logparse-diagnose/references/preprocess-output.md`.
+Source: `README.md`, `docs/architecture.md`, and `.agents/skills/logparse-diagnose/references/preprocess-output.md`.
 
 Checklist:
 
 - Board cycles are the top-level lifecycle output.
 - CPU cycles are nested under the matching board cycle.
 - Board-level process logs live directly under the board cycle directory.
-- CPU-cycle process logs live under `cpu_<id>/<cpu_cycle>/`; board-cycle processes that directly carry `cpu_id` use the compatibility path `cpu_<id>/<proc>[~P<pid>].log`.
+- CPU-cycle process logs live under `cpu_<id>/<cpu_cycle>/`.
 
 ## rules:module2-upstream-lifecycle
 
-Source: `README.md`, `docs/architecture.md`, and
-`.agents/skills/logparse-diagnose/references/relation-rules.md`.
+Source: `README.md`, `docs/architecture.md`, and `.agents/skills/logparse-diagnose/references/relation-rules.md`.
 
 Checklist:
 
 - `module2` is diagnostic-only for lifecycle purposes.
 - `module2` reuses `module1` lifecycle cycles.
-- `module2` may expand output bounds only within the nearest adjacent module1 gap; output lifecycle directories must not overlap.
+- `module2` may expand output bounds only within the nearest adjacent module1 gap.
 - CPU anchors preserve the same parent board cycle and nested CPU cycle when available.
 
 ## rules:compact-result-contract
 
-Source: `backend/result_serializer.py`, `README.md`, and
-`.agents/skills/logparse-diagnose/references/preprocess-output.md`.
+Source: `backend/result_serializer.py`, `backend/query.py`, and `README.md`.
 
 Checklist:
 
 - Compact `result.json` is a query index, not a raw log archive.
 - Per-line `logs[]` and raw text are omitted from compact process summaries.
 - New query-facing fields must survive serializer -> query -> CLI.
+- Lifecycle issues live under `lifecycle_split_result.issues`.
 
 ## rules:scanner-decompression-boundary
 
@@ -62,34 +59,24 @@ Checklist:
 - Scanner plugins only inspect the already extracted workspace.
 - Plain `.gz` logs are streamed by parsers unless debug expansion is enabled.
 
-## rules:lifecycle-config
+## rules:lifecycle-v3-config
 
-Source: `docs/lifecycle-split-v2-rules.md`,
-`docs/lifecycle-split-v2-refactor-plan.md`, `backend/config_validation.py`,
-and `backend/plugins/mechanisms/module1.py`.
+Source: `backend/config_validation.py`, `backend/plugins/mechanisms/module1.py`, and `backend/parsing/lifecycle_splitter_v3.py`.
 
 Checklist:
 
-- `enabled must be an explicit boolean true to enable v2`.
-- Missing `lifecycle_split.enabled` keeps v2 disabled.
-- `enabled: false` keeps the old `CycleDetector` path.
-- `reliable_processes` is a flat list in the current config shape.
-- Legacy `reliable_processes.board` / `reliable_processes.cpu` objects are accepted
-  as compatibility input and merged.
-- `reliable_processes` and `multi_instance_processes` must be disjoint after
-  process name canonicalization and case folding.
+- `Module1Plugin` always uses `LifecycleSplitterV3`.
+- Current `lifecycle_split` supports only `process_name_mapping`, `reliable_processes`, and `multi_instance_processes`.
+- `reliable_processes` and `multi_instance_processes` must be flat lists.
 - Conflict checks happen after process name canonicalization and case folding.
+- The final result algorithm is always `interval_v3`.
 
-## rules:lifecycle-v2-split
+## rules:lifecycle-v3-output
 
-Source: `docs/lifecycle-split-v2-rules.md` and
-`docs/lifecycle-split-v2-refactor-plan.md`.
+Source: `backend/result_serializer.py`, `backend/query.py`, `cli.py`, and `docs/lifecycle-dfx-guide.md`.
 
 Checklist:
 
-- Board evidence creates board-origin boundaries.
-- CPU-local evidence creates CPU-origin boundaries and does not affect board origin.
-- Inherited board boundaries participate in CPU effective boundaries.
-- `wide_support` is top-level evidence only; it is not attached to one boundary.
-- same-PID checks use final effective cycle indexes.
-- reliable processes must not have multiple PIDs in the same final lifecycle cycle.
+- V3 output contains `candidate_segments`, `merge_decisions`, `lifecycles`, `journal_evidence`, `issues`, and `lifecycle_reliable`.
+- `mech-lifecycles --show-boundaries` displays V3 DFX only.
+- Legacy result files may be reported as unsupported; do not preserve detailed compatibility display.

@@ -124,33 +124,6 @@ class MechCycleSplitTrace(BaseModel):
     detail: str = ""
 
 
-class MechBoundaryIssue(BaseModel):
-    """Structured lifecycle boundary diagnostic."""
-    kind: str
-    severity: str = "warning"
-    action: str = ""
-    reason: str = ""
-    module_key: str = ""
-    event_id: str = ""
-    scope: str = "board"
-    slot: str = ""
-    split_time: datetime | None = None
-    adjusted_time: datetime | None = None
-    window_start: datetime | None = None
-    window_end: datetime | None = None
-    old_pid_end: datetime | None = None
-    new_pid_start: datetime | None = None
-    process_name: str = ""
-    pid: str = ""
-    direction: str = ""
-    log_count: int = 0
-    detail: str = ""
-    conflicts: list[dict[str, Any]] = Field(default_factory=list)
-    protected_boundaries: list[dict[str, Any]] = Field(default_factory=list)
-    evidence: list[dict[str, Any]] = Field(default_factory=list)
-    suggested_commands: list[str] = Field(default_factory=list)
-
-
 class MechCpuCycle(BaseModel):
     """CPU-local lifecycle nested inside a board lifecycle."""
     cpu_id: str = ""
@@ -176,7 +149,6 @@ class MechSlotOutput(BaseModel):
     slot_id: str
     board_cycles: list[MechBoardCycle] = Field(default_factory=list)
     lifecycle_reliable: bool = True
-    boundary_issues: list[MechBoundaryIssue] = Field(default_factory=list)
     lifecycle_split_result: Any | None = None
 
 
