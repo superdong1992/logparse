@@ -330,8 +330,7 @@ def test_mech_logs_uses_explicit_pid_option(tmp_path):
     assert result.output.strip() == "matched log"
 
 
-def test_mech_logs_treats_dash_digit_proc_as_exact_name_without_pid(tmp_path):
-    _write_mech_log_file(tmp_path, "svc-100", "", "exact log\n")
+def test_mech_logs_uses_legacy_dash_filename_without_pid(tmp_path):
     _write_mech_log_file(tmp_path, "svc", "100", "legacy log\n")
 
     result = CliRunner().invoke(
@@ -353,10 +352,10 @@ def test_mech_logs_treats_dash_digit_proc_as_exact_name_without_pid(tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "exact log"
+    assert result.output.strip() == "legacy log"
 
 
-def test_mech_logs_requires_explicit_pid_for_pid_lookup(tmp_path):
+def test_mech_logs_explicit_pid_uses_same_legacy_dash_filename(tmp_path):
     _write_mech_log_file(tmp_path, "svc", "100", "legacy log\n")
 
     result = CliRunner().invoke(
@@ -369,7 +368,9 @@ def test_mech_logs_requires_explicit_pid_for_pid_lookup(tmp_path):
             "-c",
             "cycle",
             "-p",
-            "svc-100",
+            "svc",
+            "--pid",
+            "100",
             "-m",
             "EXAMPLE",
             "-o",
@@ -377,9 +378,8 @@ def test_mech_logs_requires_explicit_pid_for_pid_lookup(tmp_path):
         ],
     )
 
-    assert result.exit_code == 1
-    assert safe_log_filename("svc-100", "") in result.output
-    assert "legacy log" not in result.output
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "legacy log"
 
 
 def test_parse_validates_config_before_running_pipeline(tmp_path, monkeypatch):

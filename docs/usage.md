@@ -84,6 +84,11 @@ python cli.py mech-lifecycles <task_id> --output output -s 1 --module EXAMPLE
 python cli.py mech-logs <task_id> --output output -s 1 -c <board_cycle_dir> -p SERVICE --pid 12345 --module EXAMPLE
 ```
 
+Mechanism logs are written under `mech_modules/<module>/slot_<id>/<board_cycle>/`.
+Plain safe process names use the legacy `<proc>-<pid>.log` format. Names with
+path separators, Windows-reserved names, or filesystem-unsafe characters are
+encoded before writing.
+
 Nested CPU cycle logs:
 
 ```bash

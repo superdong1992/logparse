@@ -204,7 +204,7 @@ class TestMechOutputWriter:
         assert (expected_dir / "slot_1" / safe_path_segment("20260103T000100-20260103T000200")).is_dir()
         assert not (tmp_path / "MODULE").exists()
 
-    def test_process_pid_separator_avoids_filename_collision(self, writer, tmp_path):
+    def test_process_pid_uses_legacy_dash_filename(self, writer, tmp_path):
         result = MechResult(module_name="EXAMPLE")
         result.slots.append(
             MechSlotOutput(
@@ -213,22 +213,6 @@ class TestMechOutputWriter:
                     MechBoardCycle(
                         dir_name="cycle",
                         processes=[
-                            MechProcessLifecycle(
-                                process_name="svc-100",
-                                pid="",
-                                logs=[
-                                    MechLogEntry(
-                                        source="diagnostic",
-                                        source_file="slot_1/diag.log",
-                                        slot="1",
-                                        cpu_id="",
-                                        process_name="svc-100",
-                                        pid="",
-                                        raw="no pid",
-                                    )
-                                ],
-                                total_count=1,
-                            ),
                             MechProcessLifecycle(
                                 process_name="svc",
                                 pid="100",
@@ -257,9 +241,8 @@ class TestMechOutputWriter:
             / safe_path_segment("cycle")
         )
 
-        assert (out_dir / safe_log_filename("svc-100", "")).read_text(encoding="utf-8").endswith("no pid\n")
-        assert (out_dir / safe_log_filename("svc", "100")).read_text(encoding="utf-8").endswith("with pid\n")
-        assert safe_log_filename("svc-100", "") != safe_log_filename("svc", "100")
+        assert safe_log_filename("svc", "100") == "svc-100.log"
+        assert (out_dir / "svc-100.log").read_text(encoding="utf-8").endswith("with pid\n")
 
     def test_returns_output_dir(self, writer, tmp_path):
         mech_result = _make_mech_result()

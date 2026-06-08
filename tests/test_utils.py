@@ -72,6 +72,9 @@ class TestSafePathSegment:
     def test_preserves_simple_segment(self):
         assert safe_path_segment("2") == "2"
         assert safe_path_segment("1_2") == "1_2"
+        assert safe_path_segment("EXAMPLE") == "EXAMPLE"
+        assert safe_path_segment("MODULE2") == "MODULE2"
+        assert safe_path_segment("20260103T000100-20260103T000200") == "20260103T000100-20260103T000200"
 
     def test_replaces_path_separators(self):
         assert safe_path_segment("1/2").startswith("1~U0000002f2~H")
@@ -88,14 +91,13 @@ class TestSafePathSegment:
         assert safe_path_segment("a") != safe_path_segment("a.")
         assert safe_path_segment("a") != safe_path_segment(" a")
         assert safe_path_segment("a") != safe_path_segment("a ")
-        assert safe_path_segment("A") != safe_path_segment("a")
         assert safe_path_segment("1/2") != safe_path_segment("1_2")
         assert safe_path_segment("1/2") != safe_path_segment("1~U0000002f2")
         assert safe_path_segment(chr(0x1000) + "0") != safe_path_segment(chr(0x10000))
 
-    def test_avoids_windows_case_insensitive_collisions(self):
-        assert safe_path_segment("A").lower() != safe_path_segment("a").lower()
-        assert safe_path_segment("EXAMPLE").lower() != safe_path_segment("example").lower()
+    def test_encodes_windows_reserved_names(self):
+        assert safe_path_segment("CON").startswith("CON~H")
+        assert safe_path_segment("CON.txt").startswith("CON.txt~H")
 
     def test_safe_log_filename_escapes_process_fields(self):
         filename = safe_log_filename(r"..\..\escape", "10/20")
@@ -105,9 +107,10 @@ class TestSafePathSegment:
         assert "/" not in filename
         assert "\\" not in filename
 
-    def test_safe_log_filename_avoids_pid_separator_collision(self):
-        assert safe_log_filename("svc-100", "") != safe_log_filename("svc", "100")
-        assert safe_log_filename("SERVICE", "123").lower() != safe_log_filename("service", "123").lower()
+    def test_safe_log_filename_preserves_legacy_safe_names(self):
+        assert safe_log_filename("svc", "") == "svc.log"
+        assert safe_log_filename("svc", "100") == "svc-100.log"
+        assert safe_log_filename("SERVICE", "123") == "SERVICE-123.log"
 
 
 class TestExtractDumpTime:

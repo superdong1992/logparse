@@ -6,6 +6,16 @@ import re
 import hashlib
 from datetime import datetime
 
+SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def glob_to_regex(pattern: str) -> re.Pattern:
     """将 glob 模式编译为正则。* -> .*  ? -> .  大小写不敏感。"""
@@ -40,25 +50,47 @@ def safe_path_segment(value: object) -> str:
     text = "" if value is None else str(value)
     if not text:
         return "unknown"
+
+    if _is_legacy_safe_path_segment(text):
+        return text
+
     encoded = "".join(
         ch
-        if ch.isascii() and (ch.isalnum() or ch in "_-")
+        if ch.isascii() and (ch.isalnum() or ch in "_.-")
         else f"~U{ord(ch):08x}"
         for ch in text
     )
-    if any(not (ch.isascii() and (ch.isdigit() or ch in "_-")) for ch in text):
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-        encoded = f"{encoded}~H{digest}"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    encoded = f"{encoded}~H{digest}"
     return encoded or "unknown"
 
 
 def safe_log_filename(process_name: object, pid: object = "") -> str:
     """Return the mechanism log filename for a process lifecycle."""
-    name = safe_path_segment(process_name)
+    raw_name = "" if process_name is None else str(process_name)
     pid_text = "" if pid is None else str(pid)
+    if raw_name and _is_legacy_safe_path_segment(raw_name) and (
+        not pid_text or _is_legacy_safe_path_segment(pid_text)
+    ):
+        if pid_text:
+            return f"{raw_name}-{pid_text}.log"
+        return f"{raw_name}.log"
+
+    name = safe_path_segment(raw_name)
     if pid_text:
         return f"{name}~P{safe_path_segment(pid_text)}.log"
     return f"{name}.log"
+
+
+def _is_legacy_safe_path_segment(text: str) -> bool:
+    if not text or text in {".", ".."}:
+        return False
+    if text[-1] in {" ", "."}:
+        return False
+    if not SAFE_PATH_SEGMENT_RE.fullmatch(text):
+        return False
+    stem = text.split(".", 1)[0].upper()
+    return stem not in WINDOWS_RESERVED_NAMES
 
 
 def extract_dump_time(
