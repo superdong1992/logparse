@@ -85,10 +85,16 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
 
     required_phrases = [
         "input_path",
+        "config_path",
+        "output_dir",
         "problem_time",
         "module + slot + process_name",
         "logparse-diagnose",
         "Claude skill",
+        "-c <config_path>",
+        "具体 YAML 文件名",
+        "不要只传配置目录",
+        "不要省略配置文件路径",
         "cli.py mech-target-logs",
         "target_logs[*].log_path",
         "不要遍历",
@@ -99,6 +105,9 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
         "当前证据不足以确认根因",
         "result.zip",
         "result.txt",
+        "安全扁平文件名",
+        "Windows 非法字符",
+        "cpu_<cpu_id>",
         "pack_result_zip.py",
     ]
     missing_phrases = _contains_all(body, required_phrases)

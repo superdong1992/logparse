@@ -1,6 +1,6 @@
 # 问题定位 Wiki 推荐模板
 
-使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、问题时间、slot、module、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。
+使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、配置文件路径、输出目录、问题时间、slot、module、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。
 
 ## Frontmatter
 
@@ -41,7 +41,7 @@ skill_name: diagnose-link-timeout
 
 ## 定位步骤
 
-按执行顺序描述如何分析 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志。生成出的定位 skill 只允许读取这些路径，不允许遍历 `output/`、重新选择 lifecycle/cycle 或重新拼接日志路径；生命周期选择必须来自 `logparse-diagnose` 调用的 `cli.py mech-target-logs`。
+按执行顺序描述如何分析 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志。生成出的定位 skill 只允许读取这些路径，不允许遍历 `output/`、重新选择 lifecycle/cycle 或重新拼接日志路径；生命周期选择必须来自 `logparse-diagnose` 调用的 `cli.py mech-target-logs`。如果运行时 `input_path` 是原始日志包，生成出的定位 skill 必须收集包含具体 YAML 文件名的 `config_path` 和明确的 `output_dir`，并交给 `logparse-diagnose`；不要只传配置目录，不要自行运行 parse。
 
 ```markdown
 1. 在 client 日志中查找问题时间附近的请求发送记录，记录 request_id、序号和发送时间。
@@ -68,6 +68,6 @@ skill_name: diagnose-link-timeout
 ```markdown
 - 先输出明确定位结论。
 - 再输出关键分析依据，包括日志文件、时间点、关键行摘要。
-- 进程日志文件必须来自 `target_logs[*].log_path`，压缩包根目录中文件名使用 `<label>__<module>__slot_<slot>__<process_name>[-pid].log`。
+- 进程日志文件必须来自 `target_logs[*].log_path`，压缩包根目录中文件名使用安全扁平文件名，例如 `<label>__<module>__slot_<slot>__<process_name>[-pid].log`；当 `target_logs` 含 `cpu_id` 时使用 `<label>__<module>__slot_<slot>__cpu_<cpu_id>__<process_name>[-pid].log`。替换路径分隔符和 Windows 非法字符。
 - 如果证据不足，明确写“当前证据不足以确认根因”，并说明缺失哪份日志或哪类关键记录。
 ```

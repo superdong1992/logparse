@@ -10,7 +10,7 @@ When the user gives a raw log package instead of a result root, run the reposito
 python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>
 ```
 
-Use config/output values from the prompt. If no config path is provided, use the repository `config.yaml`; current module1 lifecycle splitting is V3-only. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
+Use config/output values from the prompt. For generated diagnosis skills, require a concrete `config_path` that includes the YAML filename, such as `config.yaml` or `configs/v3.yaml`; do not omit `-c <config_path>` and do not provide only a config directory. In interactive manual diagnosis, use the repository `config.yaml` only when the user explicitly accepts that default. Current module1 lifecycle splitting is V3-only. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
 
 Run all repository Python commands through Python 3.12. Prefer `python3.12`; on Windows only fall back to `py -3.12` if `python3.12` is unavailable. Install dependencies with the same interpreter, for example `python3.12 -m pip install -r requirements.txt`, and do not use bare `python`.
 

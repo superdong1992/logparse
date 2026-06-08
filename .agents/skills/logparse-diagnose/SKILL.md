@@ -16,7 +16,7 @@ Load `references/preprocess-output.md` when you need field meanings, path layout
 For weak-model or generated diagnosis callers, follow this path first:
 
 1. Collect `input_path`, `problem_time`, and one target anchor per requested process: `module + slot + process_name + optional pid + optional label`.
-2. Resolve `input_path` to a result root containing `result.json`. If parsing a raw package is needed, use the provided config path or the repository `config.yaml`; current module1 lifecycle splitting is V3-only.
+2. Resolve `input_path` to a result root containing `result.json`. If parsing a raw package is needed, require a concrete `config_path` that includes the YAML filename, such as `config.yaml`; current module1 lifecycle splitting is V3-only.
 3. Run `python3.12 cli.py mech-target-logs ...` once per target anchor and use the returned JSON as the only target-log selection result.
 4. Return `target_logs` plus matched log content/windows. Stop on missing or ambiguous requested targets instead of substituting related logs.
 
@@ -35,7 +35,7 @@ Collect or infer these inputs:
 - Input path: either a raw log package such as `.zip`, `.tar`, `.tar.gz`, `.tgz`, or `.gz`, or a preprocessed result directory such as `output/{task_id}` containing `result.json`.
 - Approximate problem time. Preserve the user's timezone wording if present.
 - One or more target anchors. Each anchor should include `module`, `slot`, and `process_name`; `pid` and a user label such as `client` or `server` are optional.
-- Parse settings when the input is a raw package: config path, output directory, product name, and whether verbose output is desired. `config.yaml` is the current V3-only default.
+- Parse settings when the input is a raw package: concrete config file path, output directory, and whether verbose output is desired. `config_path` must include the YAML filename, not just a directory. In generated-skill handoffs, do not fall back to an implicit default.
 
 If the input path, problem time, module, slot, or process name is missing and cannot be inferred, ask for it. If a PID is supplied, use it as a strict additional match.
 
@@ -45,7 +45,7 @@ If the input path, problem time, module, slot, or process name is missing and ca
    - Prefer the directory containing `result.json`.
    - If only an output base and task id are given, use `output/{task_id}/result.json`.
    - If the input is a raw package file or a directory without `result.json`, parse it first with `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`.
-   - Use parse settings from the prompt. If no config path is provided, use `config.yaml`.
+   - Use parse settings from the prompt. For generated diagnosis skills, require `config_path`; do not omit `-c <config_path>` or provide only a config directory. In interactive manual diagnosis, use repository `config.yaml` only when the user explicitly accepts that default.
    - After parsing, verify the parsed result has V3 lifecycle payloads before diagnosing.
    - After parsing, derive `task_id` from the CLI output or package stem, then use `<output_dir>/<task_id>/result.json`.
    - Read `metadata.json` when available for scanner coverage, original paths, active periods, private slots, and parse errors.

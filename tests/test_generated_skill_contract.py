@@ -61,7 +61,9 @@ effort: medium
 
 ## 运行时输入
 
-先收集全局输入 `input_path` 和 `problem_time`。
+先收集全局输入 `input_path`、`config_path`、`output_dir` 和 `problem_time`。
+`config_path` 是 repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml`，不要只传配置目录。
+当 `input_path` 是原始日志包时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。
 
 再按目标进程记录收集：
 
@@ -76,6 +78,9 @@ effort: medium
 
 `logparse-diagnose` 也是本项目里的一个 Claude skill，路径是 `.claude/skills/logparse-diagnose/SKILL.md`。
 不要把 `logparse-diagnose` 当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill。
+调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。
+原始日志包预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。
+不要省略配置文件路径，不要只传配置目录，不要自行运行 parse。
 对每个 anchor 调用 `cli.py mech-target-logs`，返回结构化 `target_logs` 清单。
 当前定位 skill 只分析 `target_logs[*].log_path` 指定的模块日志。
 
@@ -99,6 +104,8 @@ effort: medium
 生成扁平 `result.zip`，根目录只包含 `result.txt` 和本次实际使用的目标进程日志。
 不要创建 `logs/`，不要创建 `manifest.txt`，也不要创建任何子目录。
 每份日志必须来自 `target_logs[*].log_path`。
+复制日志时使用安全扁平文件名，替换路径分隔符和 Windows 非法字符。
+当 `target_logs` 含 `cpu_id` 时，zip 内日志文件名必须包含 `cpu_<cpu_id>`。
 打包时使用 `python3.12 scripts/pack_result_zip.py <work_dir> <result_zip>`。
 """
 
@@ -123,6 +130,46 @@ def test_generated_skill_contract_rejects_missing_logparse_section(tmp_path):
 
     assert not result.ok
     assert any("先调用 logparse-diagnose skill" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_missing_config_path_handoff(tmp_path):
+    validator = _load_validator()
+    skill_dir = _write_skill(
+        tmp_path,
+        VALID_SKILL.replace("config_path", "config-file"),
+    )
+
+    result = validator.validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("config_path" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_config_directory_only_guidance(tmp_path):
+    validator = _load_validator()
+    skill_dir = _write_skill(
+        tmp_path,
+        VALID_SKILL.replace("必须包含具体 YAML 文件名", "可以只提供配置目录"),
+    )
+
+    result = validator.validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("具体 YAML 文件名" in error or "配置目录" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_missing_safe_flat_log_filename_rule(tmp_path):
+    validator = _load_validator()
+    skill_dir = _write_skill(
+        tmp_path,
+        VALID_SKILL.replace("复制日志时使用安全扁平文件名，替换路径分隔符和 Windows 非法字符。\n", "")
+        .replace("当 `target_logs` 含 `cpu_id` 时，zip 内日志文件名必须包含 `cpu_<cpu_id>`。\n", ""),
+    )
+
+    result = validator.validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("安全扁平文件名" in error or "cpu_<cpu_id>" in error for error in result.errors)
 
 
 def test_generated_skill_contract_rejects_non_flat_result_zip(tmp_path):

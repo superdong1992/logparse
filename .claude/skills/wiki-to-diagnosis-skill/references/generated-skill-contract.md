@@ -39,6 +39,8 @@ effort: medium
 全局输入：
 
 - `input_path`：日志包或 `output/{task_id}` 预处理结果目录。
+- `config_path`：repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml` 或 `configs/v3.yaml`，不要只传配置目录。`input_path` 是原始日志包时必填；已有 `output/{task_id}/result.json` 时不重新解析。
+- `output_dir`：解析输出目录，例如 `output`；传给 `logparse-diagnose` 时必须明确。
 - `problem_time`：问题发生的近似时间，保留用户提供的时区描述。
 
 目标进程输入：
@@ -61,6 +63,8 @@ effort: medium
 
 不要把 `logparse-diagnose` 当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill，让它完成：
 
+调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。如果 `input_path` 是原始日志包，不要省略配置文件路径，不要只传配置目录；预处理必须等价于 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。当前定位 skill 不要自行运行 parse。
+
 1. 对 `input_path` 做预处理；
 2. 根据每组 `module + slot + process_name + 可选 pid` 生成 anchor；
 3. 对每个 anchor 调用 `cli.py mech-target-logs`，由 logparse 确定性选择 lifecycle/cycle 并拼出目标日志路径；
@@ -72,6 +76,8 @@ effort: medium
 在 Claude 中使用时，优先通过项目级 Claude skill `$logparse-diagnose` / `/logparse-diagnose` 调用该能力；如果 Claude 没有自动加载该 skill，则读取 `.claude/skills/logparse-diagnose/SKILL.md` 并按其说明执行。
 
 `target_logs[*].log_path` 是唯一允许读取的目标模块日志来源。如果某个目标的 `log_path` 缺失，必须把该目标日志视为缺失证据。
+
+生成出的定位 skill 不允许直接运行 `cli.py parse` 或绕过 `logparse-diagnose` 处理原始日志包。
 
 ## Wiki 分析阶段
 
@@ -98,6 +104,7 @@ effort: medium
 result.zip
 ├── result.txt
 ├── <label>__<module>__slot_<slot>__<process_name>[-<pid>].log
+├── <label>__<module>__slot_<slot>__cpu_<cpu_id>__<process_name>[-<pid>].log
 └── ...
 ```
 
@@ -107,6 +114,8 @@ result.zip
 - `result.txt` 第一段直接给出定位结论；证据不足时写“当前证据不足以确认根因”。
 - 只有存在日志缺失、nearest/unknown 匹配、V3 caveat 或证据不足时，才添加“证据缺口”。
 - 每份日志必须来自 `target_logs[*].log_path`。
+- 复制日志时使用安全扁平文件名，替换路径分隔符和 Windows 非法字符。
+- 当 `target_logs` 含 `cpu_id` 时，zip 内日志文件名必须包含 `cpu_<cpu_id>`。
 - 不要创建 `logs/`，不要创建 `manifest.txt`，也不要创建任何子目录。
 
 确定性打包命令：
@@ -136,9 +145,13 @@ python3.12 -X utf8 .claude/skills/wiki-to-diagnosis-skill/scripts/validate_gener
 
 - `effort: medium`。
 - 必备中文章节。
+- `config_path` 和 `output_dir` 作为运行时输入。
+- `config_path` 明确为包含具体 YAML 文件名的配置文件路径，不要只传配置目录。
+- 原始日志包预处理通过 `logparse-diagnose` 使用 `-c <config_path>`。
 - 每组目标输入包含 `module + slot + process_name`，`pid` 可选。
 - `logparse-diagnose` 是另一个 Claude skill。
 - `cli.py mech-target-logs` 负责目标日志选择。
 - `target_logs[*].log_path` 是唯一日志来源。
 - 明确禁止遍历 `output/`、重新选择 lifecycle/cycle、重新拼接日志路径、用相关日志替代缺失目标日志。
+- 明确要求安全扁平日志文件名、替换 Windows 非法字符，并在有 `cpu_id` 时包含 `cpu_<cpu_id>`。
 - 明确要求扁平 `result.zip`、`result.txt`、`pack_result_zip.py`。
