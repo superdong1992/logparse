@@ -58,6 +58,7 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
     name = frontmatter.get("name", "")
     description = frontmatter.get("description", "")
     effort = frontmatter.get("effort", "")
+    module = frontmatter.get("module", "")
 
     if not NAME_PATTERN.fullmatch(name):
         errors.append("frontmatter name must match diagnose-<english-topic-slug>")
@@ -65,6 +66,8 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
         errors.append("skill directory name must match frontmatter name")
     if effort != "medium":
         errors.append("frontmatter must contain effort: medium")
+    if not module:
+        errors.append("frontmatter must contain module")
 
     for phrase in ["logparse-diagnose", "target_logs", "result.zip"]:
         if phrase not in description:
@@ -88,7 +91,10 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
         "config_path",
         "output_dir",
         "problem_time",
+        "固定 module",
+        "frontmatter",
         "module + slot + process_name",
+        "组装 targets[]",
         "logparse-diagnose",
         "Claude skill",
         "-c <config_path>",

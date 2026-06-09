@@ -1,16 +1,18 @@
 # 问题定位 Wiki 推荐模板
 
-使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、配置文件路径、输出目录、问题时间、slot、module、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。
+使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、配置文件路径、输出目录、问题时间、slot、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。Wiki 或用户必须提供这个定位 skill 固定适用的 logparse `module`，例如 `module1`。
 
 ## Frontmatter
 
 ```yaml
 title: 链路超时问题定位
 skill_name: diagnose-link-timeout
+module: module1
 ```
 
 - `title` 是中文显示名，用于生成 skill 正文。
 - `skill_name` 可选；提供时必须是英文小写短横线，建议格式为 `diagnose-<english-topic-slug>`，生成路径为 `.claude/skills/<skill_name>/SKILL.md`。
+- `module` 是生成 skill 的固定 module，会写入 `SKILL.md` frontmatter；运行时不再要求用户填写 module。
 
 ## 问题范围
 
@@ -24,7 +26,7 @@ skill_name: diagnose-link-timeout
 
 ## 目标进程角色
 
-列出定位流程需要几组目标进程信息。每一行代表生成出的定位 skill 运行时必须收集的一组 `module + slot + process_name`，`pid` 可选。
+列出定位流程需要几组目标进程信息。每一行代表生成出的定位 skill 运行时必须收集的一组 `slot + process_name`，`pid` 可选；module 由 skill frontmatter 固定。
 
 ```markdown
 | 标签 | 说明 | 是否必需 |
@@ -37,7 +39,7 @@ skill_name: diagnose-link-timeout
 
 - 标签用于关联多份日志，例如 `client`、`server`、`active`、`standby`。
 - 不要把 `slot` 和 `process_name` 写成独立列表；它们必须属于同一目标进程。
-- 如果 wiki 知道推荐 module 或进程名，可以写在说明里作为提示，但生成出的定位 skill 仍必须让用户按目标进程组提供运行时参数。
+- 如果 wiki 知道推荐进程名，可以写在说明里作为提示；不要把 module 写成每行运行时字段。
 
 ## 定位步骤
 
