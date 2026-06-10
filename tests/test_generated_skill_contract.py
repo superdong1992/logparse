@@ -53,7 +53,7 @@ VALID_SKILL = """\
 name: diagnose-link-timeout
 description: 用于链路超时问题定位；必须先调用 logparse-diagnose skill 获取 target_logs，再只基于 target_logs[*].log_path 指定日志按 wiki 规则分析并生成扁平 result.zip。
 effort: medium
-module: module1
+module_name: EXAMPLE
 ---
 
 # 链路超时问题定位
@@ -66,7 +66,7 @@ module: module1
 `config_path` 是 repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml`，不要只传配置目录。
 当 `input_path` 是原始日志包时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。
 
-当前 skill 固定 module 为 frontmatter `module: module1`，运行时不再向用户询问 module。
+当前 skill 固定 module_name 为 frontmatter `module_name: EXAMPLE`，运行时不再向用户询问模块。
 再按目标进程记录收集：
 
 | 标签 | slot | process_name | pid |
@@ -74,7 +74,7 @@ module: module1
 | client | 用户提供 | 用户提供 | 可选 |
 | server | 用户提供 | 用户提供 | 可选 |
 
-每组目标进程必须保持为同一条 `固定 module + slot + process_name + 可选 pid` 记录。
+每组目标进程必须保持为同一条 `固定 module_name + slot + process_name + 可选 pid` 记录。
 
 ## 先调用 logparse-diagnose skill
 
@@ -84,7 +84,7 @@ module: module1
 原始日志包预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。
 不要省略配置文件路径，不要只传配置目录，不要自行运行 parse。
 对每个 anchor 调用 `cli.py mech-target-logs`，返回结构化 `target_logs` 清单。
-组装 targets[] 时必须使用 frontmatter 固定 module，并合并每组运行时提供的 slot、process_name 和可选 pid。
+组装 targets[] 时必须使用 frontmatter 固定 module_name，并把该值写入每组 targets[].module，再合并每组运行时提供的 slot、process_name 和可选 pid。
 当前定位 skill 只分析 `target_logs[*].log_path` 指定的模块日志。
 
 ## 证据收敛约束
@@ -148,17 +148,46 @@ def test_generated_skill_contract_rejects_missing_config_path_handoff(tmp_path):
     assert any("config_path" in error for error in result.errors)
 
 
-def test_generated_skill_contract_rejects_missing_frontmatter_module(tmp_path):
+def test_generated_skill_contract_rejects_missing_frontmatter_module_name(tmp_path):
     validator = _load_validator()
     skill_dir = _write_skill(
         tmp_path,
-        VALID_SKILL.replace("module: module1\n", ""),
+        VALID_SKILL.replace("module_name: EXAMPLE\n", ""),
     )
 
     result = validator.validate_skill_dir(skill_dir)
 
     assert not result.ok
-    assert any("frontmatter must contain module" in error for error in result.errors)
+    assert any("frontmatter must contain module_name" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_legacy_module_frontmatter_only(tmp_path):
+    validator = _load_validator()
+    skill_dir = _write_skill(
+        tmp_path,
+        VALID_SKILL.replace("module_name: EXAMPLE\n", "module: module1\n"),
+    )
+
+    result = validator.validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("frontmatter must contain module_name" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_missing_module_name_handoff(tmp_path):
+    validator = _load_validator()
+    skill_dir = _write_skill(
+        tmp_path,
+        VALID_SKILL.replace(
+            "组装 targets[] 时必须使用 frontmatter 固定 module_name，并把该值写入每组 targets[].module，再合并每组运行时提供的 slot、process_name 和可选 pid。\n",
+            "",
+        ),
+    )
+
+    result = validator.validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("module_name" in error or "targets[].module" in error for error in result.errors)
 
 
 def test_generated_skill_contract_rejects_config_directory_only_guidance(tmp_path):
@@ -206,13 +235,13 @@ def test_pack_result_zip_creates_flat_zip(tmp_path):
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     (work_dir / "result.txt").write_text("定位结论\n当前证据不足以确认根因。\n", encoding="utf-8")
-    (work_dir / "client__module1__slot_1__proc-123.log").write_text("client log", encoding="utf-8")
+    (work_dir / "client__EXAMPLE__slot_1__proc-123.log").write_text("client log", encoding="utf-8")
     zip_path = tmp_path / "result.zip"
 
     packer.pack_result_zip(work_dir, zip_path)
 
     with zipfile.ZipFile(zip_path) as zf:
-        assert zf.namelist() == ["client__module1__slot_1__proc-123.log", "result.txt"]
+        assert zf.namelist() == ["client__EXAMPLE__slot_1__proc-123.log", "result.txt"]
 
 
 def test_pack_result_zip_rejects_subdirectories(tmp_path):

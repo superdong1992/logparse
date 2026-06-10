@@ -11,6 +11,11 @@ Generate a repo-local Claude diagnosis skill from a Markdown issue-location wiki
 
 Load `references/wiki-template.md` when the wiki is too loose to extract target roles or analysis steps. Load `references/generated-skill-contract.md` before writing or reviewing the generated skill.
 
+This skill requires two generation inputs before creating or updating a generated skill:
+
+- `wiki`: a Markdown wiki file path or pasted Markdown content.
+- `module_name`: the concrete logparse business/output module name for the generated skill, for example `EXAMPLE` or `MODULE2`.
+
 ## Stage Machine
 
 1. Extract wiki facts.
@@ -18,7 +23,7 @@ Load `references/wiki-template.md` when the wiki is too loose to extract target 
 3. Validate the generated skill with `quick_validate.py` and `scripts/validate_generated_skill.py`.
 4. Report the generated path, chosen name, assumptions, and validation results.
 
-Stop and ask for wiki-level information if the fixed module, target roles, or diagnosis steps are not extractable. Do not generate a vague skill.
+Stop and ask if `wiki`, `module_name`, target roles, or diagnosis steps are missing. Do not infer `module_name` from internal keys such as `module1` unless the user explicitly says that is also the concrete business module name.
 
 ## Extract Wiki Facts
 
@@ -26,7 +31,7 @@ Extract these fields from the wiki:
 
 - `chinese_title`: Chinese display name.
 - `skill_name`: `diagnose-<english-topic-slug>`, lowercase letters/digits/hyphens, under 64 characters. Use the wiki `skill_name` if valid; otherwise translate/summarize the title.
-- `module_key`: the fixed logparse mechanism module for this generated skill, for example `module1` or `module2`.
+- `module_name`: the fixed concrete logparse business/output module for this generated skill, for example `EXAMPLE` or `MODULE2`.
 - `problem_scope`: the problem symptoms this skill diagnoses.
 - `target_roles`: one row per runtime target process; each row has label, Chinese description, required/optional status, and any wiki hint for process.
 - `analysis_steps`: ordered wiki diagnosis steps.
@@ -34,7 +39,7 @@ Extract these fields from the wiki:
 - `output_requirements`: wiki-specific fields to include in `result.txt`.
 - `assumptions`: any missing but reasonably inferred wiki facts.
 
-Never treat runtime values such as log package path, config path, output directory, problem time, slot, process name, or PID as wiki facts. The generated skill collects those when it runs. The module is not a runtime value here; it must be fixed once in the generated skill frontmatter as `module: <module_key>`.
+Never treat runtime values such as log package path, config path, output directory, problem time, slot, process name, or PID as wiki facts. The generated skill collects those when it runs. The module name is not a runtime value here; it must be fixed once in the generated skill frontmatter as `module_name: <module_name>`.
 
 ## Create Skill Folder
 
@@ -56,7 +61,7 @@ Fill this skeleton exactly. Replace bracketed placeholders with wiki-derived con
 name: <skill_name>
 description: 用于<chinese_title>；必须先调用 logparse-diagnose skill 获取 target_logs，再只基于 target_logs[*].log_path 指定日志按 wiki 规则分析并生成扁平 result.zip。
 effort: medium
-module: <module_key>
+module_name: <module_name>
 ---
 
 # <chinese_title>
@@ -75,7 +80,7 @@ module: <module_key>
 - `config_path`：repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml` 或 `configs/v3.yaml`，不要只传配置目录。`input_path` 是原始日志包时必填；已有 `output/{task_id}/result.json` 时不重新解析。
 - `output_dir`：解析输出目录，例如 `output`；传给 `logparse-diagnose` 时必须明确。
 - `problem_time`：问题发生的近似时间，保留用户给出的时区描述。
-- 固定 module：当前 skill 的 frontmatter `module: <module_key>`，运行时不再向用户询问 module。
+- 固定 module_name：当前 skill 的 frontmatter `module_name: <module_name>`，运行时不再向用户询问模块。
 
 再按目标进程记录收集，不要拆成独立列表：
 
@@ -83,9 +88,9 @@ module: <module_key>
 | --- | --- | --- | --- |
 <target_roles_table_rows>
 
-`运行时字段` 列只允许列出 `slot`、`process_name` 和可选 `pid`，不要要求用户填写 module。
+`运行时字段` 列只允许列出 `slot`、`process_name` 和可选 `pid`，不要要求用户填写模块。
 
-每组目标进程必须保持为同一条 `固定 module + slot + process_name + 可选 pid` 记录。用户提供 PID 时，PID 只约束对应那一组进程。
+每组目标进程必须保持为同一条 `固定 module_name + slot + process_name + 可选 pid` 记录。用户提供 PID 时，PID 只约束对应那一组进程。
 
 ## 先调用 logparse-diagnose skill
 
@@ -96,11 +101,11 @@ module: <module_key>
 调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。如果 `input_path` 是原始日志包，不要省略配置文件路径，不要只传配置目录；预处理必须等价于 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。当前定位 skill 不要自行运行 parse。
 
 1. 对 `input_path` 做预处理；
-2. 根据每组 `固定 module + slot + process_name + 可选 pid` 生成 anchor；
+2. 根据每组 `固定 module_name + slot + process_name + 可选 pid` 生成 anchor；
 3. 对每个 anchor 调用 `cli.py mech-target-logs`，由 logparse 确定性选择 lifecycle/cycle 并拼出目标日志路径；
 4. 输出结构化 `target_logs` 清单，每个目标进程对应一个匹配结果。
 
-组装 targets[] 时必须使用 frontmatter 固定 module，并合并每组运行时提供的 slot、process_name 和可选 pid。
+组装 targets[] 时必须使用 frontmatter 固定 module_name，并把该值写入每组 targets[].module，再合并每组运行时提供的 slot、process_name 和可选 pid。
 
 当前定位 skill 只分析 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志。
 
@@ -130,8 +135,8 @@ module: <module_key>
 
 ```text
 result.txt
-<label>__<module>__slot_<slot>__<process_name>[-<pid>].log
-<label>__<module>__slot_<slot>__cpu_<cpu_id>__<process_name>[-<pid>].log
+<label>__<module_name>__slot_<slot>__<process_name>[-<pid>].log
+<label>__<module_name>__slot_<slot>__cpu_<cpu_id>__<process_name>[-<pid>].log
 ```
 
 日志文件必须来自 `target_logs[*].log_path`。复制到临时目录时使用安全扁平文件名，替换路径分隔符和 Windows 非法字符；当 `target_logs` 含 `cpu_id` 时，zip 内日志文件名必须包含 `cpu_<cpu_id>`。

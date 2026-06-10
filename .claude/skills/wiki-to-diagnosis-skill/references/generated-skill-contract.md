@@ -18,7 +18,7 @@ Frontmatter 模板：
 name: diagnose-<english-topic-slug>
 description: 用于<中文问题名>；必须先调用 logparse-diagnose skill 获取 target_logs，再只基于 target_logs[*].log_path 指定日志按 wiki 规则分析并生成扁平 result.zip。
 effort: medium
-module: <module_key>
+module_name: <module_name>
 ---
 ```
 
@@ -47,12 +47,12 @@ module: <module_key>
 目标进程输入：
 
 - 根据 wiki 定位流程收集 N 组目标进程信息。
-- 生成 skill 的 frontmatter 必须包含固定 `module: <module_key>`；运行时不再向用户询问 module。
+- 生成 skill 的 frontmatter 必须包含固定 `module_name: <module_name>`；运行时不再向用户询问模块。
 - 每组运行时目标必须包含 `slot`、`process_name`。
 - 每组可选 `pid`；用户提供 PID 时只作为该组进程的严格匹配条件。
 - 每组保留 wiki 标签，例如 `client`、`server`、`active`、`standby`。
 
-必须写清楚：每组目标进程保持为同一条 `固定 module + slot + process_name + 可选 pid` 记录；不要把 `slot`、`process_name`、`pid` 拆成独立列表，也不要交叉组合不同目标进程字段。组装 targets[] 时必须使用 frontmatter 固定 module，并合并每组运行时提供的 slot、process_name 和可选 pid。
+必须写清楚：每组目标进程保持为同一条 `固定 module_name + slot + process_name + 可选 pid` 记录；不要把 `slot`、`process_name`、`pid` 拆成独立列表，也不要交叉组合不同目标进程字段。组装 targets[] 时必须使用 frontmatter 固定 module_name，并把该值写入每组 targets[].module，再合并每组运行时提供的 slot、process_name 和可选 pid。
 
 ## 日志获取阶段
 
@@ -68,11 +68,11 @@ module: <module_key>
 调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。如果 `input_path` 是原始日志包，不要省略配置文件路径，不要只传配置目录；预处理必须等价于 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。当前定位 skill 不要自行运行 parse。
 
 1. 对 `input_path` 做预处理；
-2. 根据每组 `固定 module + slot + process_name + 可选 pid` 生成 anchor；
+2. 根据每组 `固定 module_name + slot + process_name + 可选 pid` 生成 anchor；
 3. 对每个 anchor 调用 `cli.py mech-target-logs`，由 logparse 确定性选择 lifecycle/cycle 并拼出目标日志路径；
 4. 输出结构化 `target_logs` 清单，每个目标进程对应一个匹配结果。
 
-组装 targets[] 时必须使用 frontmatter 固定 module，并合并每组运行时提供的 slot、process_name 和可选 pid。
+组装 targets[] 时必须使用 frontmatter 固定 module_name，并把该值写入每组 targets[].module，再合并每组运行时提供的 slot、process_name 和可选 pid。
 
 当前定位 skill 只分析 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志。
 ```
@@ -107,8 +107,8 @@ module: <module_key>
 ```text
 result.zip
 ├── result.txt
-├── <label>__<module>__slot_<slot>__<process_name>[-<pid>].log
-├── <label>__<module>__slot_<slot>__cpu_<cpu_id>__<process_name>[-<pid>].log
+├── <label>__<module_name>__slot_<slot>__<process_name>[-<pid>].log
+├── <label>__<module_name>__slot_<slot>__cpu_<cpu_id>__<process_name>[-<pid>].log
 └── ...
 ```
 
@@ -148,12 +148,12 @@ python3.12 -X utf8 .claude/skills/wiki-to-diagnosis-skill/scripts/validate_gener
 `validate_generated_skill.py` 必须检查：
 
 - `effort: medium`。
-- frontmatter 包含固定 `module`。
+- frontmatter 包含固定 `module_name`。
 - 必备中文章节。
 - `config_path` 和 `output_dir` 作为运行时输入。
 - `config_path` 明确为包含具体 YAML 文件名的配置文件路径，不要只传配置目录。
 - 原始日志包预处理通过 `logparse-diagnose` 使用 `-c <config_path>`。
-- 每组目标输入使用固定 `module + slot + process_name`，`pid` 可选；module 来自 frontmatter，不来自用户运行时输入。
+- 每组目标输入使用固定 `module_name + slot + process_name`，`pid` 可选；module_name 来自 frontmatter，不来自用户运行时输入，并写入 `targets[].module`。
 - `logparse-diagnose` 是另一个 Claude skill。
 - `cli.py mech-target-logs` 负责目标日志选择。
 - `target_logs[*].log_path` 是唯一日志来源。

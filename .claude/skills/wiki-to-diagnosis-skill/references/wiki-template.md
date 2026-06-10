@@ -1,18 +1,18 @@
 # 问题定位 Wiki 推荐模板
 
-使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、配置文件路径、输出目录、问题时间、slot、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。Wiki 或用户必须提供这个定位 skill 固定适用的 logparse `module`，例如 `module1`。
+使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、配置文件路径、输出目录、问题时间、slot、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。执行生成时必须提供 wiki 和这个定位 skill 固定适用的具体 logparse `module_name`，例如 `EXAMPLE` 或 `MODULE2`。
 
 ## Frontmatter
 
 ```yaml
 title: 链路超时问题定位
 skill_name: diagnose-link-timeout
-module: module1
+module_name: EXAMPLE
 ```
 
 - `title` 是中文显示名，用于生成 skill 正文。
 - `skill_name` 可选；提供时必须是英文小写短横线，建议格式为 `diagnose-<english-topic-slug>`，生成路径为 `.claude/skills/<skill_name>/SKILL.md`。
-- `module` 是生成 skill 的固定 module，会写入 `SKILL.md` frontmatter；运行时不再要求用户填写 module。
+- `module_name` 是生成 skill 的固定业务/输出模块名，会写入 `SKILL.md` frontmatter；运行时不再要求用户填写模块。
 
 ## 问题范围
 
@@ -26,7 +26,7 @@ module: module1
 
 ## 目标进程角色
 
-列出定位流程需要几组目标进程信息。每一行代表生成出的定位 skill 运行时必须收集的一组 `slot + process_name`，`pid` 可选；module 由 skill frontmatter 固定。
+列出定位流程需要几组目标进程信息。每一行代表生成出的定位 skill 运行时必须收集的一组 `slot + process_name`，`pid` 可选；module_name 由 skill frontmatter 固定。
 
 ```markdown
 | 标签 | 说明 | 是否必需 |
@@ -39,7 +39,7 @@ module: module1
 
 - 标签用于关联多份日志，例如 `client`、`server`、`active`、`standby`。
 - 不要把 `slot` 和 `process_name` 写成独立列表；它们必须属于同一目标进程。
-- 如果 wiki 知道推荐进程名，可以写在说明里作为提示；不要把 module 写成每行运行时字段。
+- 如果 wiki 知道推荐进程名，可以写在说明里作为提示；不要把 module_name 写成每行运行时字段。
 
 ## 定位步骤
 
@@ -70,6 +70,6 @@ module: module1
 ```markdown
 - 先输出明确定位结论。
 - 再输出关键分析依据，包括日志文件、时间点、关键行摘要。
-- 进程日志文件必须来自 `target_logs[*].log_path`，压缩包根目录中文件名使用安全扁平文件名，例如 `<label>__<module>__slot_<slot>__<process_name>[-pid].log`；当 `target_logs` 含 `cpu_id` 时使用 `<label>__<module>__slot_<slot>__cpu_<cpu_id>__<process_name>[-pid].log`。替换路径分隔符和 Windows 非法字符。
+- 进程日志文件必须来自 `target_logs[*].log_path`，压缩包根目录中文件名使用安全扁平文件名，例如 `<label>__<module_name>__slot_<slot>__<process_name>[-pid].log`；当 `target_logs` 含 `cpu_id` 时使用 `<label>__<module_name>__slot_<slot>__cpu_<cpu_id>__<process_name>[-pid].log`。替换路径分隔符和 Windows 非法字符。
 - 如果证据不足，明确写“当前证据不足以确认根因”，并说明缺失哪份日志或哪类关键记录。
 ```
