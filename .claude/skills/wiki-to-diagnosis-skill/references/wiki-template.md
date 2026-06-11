@@ -1,6 +1,6 @@
 # 问题定位 Wiki 推荐模板
 
-使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志包路径、配置文件路径、输出目录、问题时间、slot、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。执行生成时必须提供 wiki 和这个定位 skill 固定适用的具体 logparse `module_name`，例如 `EXAMPLE` 或 `MODULE2`。
+使用 `wiki-to-diagnosis-skill` 生成问题定位 skill 时，优先让 Markdown wiki 接近下面的结构。Wiki 不需要填写本次日志输入路径、配置文件路径、输出目录、问题时间、slot、process_name 或 PID；这些是生成出的定位 skill 在运行时向用户收集的输入。执行生成时必须提供 wiki 和这个定位 skill 固定适用的具体 logparse `module_name`，例如 `EXAMPLE` 或 `MODULE2`。
 
 ## Frontmatter
 
@@ -43,7 +43,7 @@ module_name: EXAMPLE
 
 ## 定位步骤
 
-按执行顺序描述如何分析 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志。生成出的定位 skill 只允许读取这些路径，不允许遍历 `output/`、重新选择 lifecycle/cycle 或重新拼接日志路径；生命周期选择必须来自 `logparse-diagnose` 调用的 `cli.py mech-target-logs`。如果运行时 `input_path` 是原始日志包，生成出的定位 skill 必须收集包含具体 YAML 文件名的 `config_path` 和明确的 `output_dir`，并交给 `logparse-diagnose`；不要只传配置目录，不要自行运行 parse。
+按执行顺序描述如何分析 `logparse-diagnose` 返回的 `target_logs[*].log_path` 指定模块日志。生成出的定位 skill 只允许读取这些路径，不允许遍历 `output/`、重新选择 lifecycle/cycle 或重新拼接日志路径；生命周期选择必须来自 `logparse-diagnose` 调用的 `cli.py mech-target-logs`。如果运行时 `input_path` 是原始日志输入，生成出的定位 skill 必须收集包含具体 YAML 文件名的 `config_path` 和明确的 `output_dir`，并交给 `logparse-diagnose`；不要只传配置目录，不要自行运行 parse。原始日志输入可以是日志压缩包、单个非压缩诊断日志，或原始日志目录。
 
 ```markdown
 1. 在 client 日志中查找问题时间附近的请求发送记录，记录 request_id、序号和发送时间。

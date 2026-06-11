@@ -1,13 +1,13 @@
 # logparse Preprocessed Output Reference
 
-Use this reference when locating issues from logparse output. The input can be a raw compressed package or an already preprocessed result root. The result root is usually `output/{task_id}` and contains `metadata.json`, compact `result.json`, `mech_modules/`, and often `extracted/`.
+Use this reference when locating issues from logparse output. The input can be raw log input or an already preprocessed result root. Raw log input can be a compressed log package, a single non-compressed diagnostic log file, or a raw log directory. The result root is usually `output/{task_id}` and contains `metadata.json`, compact `result.json`, `mech_modules/`, and often `extracted/`.
 
-## Raw Package Input
+## Raw Log Input
 
-When the user gives a raw log package instead of a result root, run the repository parser before diagnosis:
+When the user gives raw log input instead of a result root, run the repository parser before diagnosis:
 
 ```bash
-python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>
+python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>
 ```
 
 Use config/output values from the prompt. For generated diagnosis skills, require a concrete `config_path` that includes the YAML filename, such as `config.yaml` or `configs/v3.yaml`; do not omit `-c <config_path>` and do not provide only a config directory. In interactive manual diagnosis, use the repository `config.yaml` only when the user explicitly accepts that default. Current module1 lifecycle splitting is V3-only. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
@@ -22,6 +22,8 @@ Parsing handles archive extraction through the pipeline. It writes:
 {output_dir}/{task_id}/mech_modules/
 {output_dir}/{task_id}/extracted/
 ```
+
+Single non-compressed diagnostic log files are copied under `extracted/` before scanner discovery. Loose diagnostic log discovery is controlled by `loose_diagnostics.file_patterns` in the selected `config_path`; if the filename does not match the configured patterns, the parser may produce no diagnostic slots for that file. Journal discovery remains anchored by parsed `varlog/slot_*` or `varlog/slot_*_cpu_*` areas.
 
 After parsing, derive `task_id` from the CLI output or the package stem. If `result.json` lacks `lifecycle_split_result.algorithm == "interval_v3"` for module1 slots, report a config/result mismatch and do not present the diagnosis as official V3 evidence.
 
@@ -115,8 +117,8 @@ These commands are useful for quick checks. Use the repository root as the worki
 
 ```bash
 python3.12 cli.py info <task_id> -o <output_dir>
-python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>
-python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir> --verbose
+python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>
+python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir> --verbose
 python3.12 cli.py list-slots <task_id> -o <output_dir>
 python3.12 cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
 python3.12 cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>

@@ -39,8 +39,8 @@ module_name: <module_name>
 
 全局输入：
 
-- `input_path`：日志包或 `output/{task_id}` 预处理结果目录。
-- `config_path`：repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml` 或 `configs/v3.yaml`，不要只传配置目录。`input_path` 是原始日志包时必填；已有 `output/{task_id}/result.json` 时不重新解析。
+- `input_path`：原始日志输入或 `output/{task_id}` 预处理结果目录。原始日志输入可以是日志压缩包、单个非压缩诊断日志，或原始日志目录。
+- `config_path`：repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml` 或 `configs/v3.yaml`，不要只传配置目录。`input_path` 是原始日志输入时必填；已有 `output/{task_id}/result.json` 时不重新解析。
 - `output_dir`：解析输出目录，例如 `output`；传给 `logparse-diagnose` 时必须明确。
 - `problem_time`：问题发生的近似时间，保留用户提供的时区描述。
 
@@ -65,7 +65,7 @@ module_name: <module_name>
 
 不要把 `logparse-diagnose` 当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill，让它完成：
 
-调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。如果 `input_path` 是原始日志包，不要省略配置文件路径，不要只传配置目录；预处理必须等价于 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。当前定位 skill 不要自行运行 parse。
+调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。如果 `input_path` 是原始日志输入，不要省略配置文件路径，不要只传配置目录；预处理必须等价于 `python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>`。当前定位 skill 不要自行运行 parse。
 
 1. 对 `input_path` 做预处理；
 2. 根据每组 `固定 module_name + slot + process_name + 可选 pid` 生成 anchor；
@@ -81,7 +81,7 @@ module_name: <module_name>
 
 `target_logs[*].log_path` 是唯一允许读取的目标模块日志来源。如果某个目标的 `log_path` 缺失，必须把该目标日志视为缺失证据。
 
-生成出的定位 skill 不允许直接运行 `cli.py parse` 或绕过 `logparse-diagnose` 处理原始日志包。
+生成出的定位 skill 不允许直接运行 `cli.py parse` 或绕过 `logparse-diagnose` 处理原始日志输入。
 
 ## Wiki 分析阶段
 
@@ -152,7 +152,7 @@ python3.12 -X utf8 .claude/skills/wiki-to-diagnosis-skill/scripts/validate_gener
 - 必备中文章节。
 - `config_path` 和 `output_dir` 作为运行时输入。
 - `config_path` 明确为包含具体 YAML 文件名的配置文件路径，不要只传配置目录。
-- 原始日志包预处理通过 `logparse-diagnose` 使用 `-c <config_path>`。
+- 原始日志输入预处理通过 `logparse-diagnose` 使用 `-c <config_path>`。
 - 每组目标输入使用固定 `module_name + slot + process_name`，`pid` 可选；module_name 来自 frontmatter，不来自用户运行时输入，并写入 `targets[].module`。
 - `logparse-diagnose` 是另一个 Claude skill。
 - `cli.py mech-target-logs` 负责目标日志选择。

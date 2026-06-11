@@ -49,6 +49,31 @@ class TestGzExpansionGate:
         assert not (extract_dir / "journal.log.1.gz_extracted").exists()
 
 
+class TestSingleFileInput:
+    def test_run_copies_uncompressed_single_file_into_extracted_workspace(self, tmp_path):
+        source = tmp_path / "single_diag.log"
+        source.write_text("2026-01-03T00:00:00 EXAMPLE single file\n", encoding="utf-8")
+
+        seen = {}
+
+        class FakeDiscovery:
+            def discover(self, extract_dir):
+                copied = extract_dir / "single_diag.log"
+                seen["copied_exists"] = copied.exists()
+                seen["copied_text"] = copied.read_text(encoding="utf-8") if copied.exists() else ""
+                return [], []
+
+        pipeline = Pipeline({"pipeline": {"recursive_extraction": True}})
+        pipeline._plugin_cache["default"] = (FakeDiscovery(), _FakeParser())
+
+        pipeline.run(source, tmp_path / "out", task_id="task")
+
+        assert seen == {
+            "copied_exists": True,
+            "copied_text": "2026-01-03T00:00:00 EXAMPLE single file\n",
+        }
+
+
 class _FakeDiscovery:
     def discover(self, extract_dir):
         return [], []
@@ -76,7 +101,7 @@ class TestPipelineProfile:
                 return []
 
             def is_compressed(self, name):
-                return False
+                return name.endswith(".zip")
 
         package = tmp_path / "package.zip"
         package.write_text("placeholder", encoding="utf-8")

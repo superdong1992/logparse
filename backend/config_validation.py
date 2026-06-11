@@ -224,6 +224,36 @@ def _validate_discovery_config(
                 f"products.{product_name}.discovery.config.diag_file_patterns: glob 无效 - {p}"
             )
 
+    loose_cfg = cfg.get("loose_diagnostics")
+    if loose_cfg is not None:
+        if not isinstance(loose_cfg, dict):
+            errors.append(
+                f"products.{product_name}.discovery.config.loose_diagnostics must be an object"
+            )
+        else:
+            enabled = loose_cfg.get("enabled")
+            if enabled is not None and not isinstance(enabled, bool):
+                errors.append(
+                    f"products.{product_name}.discovery.config.loose_diagnostics.enabled must be a boolean"
+                )
+
+            file_patterns = loose_cfg.get("file_patterns", [])
+            if not isinstance(file_patterns, list):
+                errors.append(
+                    f"products.{product_name}.discovery.config.loose_diagnostics.file_patterns must be a list"
+                )
+            else:
+                for pattern in file_patterns:
+                    try:
+                        from backend.utils import glob_to_regex
+                        glob_to_regex(pattern)
+                    except Exception:
+                        errors.append(
+                            "products."
+                            f"{product_name}.discovery.config.loose_diagnostics.file_patterns: "
+                            f"glob 无效 - {pattern}"
+                        )
+
     # timestamp_regex 校验
     ts_re = cfg.get("filename_timestamp_regex")
     if ts_re:

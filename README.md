@@ -19,9 +19,9 @@ python cli.py parse tests\mock_data_compact\compact_package_20260103.zip -c conf
 ## Commands
 
 ```bash
-python cli.py parse <package_path> [-c config.yaml] [-o ./output] [--product default|compact] [--lifecycle-dfx errors|summary|decisions|full|off]
-python cli.py parse <package_path> --debug-expand-gz
-python cli.py parse <package_path> --profile
+python cli.py parse <input_path> [-c config.yaml] [-o ./output] [--product default|compact] [--lifecycle-dfx errors|summary|decisions|full|off]
+python cli.py parse <input_path> --debug-expand-gz
+python cli.py parse <input_path> --profile
 
 python cli.py info <task_id>
 python cli.py list-slots <task_id>
@@ -58,7 +58,7 @@ V3 `lifecycle_split_result` contains `candidate_segments`, `merge_decisions`, `l
 Inspect V3 DFX:
 
 ```bash
-python cli.py parse <package_path> -c config.yaml --lifecycle-dfx decisions
+python cli.py parse <input_path> -c config.yaml --lifecycle-dfx decisions
 python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx full
 ```
 
@@ -71,6 +71,20 @@ Board cycles are top-level lifecycles. CPU cycles are nested under the matching 
 ## Extraction And Performance
 
 `Decompressor` owns archive extraction. Scanner plugins inspect the already extracted workspace only. Plain `.gz` logs are streamed by parsers unless debug expansion is enabled. For manual full-text inspection, use `--debug-expand-gz` or `pipeline.debug_expand_gz: true`.
+
+The default product also supports configured loose diagnostic inputs. After the
+normal `diag/slot_*` scan, files matching
+`products.default.discovery.config.loose_diagnostics.file_patterns` are merged
+from anywhere under the extracted workspace and deduplicated by parsed content.
+The shipped default is conservative and does not include broad patterns such as
+`*.log`; add specific patterns before parsing a single loose diagnostic log.
+For `cli.py parse`, `<input_path>` means raw log input: a compressed log
+package, a single non-compressed diagnostic log file, or a raw log directory.
+Already parsed result directories such as `output/{task_id}` are consumed by
+diagnosis/query workflows, not by `parse`.
+Journal discovery still requires `varlog/slot_*` or `varlog/slot_*_cpu_*` as the
+slot/cpu anchor, but it accepts journal files under `varlog*.zip_extracted`
+children that contain `varlog*` directories.
 
 ```bash
 python cli.py parse tests\mock_data\diagnostic_information_20260103.zip --profile --output output

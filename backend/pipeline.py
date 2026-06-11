@@ -266,6 +266,13 @@ class Pipeline:
         expand_gz: bool,
         workers: int,
     ) -> list[str]:
+        if source.is_file() and not self._is_compressed_source(source):
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            target = extract_dir / source.name
+            if source.resolve() != target.resolve():
+                shutil.copy2(source, target)
+            return [str(target)]
+
         try:
             return self.decompressor.extract_all(
                 source,
@@ -283,6 +290,12 @@ class Pipeline:
                 recursive=recursive,
                 expand_gz=expand_gz,
             )
+
+    def _is_compressed_source(self, source: Path) -> bool:
+        try:
+            return bool(self.decompressor.is_compressed(source.name))
+        except AttributeError:
+            return Decompressor().is_compressed(source.name)
 
     def _cleanup_intermediate_files(self, extract_dir: Path) -> int:
         if self.pipeline_config.get("cleanup_extracted", False):

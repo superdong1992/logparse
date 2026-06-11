@@ -64,7 +64,9 @@ module_name: EXAMPLE
 
 先收集全局输入 `input_path`、`config_path`、`output_dir` 和 `problem_time`。
 `config_path` 是 repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml`，不要只传配置目录。
-当 `input_path` 是原始日志包时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。
+`input_path` 可以是原始日志输入或 `output/{task_id}` 预处理结果目录。
+原始日志输入可以是日志压缩包、单个非压缩诊断日志，或原始日志目录。
+当 `input_path` 是原始日志输入时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。
 
 当前 skill 固定 module_name 为 frontmatter `module_name: EXAMPLE`，运行时不再向用户询问模块。
 再按目标进程记录收集：
@@ -81,7 +83,7 @@ module_name: EXAMPLE
 `logparse-diagnose` 也是本项目里的一个 Claude skill，路径是 `.claude/skills/logparse-diagnose/SKILL.md`。
 不要把 `logparse-diagnose` 当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill。
 调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。
-原始日志包预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。
+原始日志输入预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>`。
 不要省略配置文件路径，不要只传配置目录，不要自行运行 parse。
 对每个 anchor 调用 `cli.py mech-target-logs`，返回结构化 `target_logs` 清单。
 组装 targets[] 时必须使用 frontmatter 固定 module_name，并把该值写入每组 targets[].module，再合并每组运行时提供的 slot、process_name 和可选 pid。
@@ -201,6 +203,27 @@ def test_generated_skill_contract_rejects_config_directory_only_guidance(tmp_pat
 
     assert not result.ok
     assert any("具体 YAML 文件名" in error or "配置目录" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_legacy_package_only_input_guidance(tmp_path):
+    validator = _load_validator()
+    skill_dir = _write_skill(
+        tmp_path,
+        VALID_SKILL.replace(
+            "`input_path` 可以是原始日志输入或 `output/{task_id}` 预处理结果目录。\n"
+            "原始日志输入可以是日志压缩包、单个非压缩诊断日志，或原始日志目录。\n"
+            "当 `input_path` 是原始日志输入时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。\n",
+            "当 `input_path` 是原始日志包时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。\n",
+        ).replace(
+            "原始日志输入预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>`。",
+            "原始日志包预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。",
+        ),
+    )
+
+    result = validator.validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("原始日志输入" in error or "单个非压缩诊断日志" in error for error in result.errors)
 
 
 def test_generated_skill_contract_rejects_missing_safe_flat_log_filename_rule(tmp_path):

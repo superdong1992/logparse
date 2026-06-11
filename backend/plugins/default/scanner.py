@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
+import hashlib
 from pathlib import Path
 from typing import Any
 
 from backend.models import JournalLogFile, LogEntry, PrivateSlotInfo, SlotInfo
+from backend.parsing.file_iter import iter_log_entry_lines
 from backend.plugins.base import DirectoryDiscoveryPlugin
 from backend.utils import (
     extract_dump_time,
@@ -45,6 +47,14 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
             glob_to_regex(p)
             for p in self.config.get("diag_file_patterns", ["diag.zip", "diaglog_*.log.zip"])
         ]
+        loose_cfg = self.config.get("loose_diagnostics", {})
+        if not isinstance(loose_cfg, dict):
+            loose_cfg = {}
+        self._loose_diag_enabled = bool(loose_cfg.get("enabled", False))
+        self._loose_diag_file_patterns = [
+            glob_to_regex(p)
+            for p in loose_cfg.get("file_patterns", [])
+        ]
         self._filename_ts_regex = re.compile(
             self.config.get("filename_timestamp_regex", r".*_(\d{14})\..*")
         )
@@ -67,8 +77,10 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
     def discover(
         self, extracted_root: Path,
     ) -> tuple[list[SlotInfo], list[PrivateSlotInfo]]:
+        diag_slots = self._scan_diag(extracted_root)
+        self._merge_loose_diagnostic_logs(extracted_root, diag_slots)
         return (
-            self._scan_diag(extracted_root),
+            diag_slots,
             self._scan_private(extracted_root),
         )
 
@@ -120,6 +132,85 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
             )
             slot.add_diagnostic_log(entry)
 
+    def _merge_loose_diagnostic_logs(
+        self, extracted_root: Path, slots: list[SlotInfo],
+    ) -> None:
+        if (
+            not self._loose_diag_enabled
+            or not self._loose_diag_file_patterns
+            or not extracted_root.exists()
+        ):
+            return
+
+        seen = self._diagnostic_fingerprints(slots)
+        loose_slot = SlotInfo(
+            slot_id="loose",
+            name="slot_loose",
+            path=str(extracted_root),
+        )
+        for path in sorted(extracted_root.rglob("*")):
+            if not path.is_file():
+                continue
+            if not self._match_any(path.name, self._loose_diag_file_patterns):
+                continue
+            entry = self._build_diag_log_entry(path)
+            fingerprint = self._diagnostic_fingerprint(entry)
+            if fingerprint and fingerprint in seen:
+                continue
+            if fingerprint:
+                seen.add(fingerprint)
+            loose_slot.add_diagnostic_log(entry)
+
+        if loose_slot.diagnostic_logs:
+            slots.append(loose_slot)
+
+    def _diagnostic_fingerprints(self, slots: list[SlotInfo]) -> set[str]:
+        fingerprints: set[str] = set()
+        for slot in slots:
+            for entry in slot.diagnostic_logs:
+                fingerprint = self._diagnostic_fingerprint(entry)
+                if fingerprint:
+                    fingerprints.add(fingerprint)
+        return fingerprints
+
+    def _build_diag_log_entry(self, path: Path) -> LogEntry:
+        dump_time = extract_dump_time(path.name, self._filename_ts_regex)
+        compressed = self._is_compressed(path.name)
+        extracted_dir = path.parent / f"{path.name}_extracted"
+        return LogEntry(
+            path=str(path),
+            name=path.name,
+            size_bytes=path.stat().st_size,
+            compressed=compressed,
+            original_format=path.suffix if compressed else "",
+            extracted_path=str(extracted_dir) if compressed and extracted_dir.is_dir() else "",
+            dump_time=dump_time,
+        )
+
+    @staticmethod
+    def _diagnostic_fingerprint(entry: LogEntry) -> str:
+        digest = hashlib.md5()
+        saw_content = False
+        if (
+            entry.extracted_path
+            or not entry.compressed
+            or Path(entry.path).suffix.lower() == ".gz"
+        ):
+            for line in iter_log_entry_lines(entry):
+                saw_content = True
+                digest.update(line.encode("utf-8", errors="replace"))
+                digest.update(b"\n")
+            if saw_content:
+                return digest.hexdigest()
+
+        path = Path(entry.path)
+        if not path.is_file():
+            return ""
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     # ── private / varlog ──────────────────────────────────
 
     def _scan_private(self, extracted_root: Path) -> list[PrivateSlotInfo]:
@@ -158,23 +249,33 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
     def _scan_journal_in_dir(
         self, dir_path: Path, private_slot: PrivateSlotInfo,
     ) -> None:
-        inner = dir_path / "varlog"
-        scan_root = inner if inner.is_dir() else dir_path
-        for f in sorted(scan_root.rglob("*")):
-            if not f.is_file():
-                continue
-            if not self._match_any(f.name, self._journal_file_patterns):
-                continue
-            seq = extract_journal_sequence(f.name, self._journal_seq_regex)
-            if any(j.path == str(f) for j in private_slot.journal_logs):
-                continue
-            private_slot.journal_logs.append(JournalLogFile(
-                path=str(f),
-                name=f.name,
-                size_bytes=f.stat().st_size,
-                compressed=self._is_compressed(f.name),
-                sequence=seq,
-            ))
+        for scan_root in self._journal_scan_roots(dir_path):
+            for f in sorted(scan_root.rglob("*")):
+                if not f.is_file():
+                    continue
+                if not self._match_any(f.name, self._journal_file_patterns):
+                    continue
+                seq = extract_journal_sequence(f.name, self._journal_seq_regex)
+                if any(j.path == str(f) for j in private_slot.journal_logs):
+                    continue
+                private_slot.journal_logs.append(JournalLogFile(
+                    path=str(f),
+                    name=f.name,
+                    size_bytes=f.stat().st_size,
+                    compressed=self._is_compressed(f.name),
+                    sequence=seq,
+                ))
+
+    @staticmethod
+    def _journal_scan_roots(dir_path: Path) -> list[Path]:
+        varlog_roots = [
+            path
+            for path in sorted(dir_path.rglob("*"))
+            if path.is_dir() and path.name.lower().startswith("varlog")
+        ]
+        if varlog_roots:
+            return varlog_roots
+        return [dir_path]
 
     # ── helpers ───────────────────────────────────────────
 

@@ -21,6 +21,12 @@ products:
         - diag.zip
         - diaglog_*.log.zip
         - diaglog_*.zip
+        loose_diagnostics:
+          enabled: true
+          file_patterns:
+          - diag.zip
+          - diaglog_*.log.zip
+          - diaglog_*.zip
         filename_timestamp_regex: .*_(\d{14})\..*
         private_dir_patterns:
         - slot_*

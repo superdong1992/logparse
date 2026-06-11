@@ -35,6 +35,21 @@ The checked-in `tests/mock_data*` packages are demo/smoke assets. Their
 generator scripts can refresh those packages, but pytest unit tests should use
 focused fixtures unless they explicitly need a full-package smoke input.
 
+## Loose Default Inputs
+
+For the default product, normal `diag/slot_*` discovery is still preferred. In
+addition, scanner discovery can merge loose diagnostic logs that match
+`products.default.discovery.config.loose_diagnostics.file_patterns` anywhere in
+the extracted workspace. The default patterns are intentionally conservative and
+do not include `*.log`; add a specific pattern such as `diag_*.log` before
+parsing a single loose diagnostic file.
+
+Journal logs remain anchored by `varlog/slot_*` or `varlog/slot_*_cpu_*` so
+slot/cpu ownership is explicit. Under each slot directory, scanner discovery
+accepts `journal.log` and `journal.log.*.gz` from `varlog*.zip_extracted`
+children containing `varlog*` directories, such as
+`varlog_other.zip_extracted/varlog_other/journal.log`.
+
 ## Lifecycle Split V3
 
 `Module1Plugin` always uses `LifecycleSplitterV3`. Current `lifecycle_split` supports only:
@@ -70,7 +85,7 @@ Config validation rejects old switch/algorithm fields and old top-level lifecycl
 Inspect V3 DFX:
 
 ```bash
-python cli.py parse <package> -c config.yaml --lifecycle-dfx decisions
+python cli.py parse <input_path> -c config.yaml --lifecycle-dfx decisions
 python cli.py mech-lifecycles <task_id> -s 1 --module EXAMPLE --show-boundaries --lifecycle-dfx full
 ```
 

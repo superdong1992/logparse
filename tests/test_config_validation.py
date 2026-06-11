@@ -512,6 +512,39 @@ class TestValidateConfig:
         errors = validate_config({"products": {"default": cfg}})
         assert not any("glob" in e for e in errors)
 
+    def test_valid_loose_diagnostics_config_passes(self):
+        cfg = _valid_product_config()
+        cfg["discovery"]["config"]["loose_diagnostics"] = {
+            "enabled": True,
+            "file_patterns": ["diag_*.log", "diaglog_*.zip"],
+        }
+
+        errors = validate_config({"products": {"default": cfg}})
+
+        assert not any("loose_diagnostics" in e for e in errors)
+
+    def test_loose_diagnostics_enabled_must_be_boolean(self):
+        cfg = _valid_product_config()
+        cfg["discovery"]["config"]["loose_diagnostics"] = {
+            "enabled": "yes",
+            "file_patterns": ["diag_*.log"],
+        }
+
+        errors = validate_config({"products": {"default": cfg}})
+
+        assert any("loose_diagnostics.enabled" in e for e in errors)
+
+    def test_loose_diagnostics_file_patterns_must_be_valid_globs(self):
+        cfg = _valid_product_config()
+        cfg["discovery"]["config"]["loose_diagnostics"] = {
+            "enabled": True,
+            "file_patterns": [None],
+        }
+
+        errors = validate_config({"products": {"default": cfg}})
+
+        assert any("loose_diagnostics.file_patterns" in e for e in errors)
+
     def test_product_config_not_dict(self):
         errors = validate_config({"products": {"default": "not a dict"}})
         assert any("必须是对象" in e for e in errors)

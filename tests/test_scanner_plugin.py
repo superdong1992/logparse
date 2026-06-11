@@ -72,6 +72,27 @@ def _create_pre_extracted_mock_package(root: Path) -> Path:
     return pkg_root
 
 
+def _scanner_with_loose(patterns: list[str]) -> ScannerPlugin:
+    return ScannerPlugin(
+        config={
+            "diagnostic_dir": "diag",
+            "private_dir": "varlog",
+            "slot_dir_pattern": "slot_*",
+            "diag_file_patterns": ["diag.zip", "diaglog_*.log.zip"],
+            "filename_timestamp_regex": r".*_(\d{14})\..*",
+            "private_dir_patterns": ["slot_*", "slot_*_cpu_*"],
+            "archive_name": "varlog.zip",
+            "journal_file_patterns": ["journal.log", "journal.log.*.gz"],
+            "journal_sequence_regex": r"journal\.log(?:\.(\d+))?(?:\.gz)?",
+            "compressed_extensions": [".gz", ".zip"],
+            "loose_diagnostics": {
+                "enabled": True,
+                "file_patterns": patterns,
+            },
+        },
+    )
+
+
 class TestScannerPlugin:
     def test_discover_finds_slots(self, scanner, tmp_path):
         pkg_root = _create_mock_package(tmp_path)
@@ -113,3 +134,72 @@ class TestScannerPlugin:
         (tmp_path / "other").mkdir()
         diag_slots, private_slots = scanner.discover(tmp_path)
         assert diag_slots == []
+
+    def test_discover_merges_loose_diagnostic_logs(self, tmp_path):
+        pkg_root = _create_pre_extracted_mock_package(tmp_path)
+        loose_file = pkg_root / "attachments" / "logs" / "loose_diag_20260103.log"
+        loose_file.parent.mkdir(parents=True)
+        loose_file.write_text(
+            "2026-01-03T00:02:00 EXAMPLE loose diagnostic\n",
+            encoding="utf-8",
+        )
+
+        diag_slots, _private_slots = _scanner_with_loose(["loose_diag_*.log"]).discover(pkg_root)
+
+        loose_slot = next(slot for slot in diag_slots if slot.slot_id == "loose")
+        assert loose_slot.name == "slot_loose"
+        assert [entry.name for entry in loose_slot.diagnostic_logs] == ["loose_diag_20260103.log"]
+
+    def test_loose_diagnostic_logs_are_deduplicated_by_expanded_content(self, tmp_path):
+        pkg_root = _create_pre_extracted_mock_package(tmp_path)
+        duplicate = pkg_root / "attachments" / "copy_diag.log"
+        duplicate.parent.mkdir(parents=True)
+        duplicate.write_text(
+            "2026-01-03T00:00:00 EXAMPLE msg",
+            encoding="utf-8",
+        )
+
+        diag_slots, _private_slots = _scanner_with_loose(["copy_diag.log"]).discover(pkg_root)
+
+        assert [slot.slot_id for slot in diag_slots] == ["1"]
+        assert [entry.name for entry in diag_slots[0].diagnostic_logs] == [
+            "diag.zip",
+            "diaglog_1_20260103000000.log.zip",
+        ]
+
+    def test_journal_scan_includes_sibling_varlog_prefixed_dirs(self, scanner, tmp_path):
+        slot_dir = tmp_path / "varlog" / "slot_1" / "varlog_bundle.zip_extracted"
+        (slot_dir / "varlog").mkdir(parents=True)
+        (slot_dir / "varlog_other").mkdir()
+        (slot_dir / "varlog" / "journal.log").write_text(
+            "Jan  3 00:00:00 dhcp-100: No[1] EXAMPLE msg\n",
+            encoding="utf-8",
+        )
+        (slot_dir / "varlog_other" / "journal.log.1.gz").write_bytes(b"compressed placeholder")
+
+        _diag_slots, private_slots = scanner.discover(tmp_path)
+
+        assert [log.name for log in private_slots[0].journal_logs] == [
+            "journal.log",
+            "journal.log.1.gz",
+        ]
+
+    def test_journal_scan_preserves_cpu_scope_for_varlog_prefixed_dirs(self, scanner, tmp_path):
+        journal_dir = (
+            tmp_path
+            / "varlog"
+            / "slot_1_cpu_2"
+            / "varlog_cpu.zip_extracted"
+            / "varlog_cpu"
+        )
+        journal_dir.mkdir(parents=True)
+        (journal_dir / "journal.log").write_text(
+            "Jan  3 00:00:00 dhcp-100: No[1] EXAMPLE msg\n",
+            encoding="utf-8",
+        )
+
+        _diag_slots, private_slots = scanner.discover(tmp_path)
+
+        assert private_slots[0].slot_id == "1"
+        assert private_slots[0].cpu_id == "2"
+        assert [log.name for log in private_slots[0].journal_logs] == ["journal.log"]
