@@ -11,6 +11,7 @@ import pytest
 from backend.models import (
     ActivePeriod,
     BoardRole,
+    JournalLogFile,
     LogEntry,
     MechBoardCycle,
     MechLogEntry,
@@ -323,6 +324,120 @@ class TestMechanismPluginOrchestration:
         assert shared["metrics"]["timestamps"] == 2
         assert shared["metrics"]["module1_entries"] == 1
         assert shared["metrics"]["module2_entries"] == 1
+
+    def test_parser_dedupes_duplicate_module1_diagnostic_entries(
+        self, sample_config, tmp_path,
+    ):
+        duplicate_line = (
+            "2026-01-03T00:01:00 EXAMPLE Service=EXAMPLE; Slot=1; "
+            "CPU-Id=0; ProcessName=SERVICE-12345; Context=No[1] MASTER_ACTIVE)"
+        )
+        log_a = tmp_path / "diag-a.log"
+        log_b = tmp_path / "diag-b.log"
+        log_a.write_text(f"{duplicate_line}\n{duplicate_line}\n", encoding="utf-8")
+        log_b.write_text(f"{duplicate_line}\n", encoding="utf-8")
+        result = ParseResult(
+            diagnostic_slots=[
+                SlotInfo(
+                    slot_id="1",
+                    name="slot_1",
+                    path=str(tmp_path),
+                    diagnostic_logs=[
+                        LogEntry(path=str(log_a), name=log_a.name, size_bytes=log_a.stat().st_size),
+                        LogEntry(path=str(log_b), name=log_b.name, size_bytes=log_b.stat().st_size),
+                    ],
+                )
+            ]
+        )
+
+        ParserPlugin(sample_config).parse(result)
+
+        module1 = next(mech for mech in result.mech_results if mech.module_key == "module1")
+        assert module1.diag_entry_count == 1
+        proc = module1.slots[0].board_cycles[0].processes[0]
+        assert proc.total_count == 1
+        assert [log.source_file for log in proc.logs] == ["slot_1/diag-a.log"]
+
+    def test_parser_dedupes_duplicate_module2_diagnostic_entries(
+        self, sample_config, tmp_path,
+    ):
+        module1_line = (
+            "2026-01-03T00:00:00 EXAMPLE Service=EXAMPLE; Slot=1; "
+            "CPU-Id=0; ProcessName=SERVICE-12345; Context=No[1] MASTER_ACTIVE)"
+        )
+        module2_line = (
+            '2026-01-03T00:01:00 MODULE2 Slot=1,CPU-Id=0,'
+            'ProcessName=WORKER[777],Context="same"'
+        )
+        log_a = tmp_path / "diag-a.log"
+        log_b = tmp_path / "diag-b.log"
+        log_a.write_text(f"{module1_line}\n{module2_line}\n", encoding="utf-8")
+        log_b.write_text(f"{module2_line}\n", encoding="utf-8")
+        config = dict(sample_config)
+        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
+        config["mechanism_modules"]["module2"] = {
+            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+            "enabled": True,
+            "config": {
+                "module_name": "MODULE2",
+                "identifying_keyword": "MODULE2",
+                "depends_on_module": "module1",
+                "diag_pattern": (
+                    r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>[^,]*),"
+                    r"ProcessName=(?P<ProcessName>[^,]+),Context=\"(?P<Context>.*?)\""
+                ),
+            },
+        }
+        result = ParseResult(
+            diagnostic_slots=[
+                SlotInfo(
+                    slot_id="1",
+                    name="slot_1",
+                    path=str(tmp_path),
+                    diagnostic_logs=[
+                        LogEntry(path=str(log_a), name=log_a.name, size_bytes=log_a.stat().st_size),
+                        LogEntry(path=str(log_b), name=log_b.name, size_bytes=log_b.stat().st_size),
+                    ],
+                )
+            ]
+        )
+
+        ParserPlugin(config).parse(result)
+
+        module2 = next(mech for mech in result.mech_results if mech.module_key == "module2")
+        assert module2.diag_entry_count == 1
+        proc = module2.slots[0].board_cycles[0].processes[0]
+        assert proc.total_count == 1
+        assert [log.source_file for log in proc.logs] == ["slot_1/diag-a.log"]
+
+    def test_parser_dedupes_duplicate_module1_journal_entries(
+        self, sample_config, tmp_path,
+    ):
+        duplicate_line = (
+            "2026-01-03T00:01:00 host SERVICE-12345: No[1] EXAMPLE journal"
+        )
+        journal_a = tmp_path / "journal-a.log"
+        journal_b = tmp_path / "journal-b.log"
+        journal_a.write_text(f"{duplicate_line}\n", encoding="utf-8")
+        journal_b.write_text(f"{duplicate_line}\n", encoding="utf-8")
+        private_slot = PrivateSlotInfo(
+            dir_name="slot_1",
+            slot_id="1",
+            path=str(tmp_path),
+            journal_logs=[
+                JournalLogFile(path=str(journal_a), name=journal_a.name),
+                JournalLogFile(path=str(journal_b), name=journal_b.name),
+            ],
+        )
+        result = ParseResult(private_slots=[private_slot])
+
+        ParserPlugin(sample_config).parse(result)
+
+        module1 = next(mech for mech in result.mech_results if mech.module_key == "module1")
+        assert module1.journal_entry_count == 1
+        proc = module1.slots[0].board_cycles[0].processes[0]
+        assert proc.total_count == 1
+        assert [log.source_file for log in proc.logs] == ["slot_1/journal-a.log"]
 
     def test_shared_scan_isolates_module_scanner_errors(self, sample_config, tmp_path):
         log_path = tmp_path / "diag.log"

@@ -75,9 +75,14 @@ Board cycles are top-level lifecycles. CPU cycles are nested under the matching 
 The default product also supports configured loose diagnostic inputs. After the
 normal `diag/slot_*` scan, files matching
 `products.default.discovery.config.loose_diagnostics.file_patterns` are merged
-from anywhere under the extracted workspace and deduplicated by parsed content.
+from anywhere under the extracted workspace.
 The shipped default is conservative and does not include broad patterns such as
 `*.log`; add specific patterns before parsing a single loose diagnostic log.
+Parsed mechanism logs are deduplicated by parsed content across files and within
+the same file. Source path fields such as `source_file` are intentionally not
+part of duplicate identity, so copied logs with identical parsed timestamp,
+slot/cpu, process/pid, context, sequence, active flag, and raw text collapse to
+the first occurrence.
 For `cli.py parse`, `<input_path>` means raw log input: a compressed log
 package, a single non-compressed diagnostic log file, or a raw log directory.
 Already parsed result directories such as `output/{task_id}` are consumed by

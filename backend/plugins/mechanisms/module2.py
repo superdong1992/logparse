@@ -21,6 +21,7 @@ from backend.models import (
     ParseResult,
 )
 from backend.parsing.file_iter import iter_log_entry_lines
+from backend.parsing.mech_entry_dedup import dedupe_mech_entries
 from backend.plugins.mechanisms.base import MechanismModulePlugin
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,7 @@ class Module2Plugin(MechanismModulePlugin):
 
         t0 = time.perf_counter()
         self._normalize_timezones(entries, upstream)
+        entries = dedupe_mech_entries(entries)
         logger.info(
             "LOGPARSE_PERF module2.normalize_timezones module=%s elapsed=%.3fs entries=%d",
             self.module_key,

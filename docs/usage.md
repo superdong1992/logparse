@@ -44,6 +44,11 @@ the extracted workspace. The default patterns are intentionally conservative and
 do not include `*.log`; add a specific pattern such as `diag_*.log` before
 parsing a single loose diagnostic file.
 
+After parsing, mechanism log entries are deduplicated by parsed content across
+all discovered files and within a single file. The source path is excluded from
+duplicate identity; timestamp, slot/cpu, process/pid, context, sequence, active
+flag, and raw text must match for a later entry to be removed.
+
 Journal logs remain anchored by `varlog/slot_*` or `varlog/slot_*_cpu_*` so
 slot/cpu ownership is explicit. Under each slot directory, scanner discovery
 accepts `journal.log` and `journal.log.*.gz` from `varlog*.zip_extracted`

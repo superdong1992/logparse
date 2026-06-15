@@ -19,6 +19,7 @@ from backend.models import (
 from backend.performance import resolve_worker_count
 from backend.parsing.active_period_builder import ActivePeriodBuilder
 from backend.parsing.file_iter import iter_log_entry_lines
+from backend.parsing.mech_entry_dedup import dedupe_mech_entries
 from backend.parsing.output_writer import MechOutputWriter
 from backend.parsing.role_identifier import RoleIdentifier
 from backend.parsing.timestamp_extractor import TimestampExtractor
@@ -225,6 +226,11 @@ class ParserPlugin(LogParserPlugin):
                 if error not in seen_errors:
                     seen_errors.add(error)
                     result.errors.append(error)
+
+        entries_by_module = {
+            module_key: dedupe_mech_entries(entries)
+            for module_key, entries in entries_by_module.items()
+        }
 
         self._normalize_timestamp_timezones(slots)
         for slot in slots:

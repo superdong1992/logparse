@@ -13,6 +13,7 @@ from backend.models import MechLogEntry, MechResult, MechSlotOutput, ParseResult
 from backend.parsing.lifecycle_common import LifecycleSplitConfig
 from backend.parsing.lifecycle_splitter_v3 import LifecycleSplitterV3
 from backend.parsing.mech_diag_scanner import MechDiagScanner
+from backend.parsing.mech_entry_dedup import dedupe_mech_entries
 from backend.parsing.mech_journal_scanner import MechJournalScanner
 from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.role_identifier import RoleIdentifier
@@ -165,6 +166,7 @@ class Module1Plugin(MechanismModulePlugin):
             for entry in all_entries:
                 if entry.timestamp and entry.timestamp.tzinfo is None:
                     entry.timestamp = entry.timestamp.replace(tzinfo=tzinfo)
+        all_entries = dedupe_mech_entries(all_entries)
 
         by_slot: dict[str, list[MechLogEntry]] = defaultdict(list)
         for entry in all_entries:
