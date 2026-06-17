@@ -66,7 +66,7 @@ python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-bou
 
 Board cycles are top-level lifecycles. CPU cycles are nested under the matching board cycle. Board logs are written to `mech_modules/<module>/slot_<id>/<board_cycle>/<proc>-<pid>.log`; CPU-cycle logs are written to `mech_modules/<module>/slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>-<pid>.log`. Plain safe names are kept readable for compatibility with older scripts; names containing path separators, Windows-reserved names, or filesystem-unsafe characters are encoded before writing.
 
-`module2` is diagnostic-log only for lifecycle purposes. It reuses module1 lifecycle results and does not run independent lifecycle splitting.
+`module2` is diagnostic-log only for lifecycle purposes. It reuses module1 lifecycle results and does not run independent lifecycle splitting. When a module2 diagnostic `Slot` value uses a frame/slot form such as `1/2`, module2 maps it to the last non-empty segment (`2`) before matching module1 slots and writing `slot_<id>` output.
 
 ## Extraction And Performance
 

@@ -35,6 +35,7 @@ Checklist:
 
 - `module2` is diagnostic-only for lifecycle purposes.
 - `module2` reuses `module1` lifecycle cycles.
+- Module2 frame/slot diagnostic values such as `1/2` map to the last segment before matching module1 slots.
 - `module2` may expand output bounds only within the nearest adjacent module1 gap.
 - CPU anchors preserve the same parent board cycle and nested CPU cycle when available.
 

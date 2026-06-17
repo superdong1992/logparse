@@ -44,6 +44,12 @@ def _module2_config() -> dict:
     }
 
 
+def test_module2_extract_slot_id_uses_last_slash_segment():
+    assert module2_impl._extract_slot_id("1/2") == "2"
+    assert module2_impl._extract_slot_id("1/2/3") == "3"
+    assert module2_impl._extract_slot_id(" 1/2 ") == "2"
+
+
 def test_module2_validate_config_requires_fields():
     cfg = {}
 
@@ -1345,7 +1351,7 @@ def test_module2_resolves_projected_unknown_to_nearest_admissible_target(tmp_pat
     assert "归属到unknown" not in caplog.text
 
 
-def test_module2_preserves_slot_from_slash_format(tmp_path):
+def test_module2_maps_slash_slot_to_module1_slot(tmp_path):
     log_file = tmp_path / "diag.log"
     log_file.write_text(
         '2026-01-03T00:10:00+08:00 xxx Slot=1/2,CPU-Id=0,'
@@ -1367,9 +1373,9 @@ def test_module2_preserves_slot_from_slash_format(tmp_path):
     mech = plugin.parse(result)
 
     assert mech is not None
-    assert mech.slots[0].slot_id == "1/2"
+    assert mech.slots[0].slot_id == "2"
     cycle = mech.slots[0].board_cycles[0]
-    assert cycle.dir_name == "unknown"
+    assert cycle.dir_name == "20260103T000000-20260103T010000"
     proc = cycle.processes[0]
     assert proc.process_name == "hellocat"
     assert proc.pid == "456"
@@ -1378,10 +1384,10 @@ def test_module2_preserves_slot_from_slash_format(tmp_path):
 
     mech_dir = MechOutputWriter().write(mech, tmp_path / "output")
     assert (
-        mech_dir / f"slot_{safe_path_segment('1/2')}" / safe_path_segment("unknown")
+        mech_dir / "slot_2" / safe_path_segment("20260103T000000-20260103T010000")
         / safe_log_filename("hellocat", "456")
     ).is_file()
-    assert not (mech_dir / "slot_1" / "2").exists()
+    assert not (mech_dir / f"slot_{safe_path_segment('1/2')}").exists()
 
 
 def test_module2_logs_when_no_diagnostic_entries_found(tmp_path, caplog):

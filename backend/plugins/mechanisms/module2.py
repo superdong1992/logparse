@@ -353,8 +353,12 @@ def _parse_bracket_process_name(raw: str) -> tuple[str, str]:
 
 
 def _extract_slot_id(raw: str) -> str:
-    """Preserve the configured slot identity, including frame/slot forms."""
-    return raw.strip()
+    """Normalize module2 frame/slot forms to the module1 slot identity."""
+    text = raw.strip()
+    if "/" not in text:
+        return text
+    parts = [part.strip() for part in text.split("/") if part.strip()]
+    return parts[-1] if parts else text
 
 
 def _find_upstream_slot(upstream: MechResult, slot_id: str) -> MechSlotOutput | None:
