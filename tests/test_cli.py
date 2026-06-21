@@ -649,6 +649,113 @@ def test_parse_verbose_does_not_print_v3_lifecycle_dfx_without_lifecycle_dfx(tmp
     assert "[候选切分]" not in result.output
 
 
+def test_parse_lifecycle_dfx_full_labels_no_wrap_evidence_sources(tmp_path, monkeypatch):
+    package_path = tmp_path / "package.zip"
+    package_path.write_text("placeholder", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+    cli_module = importlib.import_module("cli")
+
+    evidence = {
+        "support_type": "boundary_support",
+        "scope": "board",
+        "slot": "1",
+        "old_sequence": 99,
+        "new_sequence": 1,
+        "old_source": "diagnostic",
+        "new_source": "journal",
+        "old_observed_time": "2026-01-03T00:01:00+08:00",
+        "new_observed_time": "2026-01-03T00:01:30+08:00",
+        "explanation_zh": "No 回绕成立条件：可靠进程，忽略 PID，source 可为 diagnostic 或 journal。",
+    }
+
+    class FakePipeline:
+        def __init__(self, _config):
+            pass
+
+        def run(self, source, output_dir, product="default", verbose=False):
+            return ParseResult(
+                task_id="task",
+                package_name=source.name,
+                mech_results=[
+                    MechResult(
+                        module_name="EXAMPLE",
+                        module_key="module1",
+                        slots=[
+                            MechSlotOutput(
+                                slot_id="1",
+                                lifecycle_reliable=True,
+                                lifecycle_split_result={
+                                    "algorithm": "interval_v3",
+                                    "candidate_segments": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "candidate_index": 0,
+                                            "start_time": "2026-01-03T00:00:00+08:00",
+                                            "end_time": "2026-01-03T00:01:00+08:00",
+                                            "log_count": 1,
+                                        },
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "candidate_index": 1,
+                                            "start_time": "2026-01-03T00:01:30+08:00",
+                                            "end_time": "2026-01-03T00:02:00+08:00",
+                                            "log_count": 1,
+                                        },
+                                    ],
+                                    "merge_decisions": [
+                                        {
+                                            "scope": "board",
+                                            "slot": "1",
+                                            "left_candidate_indices": [0],
+                                            "right_candidate_indices": [1],
+                                            "left_end_time": "2026-01-03T00:01:00+08:00",
+                                            "right_start_time": "2026-01-03T00:01:30+08:00",
+                                            "silent_gap_seconds": 30,
+                                            "decision": "kept_split",
+                                            "blocking_reason": "journal_wrap",
+                                            "reliable_pid_counts": [],
+                                            "journal_evidence": [evidence],
+                                            "reason_zh": "No 回绕只作为阻断合并的证据。",
+                                        },
+                                    ],
+                                    "lifecycles": [],
+                                    "journal_evidence": [evidence],
+                                    "issues": [],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "parse",
+            str(package_path),
+            "-c",
+            str(config_path),
+            "--lifecycle-dfx",
+            "full",
+            "-o",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No 回绕证据" in result.output
+    assert "old_source=diagnostic new_source=journal" in result.output
+    assert "journal 回绕证据" not in result.output
+
+
 def test_test_pattern_journal_without_sequence(sample_config, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

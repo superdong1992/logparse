@@ -161,10 +161,10 @@ def test_multi_instance_processes_do_not_block_merge():
 
 
 def test_multi_instance_same_pid_across_kept_boundary_does_not_report_pid_reuse():
-    result = _splitter(multi=["worker"]).split([
-        _entry("journal", "", 0, source="journal", sequence=99),
+    result = _splitter(reliable=["anchor"], multi=["worker"]).split([
+        _entry("anchor", "", 0, source="journal", sequence=99),
         _entry("worker", "500", 10),
-        _entry("journal", "", 40, source="journal", sequence=1),
+        _entry("anchor", "", 40, source="journal", sequence=1),
         _entry("worker", "500", 50),
     ])
 
@@ -174,16 +174,82 @@ def test_multi_instance_same_pid_across_kept_boundary_does_not_report_pid_reuse(
 
 def test_reliable_journal_wrap_across_candidate_segments_keeps_split():
     result = _splitter(reliable=["anchor"]).split([
-        _entry("anchor", "", 0, source="journal", sequence=99, context="No[99] old"),
-        _entry("anchor", "", 30, source="journal", sequence=1, context="No[1] new"),
+        _entry("anchor", "100", 0, source="journal", sequence=99, context="No[99] old"),
+        _entry("anchor", "200", 30, source="journal", sequence=1, context="No[1] new"),
     ])
 
     assert len(result.candidate_segments) == 2
     assert len(result.lifecycles) == 2
     assert result.merge_decisions[0].decision == "kept_split"
     assert result.merge_decisions[0].blocking_reason == "journal_wrap"
+    assert result.merge_decisions[0].reliable_pid_counts[0]["pids"] == ["100", "200"]
     assert result.journal_evidence[0].support_type == "boundary_support"
-    assert "journal 回绕跨越相邻候选生命周期" in result.journal_evidence[0].explanation_zh
+    decision = result.merge_decisions[0]
+    evidence = result.journal_evidence[0]
+    assert "可靠进程" in decision.reason_zh
+    assert "忽略 PID" in decision.reason_zh
+    assert "只作为阻断合并的证据" in decision.reason_zh
+    assert evidence.old_source == "journal"
+    assert evidence.new_source == "journal"
+    assert "可靠进程" in evidence.explanation_zh
+    assert "忽略 PID" in evidence.explanation_zh
+    assert "sequence > 0" in evidence.explanation_zh
+    assert "左候选段" in evidence.explanation_zh
+    assert "右候选段" in evidence.explanation_zh
+
+
+def test_reliable_no_wrap_uses_diagnostic_sequence_and_ignores_pid():
+    result = _splitter(reliable=["anchor"]).split([
+        _entry("anchor", "", 0, source="diagnostic", sequence=99, context="No[99] old"),
+        _entry("anchor", "200", 30, source="diagnostic", sequence=1, context="No[1] new"),
+    ])
+
+    assert len(result.candidate_segments) == 2
+    assert len(result.lifecycles) == 2
+    assert result.merge_decisions[0].blocking_reason == "journal_wrap"
+    evidence = result.journal_evidence[0]
+    assert evidence.old_sequence == 99
+    assert evidence.new_sequence == 1
+    assert evidence.old_source == "diagnostic"
+    assert evidence.new_source == "diagnostic"
+
+
+def test_reliable_no_wrap_compares_across_sources():
+    result = _splitter(reliable=["anchor"]).split([
+        _entry("anchor", "100", 0, source="diagnostic", sequence=99, context="No[99] old"),
+        _entry("anchor", "100", 30, source="journal", sequence=1, context="No[1] new"),
+    ])
+
+    assert len(result.candidate_segments) == 2
+    assert len(result.lifecycles) == 2
+    assert result.merge_decisions[0].blocking_reason == "journal_wrap"
+    evidence = result.journal_evidence[0]
+    assert evidence.old_source == "diagnostic"
+    assert evidence.new_source == "journal"
+
+
+def test_non_reliable_no_wrap_does_not_keep_candidate_split():
+    result = _splitter().split([
+        _entry("ordinary", "", 0, source="journal", sequence=99, context="No[99] old"),
+        _entry("ordinary", "", 30, source="journal", sequence=1, context="No[1] new"),
+    ])
+
+    assert len(result.candidate_segments) == 2
+    assert len(result.lifecycles) == 1
+    assert result.merge_decisions[0].decision == "merged"
+    assert result.journal_evidence == []
+
+
+def test_journal_wrap_detection_is_process_scoped():
+    result = _splitter().split([
+        _entry("oldproc", "", 0, source="journal", sequence=99, context="No[99] old"),
+        _entry("newproc", "", 30, source="journal", sequence=1, context="No[1] new"),
+    ])
+
+    assert len(result.candidate_segments) == 2
+    assert len(result.lifecycles) == 1
+    assert result.merge_decisions[0].decision == "merged"
+    assert result.journal_evidence == []
 
 
 def test_reliable_pid_conflict_inside_final_lifecycle_records_error_without_auto_split():
@@ -376,10 +442,10 @@ def test_cpu_lifecycle_ids_are_unique_across_board_lifecycles():
 
 
 def test_kept_boundary_with_same_pid_records_pid_reuse_assumption_violation():
-    result = _splitter().split([
-        _entry("journal", "", 0, source="journal", sequence=99),
+    result = _splitter(reliable=["anchor"]).split([
+        _entry("anchor", "", 0, source="journal", sequence=99),
         _entry("ordinary", "500", 10),
-        _entry("journal", "", 40, source="journal", sequence=1),
+        _entry("anchor", "", 40, source="journal", sequence=1),
         _entry("ordinary", "500", 50),
     ])
 

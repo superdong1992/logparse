@@ -71,6 +71,8 @@ class LifecycleV3JournalEvidence(BaseModel):
     cpu_id: str | None = None
     old_sequence: int
     new_sequence: int
+    old_source: str = ""
+    new_source: str = ""
     old_observed_time: datetime
     new_observed_time: datetime
     old_raw: str = ""
@@ -440,8 +442,10 @@ class LifecycleSplitterV3:
                     reliable_pid_counts=pid_counts,
                     journal_evidence=[item.model_dump(mode="json") for item in journal_evidence],
                     reason_zh=(
-                        "两个候选生命周期之间存在 journal 序号回绕，且回绕前日志在前段、"
-                        "回绕后日志在后段，因此保留这条生命周期边界。"
+                        "两个候选生命周期之间存在可靠进程 No 回绕：按 process_name_mapping "
+                        "归一后进程名相同，比较 No 时忽略 PID 和 source，旧 No 位于左候选段，"
+                        "新 No 位于右候选段，并从大变小。No 回绕只作为阻断合并的证据；"
+                        "未观察到 No 回绕不会单独作为合并依据，后续继续检查可靠进程 PID 冲突。"
                     ),
                 ),
                 journal_evidence,
@@ -533,40 +537,46 @@ class LifecycleSplitterV3:
     ) -> list[LifecycleV3JournalEvidence]:
         left_ids = {id(entry) for entry in left_entries}
         right_ids = {id(entry) for entry in right_entries}
-        journal_entries = sorted(
-            [
-                entry
-                for entry in left_entries + right_entries
-                if entry.source == "journal" and entry.sequence > 0 and entry.timestamp
-            ],
-            key=_entry_sort_key,
-        )
+        sequence_entries_by_process: dict[str, list[MechLogEntry]] = defaultdict(list)
+        for entry in left_entries + right_entries:
+            if (
+                entry.process_name in self._reliable_processes
+                and entry.sequence > 0
+                and entry.timestamp
+            ):
+                sequence_entries_by_process[entry.process_name].append(entry)
         evidence: list[LifecycleV3JournalEvidence] = []
-        for old_entry, new_entry in zip(journal_entries, journal_entries[1:]):
-            if id(old_entry) not in left_ids or id(new_entry) not in right_ids:
-                continue
-            if new_entry.sequence >= old_entry.sequence:
-                continue
-            evidence.append(
-                LifecycleV3JournalEvidence(
-                    support_type="boundary_support",
-                    support_type_label_zh="边界证据",
-                    scope=left.scope,
-                    scope_label_zh=_scope_label(left.scope),
-                    slot=left.slot,
-                    cpu_id=left.cpu_id,
-                    old_sequence=old_entry.sequence,
-                    new_sequence=new_entry.sequence,
-                    old_observed_time=old_entry.timestamp,
-                    new_observed_time=new_entry.timestamp,
-                    old_raw=old_entry.raw,
-                    new_raw=new_entry.raw,
-                    explanation_zh=(
-                        "journal 回绕跨越相邻候选生命周期：回绕前日志位于前段，"
-                        "回绕后日志位于后段，因此这条候选边界有可靠证据支撑。"
-                    ),
+        for sequence_entries in sequence_entries_by_process.values():
+            ordered_entries = sorted(sequence_entries, key=_entry_sort_key)
+            for old_entry, new_entry in zip(ordered_entries, ordered_entries[1:]):
+                if id(old_entry) not in left_ids or id(new_entry) not in right_ids:
+                    continue
+                if new_entry.sequence >= old_entry.sequence:
+                    continue
+                evidence.append(
+                    LifecycleV3JournalEvidence(
+                        support_type="boundary_support",
+                        support_type_label_zh="边界证据",
+                        scope=left.scope,
+                        scope_label_zh=_scope_label(left.scope),
+                        slot=left.slot,
+                        cpu_id=left.cpu_id,
+                        old_sequence=old_entry.sequence,
+                        new_sequence=new_entry.sequence,
+                        old_source=old_entry.source,
+                        new_source=new_entry.source,
+                        old_observed_time=old_entry.timestamp,
+                        new_observed_time=new_entry.timestamp,
+                        old_raw=old_entry.raw,
+                        new_raw=new_entry.raw,
+                        explanation_zh=(
+                            "No 回绕成立条件：同一个可靠进程按 process_name_mapping 归一后进程名相同，"
+                            "两条日志均有 sequence > 0；source 可为 diagnostic 或 journal，比较 No 时忽略 PID；"
+                            "按时间排序后，旧 No 位于左候选段，新 No 位于右候选段，并从大变小。"
+                            "因此这条候选边界有可靠的阻断合并证据。"
+                        ),
+                    )
                 )
-            )
         return evidence
 
     def _decision_evidence_entries(self, segment: _WorkingSegment) -> list[MechLogEntry]:

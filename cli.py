@@ -511,7 +511,7 @@ def _print_lifecycle_split_v3(result: dict, detail: str = "summary") -> None:
         "  lifecycle_split_v3: "
         f"reliable={reliable} candidates={len(candidates)} "
         f"merged={merged} kept_splits={kept} "
-        f"lifecycles={len(lifecycles)} journal_evidence={len(journal_evidence)} "
+        f"lifecycles={len(lifecycles)} no_wrap_evidence={len(journal_evidence)} "
         f"issues={len(issues)}"
     )
     click.echo("    [结论摘要]")
@@ -544,9 +544,12 @@ def _print_lifecycle_split_v3(result: dict, detail: str = "summary") -> None:
     click.echo("    [边界证据汇总]")
     for evidence in journal_evidence:
         scope = _format_v2_scope(evidence)
+        old_source = evidence.get("old_source") or "-"
+        new_source = evidence.get("new_source") or "-"
         click.echo(
-            f"    journal 回绕 scope={scope} "
+            f"    No 回绕 scope={scope} "
             f"old_seq={evidence.get('old_sequence')} new_seq={evidence.get('new_sequence')} "
+            f"old_source={old_source} new_source={new_source} "
             f"old={_format_issue_time(evidence.get('old_observed_time'))} "
             f"new={_format_issue_time(evidence.get('new_observed_time'))}"
         )
@@ -641,12 +644,15 @@ def _print_lifecycle_split_v3_decisions(decisions: list[dict], *, indent: str) -
 
 def _print_v3_decision_journal_evidence(evidence_items: list[dict], *, indent: str) -> None:
     if not evidence_items:
-        click.echo(f"{indent}journal 回绕证据：未发现")
+        click.echo(f"{indent}No 回绕证据：未发现")
         return
     for evidence in evidence_items:
+        old_source = evidence.get("old_source") or "-"
+        new_source = evidence.get("new_source") or "-"
         click.echo(
-            f"{indent}journal 回绕证据："
+            f"{indent}No 回绕证据："
             f"old_seq={evidence.get('old_sequence')} new_seq={evidence.get('new_sequence')} "
+            f"old_source={old_source} new_source={new_source} "
             f"old={_format_issue_time(evidence.get('old_observed_time'))} "
             f"new={_format_issue_time(evidence.get('new_observed_time'))}"
         )
@@ -678,7 +684,7 @@ def _v3_blocking_reason_label(reason: str) -> str:
     if reason == "reliable_pid_conflict":
         return "合并后可靠边界进程会出现多个 PID，当前证据更支持这里是重启边界。"
     if reason == "journal_wrap":
-        return "journal 回绕前日志在前候选段、回绕后日志在后候选段，这条边界有可靠证据支撑。"
+        return "可靠进程 No 回绕前日志在前候选段、回绕后日志在后候选段；比较 No 时忽略 PID 和 source，这条边界有可靠反证支撑。"
     return reason or "-"
 
 
@@ -691,7 +697,7 @@ def _v3_main_reason(decisions: list[dict], issues: list[dict]) -> str:
         labels = [_v3_blocking_reason_label(str(reason)) for reason in sorted(set(kept_reasons))]
         return "；".join(labels)
     if any(item.get("decision") == "merged" for item in decisions):
-        return "虽然存在 >=30 秒静默候选边界，但没有可靠边界进程 PID 冲突或 journal 回绕证据，因此聚合。"
+        return "虽然存在 >=30 秒静默候选边界，但没有可靠边界进程 PID 冲突或 No 回绕证据，因此聚合。"
     return ""
 
 
