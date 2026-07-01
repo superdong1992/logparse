@@ -292,6 +292,39 @@ def test_mech_target_logs_reports_missing_log_without_guessing(tmp_path):
     assert any("log file missing" in caveat for caveat in target["caveats"])
 
 
+def test_mech_target_logs_explain_includes_selection_diagnostics(tmp_path):
+    _write_target_log_result(tmp_path, with_log=False)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mech-target-logs",
+            "task",
+            "--problem-time",
+            "2026-01-03T00:05:00",
+            "--module",
+            "EXAMPLE",
+            "--slot",
+            "1",
+            "--process-name",
+            "SERVICE",
+            "--pid",
+            "123",
+            "-o",
+            str(tmp_path),
+            "--explain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    target = payload["target_logs"][0]
+    diagnostics = payload["selection_diagnostics"]
+    assert target["error_code"] == "LP_TARGET_LOG_MISSING"
+    assert diagnostics["candidate_count"] == 1
+    assert diagnostics["error_code"] == "LP_TARGET_LOG_MISSING"
+
+
 def _write_mech_log_file(tmp_path, process_name, pid, content):
     log_dir = (
         tmp_path / "task" / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"

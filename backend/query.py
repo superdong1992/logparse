@@ -135,6 +135,7 @@ class ResultQueryService:
         process_name: str,
         pid: str | None = None,
         label: str | None = None,
+        explain: bool = False,
     ) -> dict:
         """Resolve one process anchor to the deterministic target_logs contract."""
         anchor = {
@@ -145,23 +146,60 @@ class ResultQueryService:
         }
         if pid:
             anchor["pid"] = str(pid)
+        diagnostics = _selection_diagnostics(anchor)
 
         parsed_problem_time = _parse_time(problem_time)
         if parsed_problem_time is None:
-            return {"target_logs": [_missing_target(anchor, "invalid problem_time")]}
+            return _target_payload(
+                _missing_target(anchor, "invalid problem_time", error_code="LP_TARGET_TIME_INVALID"),
+                diagnostics,
+                explain,
+                error_code="LP_TARGET_TIME_INVALID",
+                reason="invalid problem_time",
+            )
 
         modules = self.mech_modules(task_id)
         if not modules:
-            return {"target_logs": [_missing_target(anchor, "result.json not found or contains no mechanism modules")]}
+            return _target_payload(
+                _missing_target(
+                    anchor,
+                    "result.json not found or contains no mechanism modules",
+                    error_code="LP_RESULT_MISSING",
+                ),
+                diagnostics,
+                explain,
+                error_code="LP_RESULT_MISSING",
+                reason="result.json not found or contains no mechanism modules",
+            )
 
         module_matches = [
             item for item in modules
             if _module_matches(item, module)
         ]
+        diagnostics["module_match_count"] = len(module_matches)
+        diagnostics["available_modules"] = [
+            {
+                "module_key": item.get("module_key") or "",
+                "module_name": item.get("module_name") or "",
+            }
+            for item in modules
+        ]
         if not module_matches:
-            return {"target_logs": [_missing_target(anchor, f"module not found: {module}")]}
+            return _target_payload(
+                _missing_target(anchor, f"module not found: {module}", error_code="LP_MODULE_MISSING"),
+                diagnostics,
+                explain,
+                error_code="LP_MODULE_MISSING",
+                reason=f"module not found: {module}",
+            )
         if len(module_matches) > 1:
-            return {"target_logs": [_ambiguous_target(anchor, f"module is ambiguous: {module}")]}
+            return _target_payload(
+                _ambiguous_target(anchor, f"module is ambiguous: {module}", error_code="LP_TARGET_AMBIGUOUS"),
+                diagnostics,
+                explain,
+                error_code="LP_TARGET_AMBIGUOUS",
+                reason=f"module is ambiguous: {module}",
+            )
 
         module_item = module_matches[0]
         module_key = module_item.get("module_key") or ""
@@ -172,9 +210,21 @@ class ResultQueryService:
             item for item in module_item.get("slots", [])
             if _normalize_slot(item.get("slot_id", "")) == target_slot
         ]
+        diagnostics["module_key"] = module_key
+        diagnostics["module_name"] = module_name
+        diagnostics["slot_match_count"] = len(slot_matches)
+        diagnostics["available_slots"] = [
+            _normalize_slot(item.get("slot_id", "")) for item in module_item.get("slots", [])
+        ]
         if not slot_matches:
             enriched = dict(anchor, module_key=module_key, module_name=module_name)
-            return {"target_logs": [_missing_target(enriched, f"slot not found: {slot}")]}
+            return _target_payload(
+                _missing_target(enriched, f"slot not found: {slot}", error_code="LP_SLOT_MISSING"),
+                diagnostics,
+                explain,
+                error_code="LP_SLOT_MISSING",
+                reason=f"slot not found: {slot}",
+            )
 
         candidates: list[_TargetCandidate] = []
         for slot_item in slot_matches:
@@ -190,6 +240,8 @@ class ResultQueryService:
                     pid=str(pid) if pid else None,
                 )
             )
+        diagnostics["candidate_count"] = len(candidates)
+        diagnostics["candidate_summaries"] = [_candidate_summary(item) for item in candidates]
 
         base_target = {
             "label": label or process_name,
@@ -202,32 +254,76 @@ class ResultQueryService:
             base_target["pid"] = str(pid)
 
         if not candidates:
-            return {"target_logs": [_missing_target(base_target, "process not found for anchor")]}
+            return _target_payload(
+                _missing_target(base_target, "process not found for anchor", error_code="LP_TARGET_MISSING"),
+                diagnostics,
+                explain,
+                error_code="LP_TARGET_MISSING",
+                reason="process not found for anchor",
+            )
 
         selected = _select_candidate(candidates, parsed_problem_time)
+        diagnostics["selected_status"] = selected["status"]
         if selected["status"] == "ambiguous":
-            target = _ambiguous_target(base_target, selected["reason"])
+            target = _ambiguous_target(
+                base_target,
+                selected["reason"],
+                error_code="LP_TARGET_AMBIGUOUS",
+            )
             target["caveats"].extend(selected.get("caveats", []))
-            return {"target_logs": [target]}
+            return _target_payload(
+                target,
+                diagnostics,
+                explain,
+                error_code="LP_TARGET_AMBIGUOUS",
+                reason=selected["reason"],
+            )
 
         candidate = selected["candidate"]
         target = candidate.to_target(label=label or process_name, match_status=selected["status"])
         target["caveats"].extend(selected.get("caveats", []))
+        diagnostics["selected_candidate"] = _candidate_summary(candidate)
 
         path_result = candidate.resolve_log_path()
         if path_result["status"] == "ambiguous":
-            ambiguous = _ambiguous_target(target, path_result["reason"])
+            ambiguous = _ambiguous_target(
+                target,
+                path_result["reason"],
+                error_code="LP_TARGET_AMBIGUOUS",
+            )
             ambiguous["caveats"].extend(target.get("caveats", []))
-            return {"target_logs": [ambiguous]}
+            return _target_payload(
+                ambiguous,
+                diagnostics,
+                explain,
+                error_code="LP_TARGET_AMBIGUOUS",
+                reason=path_result["reason"],
+            )
         if path_result["status"] == "missing":
-            missing = _missing_target(target, path_result["reason"])
+            missing = _missing_target(
+                target,
+                path_result["reason"],
+                error_code="LP_TARGET_LOG_MISSING",
+            )
             missing["caveats"].extend(target.get("caveats", []))
-            return {"target_logs": [missing]}
+            return _target_payload(
+                missing,
+                diagnostics,
+                explain,
+                error_code="LP_TARGET_LOG_MISSING",
+                reason=path_result["reason"],
+            )
 
         target["log_path"] = str(path_result["path"].resolve())
         if path_result.get("cpu_id") and not target.get("cpu_id"):
             target["cpu_id"] = path_result["cpu_id"]
-        return {"target_logs": [target]}
+        return _target_payload(
+            target,
+            diagnostics,
+            explain,
+            error_code="LP_TARGET_OK",
+            reason=f"target resolved with status: {selected['status']}",
+        )
 
 
 class _TargetCandidate:
@@ -534,17 +630,68 @@ def _distance_to_interval(start: datetime | None, end: datetime | None, problem_
     return min(distances) if distances else float("inf")
 
 
-def _missing_target(base: dict, reason: str) -> dict:
+def _selection_diagnostics(anchor: dict) -> dict:
+    return {
+        "normalized_anchor": dict(anchor),
+        "module_match_count": 0,
+        "slot_match_count": 0,
+        "candidate_count": 0,
+        "candidate_summaries": [],
+    }
+
+
+def _candidate_summary(candidate: _TargetCandidate) -> dict:
+    start, end = candidate.interval()
+    item = {
+        "module_key": candidate.module_key,
+        "module_name": candidate.module_name,
+        "slot": candidate.slot,
+        "process_name": candidate.process_name,
+        "pid": candidate.pid,
+        "board_cycle": candidate.board_cycle_name or None,
+        "cpu_id": candidate.cpu_id or None,
+        "cpu_cycle": candidate.cpu_cycle_name or None,
+        "start_time": start.isoformat() if start else None,
+        "end_time": end.isoformat() if end else None,
+    }
+    return item
+
+
+def _target_payload(
+    target: dict,
+    diagnostics: dict,
+    explain: bool,
+    *,
+    error_code: str,
+    reason: str,
+) -> dict:
+    if explain:
+        target = dict(target)
+        target["error_code"] = error_code
+        diagnostics = dict(diagnostics)
+        diagnostics["error_code"] = error_code
+        diagnostics["reason"] = reason
+        return {"target_logs": [target], "selection_diagnostics": diagnostics}
+    target = dict(target)
+    target.pop("error_code", None)
+    return {"target_logs": [target]}
+
+
+def _missing_target(base: dict, reason: str, *, error_code: str | None = None) -> dict:
     target = dict(base)
     target["match_status"] = "missing"
     target.setdefault("caveats", []).append(reason)
+    if error_code:
+        target["error_code"] = error_code
     target.pop("log_path", None)
     return target
 
 
-def _ambiguous_target(base: dict, reason: str) -> dict:
+def _ambiguous_target(base: dict, reason: str, *, error_code: str | None = None) -> dict:
     target = dict(base)
     target["match_status"] = "ambiguous"
     target.setdefault("caveats", []).append(reason)
+    if error_code:
+        target["error_code"] = error_code
     target.pop("log_path", None)
     return target

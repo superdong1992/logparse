@@ -27,6 +27,7 @@ from pathlib import Path
 import click
 
 from backend.config_validation import validate_config
+from backend.dfx import build_dfx_output
 from backend.parsing.mech_journal_pattern import (
     JournalPatternMatcher,
     passes_line_pattern2_required_substrings,
@@ -841,7 +842,8 @@ def mech_lifecycles(
 @click.option("--pid", default=None, help="目标 PID，提供时严格匹配")
 @click.option("--label", default=None, help="目标标签，例如 client/server")
 @click.option("--output", "-o", default="./output", help="输出目录")
-def mech_target_logs(task_id, problem_time, module, slot, process_name, pid, label, output):
+@click.option("--explain", is_flag=True, default=False, help="附加 deterministic target 选择 DFX")
+def mech_target_logs(task_id, problem_time, module, slot, process_name, pid, label, output, explain):
     """按目标进程和问题时间确定性输出 target_logs JSON。"""
     svc = ResultQueryService(Path(output))
     payload = svc.resolve_target_logs(
@@ -852,8 +854,33 @@ def mech_target_logs(task_id, problem_time, module, slot, process_name, pid, lab
         process_name=process_name,
         pid=pid,
         label=label,
+        explain=explain,
     )
     click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@cli.command("dfx-output")
+@click.argument("output_task_dir")
+@click.option("--deep", is_flag=True, default=False, help="局域网内读取目标日志短窗口")
+@click.option("--targets-json", default=None, help="目标 anchors JSON；可为列表或包含 targets/problem_time 的对象")
+@click.option("--problem-time", default=None, help="target 级 DFX 的问题时间；优先级高于 targets-json 内 problem_time")
+@click.option("--summary-path", default=None, help="额外写出一份单行摘要到指定路径")
+def dfx_output(output_task_dir, deep, targets_json, problem_time, summary_path):
+    """对一个 output/{task_id} 目录生成 deterministic DFX。"""
+    try:
+        report = build_dfx_output(
+            Path(output_task_dir),
+            targets_json=targets_json,
+            problem_time=problem_time,
+            deep=deep,
+            summary_path=Path(summary_path) if summary_path else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI must expose deterministic failure.
+        click.echo(f"dfx-output failed: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(report["summary"])
+    click.echo(f"dfx_report: {Path(output_task_dir) / 'dfx_report.json'}")
 
 
 @cli.command()

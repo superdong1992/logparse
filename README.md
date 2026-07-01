@@ -27,7 +27,9 @@ python cli.py info <task_id>
 python cli.py list-slots <task_id>
 python cli.py mech-slots <task_id> [-m MODULE]
 python cli.py mech-lifecycles <task_id> -s <slot_id> [-m MODULE] [--show-boundaries] [--lifecycle-dfx summary|decisions|full|off]
+python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module> --slot <slot_id> --process-name <name> [--pid <pid>] [--explain]
 python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <proc_name> [--pid <pid>] [-m MODULE] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
+python cli.py dfx-output output/<task_id> [--deep] [--targets-json <json>]
 
 python cli.py check-config [-c config.yaml]
 python cli.py test-pattern -m module1 -t diag "log line"
@@ -90,6 +92,23 @@ diagnosis/query workflows, not by `parse`.
 Journal discovery still requires `varlog/slot_*` or `varlog/slot_*_cpu_*` as the
 slot/cpu anchor, but it accepts journal files under `varlog*.zip_extracted`
 children that contain `varlog*` directories.
+
+## Deterministic DFX
+
+Use `dfx-output` on an already parsed `output/{task_id}` directory when you need
+a local, non-AI explanation of parse/output/tool consistency. Standalone
+logparse does not invoke Claude CLI.
+
+```bash
+python cli.py dfx-output output/<task_id>
+python cli.py dfx-output output/<task_id> --targets-json '{"problem_time":"2026-01-03T00:05:00","targets":[{"module":"EXAMPLE","slot":"1","process_name":"SERVICE","pid":"123"}]}'
+```
+
+The command writes `dfx_report.json`, `dfx_context/`, and one-line
+`dfx_summary.txt` under the task directory. Default mode reads only structured
+output and `mech_modules` file structure. `--deep` is LAN-only and may write
+bounded target-log windows into `dfx_context/`; the summary remains a single
+`ERROR_CODE: 中文结论` line and must not contain raw log text.
 
 ```bash
 python cli.py parse tests\mock_data\diagnostic_information_20260103.zip --profile --output output
