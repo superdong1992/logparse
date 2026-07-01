@@ -130,5 +130,6 @@ python -m pytest tests -q --basetemp output\pytest-tmp -p no:cacheprovider
 
 - `docs/usage.md`: CLI usage
 - `docs/architecture.md`: architecture overview
+- `docs/lan-dfx-operating-model.md`: LAN/non-LAN DFX operating constraints
 - `docs/lifecycle-dfx-guide.md`: V3 lifecycle DFX guide
 - `docs/archive/lifecycle-v2/`: archived legacy v2 config and rules

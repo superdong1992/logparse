@@ -18,6 +18,16 @@ from `CLAUDE.md`, for example:
 python scripts/rule_preflight.py --changed
 ```
 
+## LAN DFX Operating Model
+
+Before changing diagnosis, query, DFX, CLI, or output artifacts, read
+`docs/lan-dfx-operating-model.md`.
+
+This repo is often implemented outside the LAN with Codex, but real logs and
+final diagnosis run inside the LAN. Keep standalone logparse deterministic: it
+must not call Claude CLI by default, and external handoff should remain a single
+`ERROR_CODE: 中文结论` line without raw log text.
+
 ## ECC Boundaries
 
 - Keep workflow contributions in `.agents/skills/` first.

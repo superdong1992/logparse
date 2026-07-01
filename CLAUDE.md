@@ -41,6 +41,21 @@ Important boundaries:
 - `metadata.json` is scan and overview metadata. `result.json` is the compact query index. Do not merge them.
 - `ScannerPlugin` and `CompactScannerPlugin` are separate product layouts and should not be collapsed.
 
+## LAN DFX Operating Model
+
+Read `docs/lan-dfx-operating-model.md` before changing diagnosis, query, DFX,
+CLI, or output artifacts.
+
+- Codex work often happens outside the LAN with synthetic or mock logs.
+- Final execution and real-log diagnosis happen inside the LAN.
+- Real logs generally cannot be copied out of the LAN; external handoff should
+  be only one line: `ERROR_CODE: 中文结论`.
+- Standalone logparse must remain deterministic and must not invoke Claude CLI
+  by default.
+- GLM5.1 quantized is available in the LAN through Claude CLI, but should only
+  consume structured DFX reports and bounded context, not perform broad file
+  exploration or path/lifecycle selection.
+
 ## Lifecycle Split Contract
 
 Lifecycle splitting is V3-only:
