@@ -57,7 +57,6 @@ def test_module2_validate_config_requires_fields():
 
     assert any("module_name" in e for e in errors)
     assert any("identifying_keyword" in e for e in errors)
-    assert any("depends_on_module" in e for e in errors)
     assert any("diag_pattern" in e for e in errors)
 
 

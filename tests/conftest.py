@@ -3,15 +3,11 @@ from __future__ import annotations
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
 from backend.models import (
-    ActivePeriod,
-    BoardRole,
     LogEntry,
     MechLogEntry,
     ParseResult,
-    PrivateSlotInfo,
     SlotInfo,
 )
 

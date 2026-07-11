@@ -1,4 +1,5 @@
-pyyaml>=6.0
-pydantic>=2.0.0
-click>=8.1.0
-pytest>=7.0
+# Handoff runtime lock for Python 3.12.13. Update intentionally through a red
+# dependency review; do not let an isolated LAN install silently float majors.
+PyYAML==6.0.3
+pydantic==2.13.4
+click==8.4.2

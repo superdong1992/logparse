@@ -1,0 +1,136 @@
+schema_version: 1
+change_id: 2026-07-11-lan-handoff-refactor
+summary: >-
+  Complete the owner-approved pre-handoff architecture refactor, product-policy
+  isolation, deterministic artifact evolution, and LAN-only governance setup.
+
+zones:
+  - green
+  - yellow
+  - red
+
+paths:
+  - .codex/**
+  - .gitignore
+  - .python-version
+  - AGENTS.md
+  - CLAUDE.md
+  - README.md
+  - pyproject.toml
+  - requirements.txt
+  - requirements-dev.txt
+  - config.yaml
+  - configs/**
+  - backend/**
+  - cli.py
+  - docs/**
+  - governance/**
+  - scripts/**
+  - tests/**
+  - .agents/skills/logparse-develop/**
+  - .agents/skills/logparse-diagnose/**
+  - .claude/**
+
+validation:
+  tests:
+    - >-
+      .venv/bin/python scripts/verify_delivery.py: 481 passed; overall line
+      87.98 percent; branch 73.90 percent; architecture core line 92.03 percent
+    - >-
+      .venv/bin/python -m pytest tests -q --basetemp /tmp/logparse-full-governance
+      -p no:cacheprovider: 481 passed
+    - >-
+      .venv/bin/python -m ruff check backend cli.py scripts tests: passed
+    - >-
+      .venv/bin/python -m compileall -q backend cli.py scripts: passed
+    - >-
+      skill-creator quick_validate for canonical and Claude wrapper skills: passed
+  lan_scenario: >-
+    The checked-in default and compact mock packages cover the full
+    ParseService-to-artifact-to-query-to-DFX flow without exporting LAN data.
+    After import, the LAN owner must run the historical real-log corpus before
+    accepting any business-rule change.
+  contract_tests:
+    - >-
+      tests/test_parse_service.py, tests/test_parse_integration.py,
+      tests/test_artifacts.py, tests/test_plugin_graph.py,
+      tests/test_config_migration.py, tests/test_configuration_services.py,
+      tests/test_mechanism_execution.py,
+      tests/domain/correlation/test_target_selection.py,
+      tests/test_architecture_boundaries.py, tests/test_change_gate.py, and
+      tests/test_rule_preflight.py all passed in the 481-test suite
+  security_tests:
+    - >-
+      Extraction traversal, symlink/archive safety, artifact path containment,
+      include escape rejection, atomic writes, manifest integrity, and
+      non-downgradable governance tests passed in the full suite
+  smoke_tests:
+    - >-
+      Default and compact checked-in packages passed the closed-loop
+      ParseService, manifest, compact result, artifact-check, query, target-log,
+      DFX, and repeated-parse determinism scenarios in
+      tests/test_parse_integration.py
+  performance:
+    baseline_revision: 18dfb375853790246c63c529749d419b5cd1cdd6
+    candidate: owner-approved uncommitted LAN-handoff worktree
+    environment: macOS 26.5.2 arm64; Python 3.12.13
+    methodology: 10 sequential interleaved default mock-package profile pairs
+    baseline_runs: 10
+    candidate_runs: 10
+    baseline_median_seconds: 0.016062
+    candidate_median_seconds: 0.017630
+    delta_percent: 9.76
+    scan_counters:
+      files: 3
+      lines: 106
+      timestamps: 106
+      module1_entries: 3
+      module2_entries: 0
+      identical_for_all_runs: true
+    representative_artifact_hashes:
+      baseline_performance_sha256: 6b5c9fe53cfa691e0ce81952465680a5c8a9be883831460d0e27cf836984bb92
+      candidate_performance_sha256: 730ee760d03719f65f2ee96eae431dab51c22603c53a9f7d55375767fe5e5eb3
+    verdict: PASS; 9.76 percent regression is within the 10 percent limit
+  coverage:
+    overall_line_percent: 87.98
+    overall_branch_percent: 73.90
+    architecture_core_line_percent: 92.03
+
+evidence:
+  real_case_id: >-
+    HANDOFF-ARCH-2026-07-11: owner-approved architecture-only relocation and
+    contract evolution; no real-log business-rule conclusion was changed
+  fixture: >-
+    tests/mock_data/diagnostic_information_20260103.zip,
+    tests/mock_data_compact/compact_package_20260103.zip, and focused synthetic
+    unit fixtures
+  corpus_regression: >-
+    All 481 external synthetic/mock tests passed. The real historical corpus is
+    intentionally deferred to mandatory LAN import acceptance because logs
+    cannot leave the LAN.
+
+compatibility:
+  schema_impact: >-
+    Config is schema v2 with green product includes; metadata and result are
+    schema v2; parse manifest, target_logs envelope, and native plugin contracts
+    are version 1. Native mechanisms receive bounded inputs without ParseResult;
+    LegacyMechanismContext and old query/DFX/plugin import façades preserve LAN
+    migration compatibility. Public issue-locator entrypoints parse,
+    mech-target-logs, dfx-output, root cli.py, and the logparse-diagnose skill
+    remain available. Explicit unknown query artifact schemas fail with
+    LP_SCHEMA_UNSUPPORTED.
+
+architecture:
+  adr:
+    - docs/adr/0001-lan-only-authority.md
+    - docs/adr/0002-architecture-boundaries.md
+    - docs/adr/0003-versioned-contracts-and-artifacts.md
+    - docs/adr/0004-deterministic-dfx-boundary.md
+  approval: >-
+    Repository owner explicitly approved this implementation plan and its
+    LAN-only handoff constraints on 2026-07-11.
+  rollback: >-
+    Before LAN import, restore the previous clean main worktree. After an
+    authorized handoff commit, revert that commit or restore the retained
+    pre-handoff main snapshot inside the LAN; never attempt LAN-to-external
+    reverse synchronization.

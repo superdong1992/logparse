@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop logparse safely"
+  short_description: "LAN workflow with enforced architecture boundaries"
+  default_prompt: "Use $logparse-develop to implement this logparse change within the LAN governance boundaries."

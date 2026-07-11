@@ -4,9 +4,10 @@ from __future__ import annotations
 import gzip
 import json
 import zipfile
-from pathlib import Path
 
-from backend.pipeline import Pipeline
+import pytest
+
+from backend.pipeline import Pipeline, PipelineStageError
 
 
 class TestGzExpansionGate:
@@ -22,7 +23,12 @@ class TestGzExpansionGate:
         pipeline = Pipeline({"pipeline": {"recursive_extraction": True}})
         pipeline._plugin_cache["default"] = (_FakeDiscovery(), _FakeParser())
 
-        pipeline.run(package, tmp_path / "out", task_id="task")
+        pipeline.run(
+            package,
+            tmp_path / "out",
+            task_id="task",
+            keep_workspace=True,
+        )
 
         extract_dir = tmp_path / "out" / "task" / "extracted" / "varlog" / "slot_1"
         assert (extract_dir / "journal.log.1.gz").exists()
@@ -41,7 +47,12 @@ class TestGzExpansionGate:
         pipeline = Pipeline({"pipeline": {"recursive_extraction": True, "debug_expand_gz": True}})
         pipeline._plugin_cache["default"] = (_FakeDiscovery(), _FakeParser())
 
-        pipeline.run(package, tmp_path / "out", task_id="task")
+        pipeline.run(
+            package,
+            tmp_path / "out",
+            task_id="task",
+            keep_workspace=True,
+        )
 
         extract_dir = tmp_path / "out" / "task" / "extracted" / "varlog" / "slot_1"
         assert (extract_dir / "journal.log.1.gz").exists()
@@ -170,8 +181,57 @@ class TestUnifiedExtractionBoundary:
         pipeline.run(tmp_path / "package.zip", tmp_path / "out")
 
 
+class TestFatalStagePolicy:
+    def test_extraction_failure_is_fatal(self, tmp_path):
+        class BrokenDecompressor:
+            def extract_all(self, *args, **kwargs):
+                raise OSError("unsafe archive")
+
+            def is_compressed(self, name):
+                return name.endswith(".zip")
+
+        pipeline = Pipeline({"pipeline": {}})
+        pipeline.decompressor = BrokenDecompressor()
+        pipeline._plugin_cache["default"] = (_FakeDiscovery(), _FakeParser())
+
+        with pytest.raises(PipelineStageError) as caught:
+            pipeline.run(tmp_path / "package.zip", tmp_path / "out")
+
+        assert caught.value.stage_name == "pipeline.extract"
+        assert pipeline.stage_records[-1]["success"] is False
+
+    def test_discovery_failure_is_fatal(self, tmp_path):
+        class BrokenDiscovery:
+            def discover(self, _extract_dir):
+                raise ValueError("unknown layout")
+
+        pipeline = Pipeline({"pipeline": {}})
+        pipeline._plugin_cache["default"] = (BrokenDiscovery(), _FakeParser())
+        package = tmp_path / "package.zip"
+        with zipfile.ZipFile(package, "w"):
+            pass
+
+        with pytest.raises(PipelineStageError) as caught:
+            pipeline.run(package, tmp_path / "out")
+
+        assert caught.value.stage_name == "pipeline.discovery"
+        assert pipeline.stage_records[-1]["success"] is False
+
+
 class TestPipelineCleanup:
-    def test_cleanup_extracted_removes_workspace_after_run(self, tmp_path):
+    def test_default_workspace_is_temporary(self, tmp_path):
+        pipeline = Pipeline({"pipeline": {}})
+        pipeline._plugin_cache["default"] = (_FakeDiscovery(), _FakeParser())
+        package = tmp_path / "package.zip"
+        with zipfile.ZipFile(package, "w"):
+            pass
+
+        pipeline.run(package, tmp_path / "out", task_id="task")
+
+        assert pipeline.last_workspace is None
+        assert not (tmp_path / "out" / "task" / "extracted").exists()
+
+    def test_keep_workspace_is_not_overridden_by_legacy_cleanup_flag(self, tmp_path):
         class FakeDecompressor:
             def extract_all(self, source, dest_dir, recursive=True, expand_gz=False):
                 dest_dir.mkdir(parents=True, exist_ok=True)
@@ -190,9 +250,14 @@ class TestPipelineCleanup:
         pipeline.decompressor = FakeDecompressor()
         pipeline._plugin_cache["default"] = (FakeDiscovery(), FakeParser())
 
-        pipeline.run(tmp_path / "package.zip", tmp_path / "out", task_id="task")
+        pipeline.run(
+            tmp_path / "package.zip",
+            tmp_path / "out",
+            task_id="task",
+            keep_workspace=True,
+        )
 
-        assert not (tmp_path / "out" / "task" / "extracted").exists()
+        assert (tmp_path / "out" / "task" / "extracted").exists()
 
     def test_cleanup_inner_archives_keeps_extracted_workspace(self, tmp_path):
         class FakeDecompressor:
@@ -220,7 +285,12 @@ class TestPipelineCleanup:
         pipeline.decompressor = FakeDecompressor()
         pipeline._plugin_cache["default"] = (FakeDiscovery(), FakeParser())
 
-        pipeline.run(tmp_path / "package.zip", tmp_path / "out", task_id="task")
+        pipeline.run(
+            tmp_path / "package.zip",
+            tmp_path / "out",
+            task_id="task",
+            keep_workspace=True,
+        )
 
         slot_dir = tmp_path / "out" / "task" / "extracted" / "diag" / "slot_1"
         assert slot_dir.exists()

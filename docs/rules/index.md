@@ -1,13 +1,36 @@
 # logparse Rules Index
 
 This file is the required rule entrypoint for repo analysis and code changes.
-Run `python scripts/rule_preflight.py --paths <files...>` before touching code,
-or `python scripts/rule_preflight.py --changed` before reviewing a local diff.
+Run `.venv/bin/python scripts/rule_preflight.py --paths <files...>` before
+touching code, or `.venv/bin/python scripts/rule_preflight.py --changed` before
+reviewing a local diff. The preflight also reads
+`governance/architecture-boundaries.toml`; an unclassified source path is red.
+
+## governance:green
+
+Green paths hold current-product topology, log-format adapters, and diagnosis
+knowledge. `slot`, `CPU`, board and active/standby concepts belong here, not in
+the product-neutral core. GLM5.1 may change green paths with focused tests and a
+documented LAN validation scenario.
+
+## governance:yellow
+
+Yellow paths hold protected lifecycle and correlation policy. Modify them only
+when a real LAN case proves the current rule wrong. Record the real case id, a
+minimal fixture, historical-corpus regression, and schema impact.
+
+## governance:red
+
+Red paths hold frozen architecture, contracts, artifacts, security, CLI
+compatibility, and the governance controls themselves. Modification requires an
+Accepted ADR, explicit human approval, contract/security/smoke validation, and
+a rollback plan. Editing the gate to bypass it is prohibited.
 
 ## rules:cpu-id-board
 
 Source: `backend/parsing/mech_diag_scanner.py`,
-`backend/parsing/mech_journal_scanner.py`, and `backend/plugins/mechanisms/module2.py`.
+`backend/parsing/mech_journal_scanner.py`, and
+`backend/extensions/mechanisms/module2.py`.
 
 Checklist:
 
@@ -18,7 +41,9 @@ Checklist:
 
 ## rules:nested-cycle-output
 
-Source: `README.md`, `docs/architecture.md`, and `.agents/skills/logparse-diagnose/references/preprocess-output.md`.
+Source: `backend/extensions/products/current/artifacts.py`,
+`docs/architecture.md`, and
+`.agents/skills/logparse-diagnose/references/preprocess-output.md`.
 
 Checklist:
 
@@ -29,7 +54,8 @@ Checklist:
 
 ## rules:module2-upstream-lifecycle
 
-Source: `README.md`, `docs/architecture.md`, and `.agents/skills/logparse-diagnose/references/relation-rules.md`.
+Source: `backend/extensions/mechanisms/module2.py`, `docs/architecture.md`, and
+`.agents/skills/logparse-diagnose/references/relation-rules.md`.
 
 Checklist:
 
@@ -41,7 +67,8 @@ Checklist:
 
 ## rules:compact-result-contract
 
-Source: `backend/result_serializer.py`, `backend/query.py`, and `README.md`.
+Source: `backend/extensions/products/current/result_serializer.py`,
+`backend/query.py`, and `docs/architecture.md`.
 
 Checklist:
 
@@ -52,7 +79,8 @@ Checklist:
 
 ## rules:scanner-decompression-boundary
 
-Source: `README.md`, `docs/architecture.md`, and `backend/plugins/default/scanner.py`.
+Source: `docs/architecture.md`, `backend/decompressor.py`, and
+`backend/extensions/products/current/scanner.py`.
 
 Checklist:
 
@@ -62,7 +90,9 @@ Checklist:
 
 ## rules:lifecycle-v3-config
 
-Source: `backend/config_validation.py`, `backend/plugins/mechanisms/module1.py`, and `backend/parsing/lifecycle_splitter_v3.py`.
+Source: `backend/extensions/mechanisms/validation.py`,
+`backend/extensions/mechanisms/module1.py`, and
+`backend/domain/lifecycle/splitter_v3.py`.
 
 Checklist:
 
@@ -74,10 +104,40 @@ Checklist:
 
 ## rules:lifecycle-v3-output
 
-Source: `backend/result_serializer.py`, `backend/query.py`, `cli.py`, and `docs/lifecycle-dfx-guide.md`.
+Source: `backend/domain/lifecycle/splitter_v3.py`, `backend/result_serializer.py`,
+`backend/query.py`, `cli.py`, and `docs/lifecycle-dfx-guide.md`.
 
 Checklist:
 
 - V3 output contains `candidate_segments`, `merge_decisions`, `lifecycles`, `journal_evidence`, `issues`, and `lifecycle_reliable`.
 - `mech-lifecycles --show-boundaries` displays V3 DFX only.
 - Legacy result files may be reported as unsupported; do not preserve detailed compatibility display.
+
+## rules:artifact-contract
+
+Source: `backend/contracts/artifacts.py`,
+`backend/infrastructure/artifact_repository.py`, and `docs/architecture.md`.
+
+Checklist:
+
+- `parse_manifest.json` records run status, stages, versions, hashes, counters,
+  diagnostics, and workspace retention.
+- `metadata.json` is discovery/scan coverage; `result.json` is a compact query
+  index; `mech_modules/` is selected evidence.
+- Formal artifacts use one `ArtifactLayout` and atomic repository writes.
+- Extraction is temporary workspace, not a formal artifact.
+- Raw/context/per-line logs never appear in compact `result.json`.
+
+## rules:deterministic-dfx-boundary
+
+Source: `backend/dfx.py`, `docs/lan-dfx-operating-model.md`, and ADR-0004.
+
+Checklist:
+
+- Standalone logparse never invokes Claude CLI or GLM5.1.
+- Target and lifecycle selection are deterministic before a model reads context.
+- Summary output is one `ERROR_CODE: 中文结论` line without raw log text.
+- Deep DFX is opt-in and bounded to 5 windows, 48 lines per window, and 80 KiB
+  total, with a selection manifest.
+- A missing or ambiguous target stays missing or ambiguous; do not substitute
+  model exploration.

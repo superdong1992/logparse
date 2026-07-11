@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import importlib
 import re
+from pathlib import Path
 from typing import Any
 
+from backend.application.plugin_graph import PluginGraphError, resolve_mechanism_order
+from backend.config_migration import (
+    CURRENT_CONFIG_SCHEMA_VERSION,
+    LEGACY_CONFIG_SCHEMA_VERSION,
+    config_schema_version,
+)
 from backend.performance import resolve_worker_count
 from backend.plugins.base import DirectoryDiscoveryPlugin, LogParserPlugin
-from backend.plugins.mechanisms.base import MechanismModulePlugin
+from backend.extensions.mechanisms.base import MechanismPlugin
 
 
 # ── 顶层入口 ──────────────────────────────────────────
@@ -16,6 +23,20 @@ from backend.plugins.mechanisms.base import MechanismModulePlugin
 
 def validate_config(config: dict[str, Any]) -> list[str]:
     """完整配置预飞检查，返回错误列表（空表示通过）。"""
+    if not isinstance(config, dict):
+        return ["configuration root must be an object"]
+    try:
+        version = config_schema_version(config)
+    except ValueError as exc:
+        return [str(exc)]
+    if version == CURRENT_CONFIG_SCHEMA_VERSION:
+        return _validate_v2_config(config)
+    if version != LEGACY_CONFIG_SCHEMA_VERSION:
+        return [
+            f"unsupported schema_version={version}; "
+            f"expected {LEGACY_CONFIG_SCHEMA_VERSION} or {CURRENT_CONFIG_SCHEMA_VERSION}"
+        ]
+
     errors: list[str] = []
     errors.extend(_validate_pipeline_config(config.get("pipeline", {})))
 
@@ -30,13 +51,147 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _validate_pipeline_config(raw: Any) -> list[str]:
+def _validate_v2_config(config: dict[str, Any]) -> list[str]:
+    errors = _unknown_fields(
+        "configuration", config, {"schema_version", "pipeline", "products"}
+    )
+    errors.extend(_validate_pipeline_config(config.get("pipeline", {}), strict_v2=True))
+
+    products = config.get("products")
+    if not isinstance(products, dict) or not products:
+        errors.append("products must be a non-empty object")
+        return errors
+    for product_name, product_cfg in products.items():
+        errors.extend(_validate_v2_product_config(str(product_name), product_cfg))
+    return errors
+
+
+def _validate_v2_product_config(product_name: str, raw: Any) -> list[str]:
+    path = f"products.{product_name}"
+    if not isinstance(raw, dict):
+        return [f"{path} must be an object"]
+    if "$include" in raw:
+        if set(raw) != {"$include"}:
+            return [f"{path} $include cannot be combined with inline fields"]
+        include_value = raw.get("$include")
+        if not isinstance(include_value, str) or not include_value.strip():
+            return [f"{path}.$include must be a non-empty relative path"]
+        if Path(include_value).is_absolute():
+            return [f"{path}.$include must be a relative path"]
+        return []
+
+    errors = _unknown_fields(
+        path, raw, {"archive", "discovery", "parser", "mechanisms"}
+    )
+    archive = raw.get("archive")
+    if not isinstance(archive, dict):
+        errors.append(f"{path}.archive must be an object")
+    else:
+        errors.extend(_validate_archive_config(f"{path}.archive", archive))
+
+    discovery = raw.get("discovery")
+    parser = raw.get("parser")
+    errors.extend(_validate_plugin_section(product_name, "discovery", discovery))
+    errors.extend(_validate_plugin_section(product_name, "parser", parser))
+
+    if isinstance(discovery, dict):
+        plugin_path = discovery.get("plugin")
+        cfg = discovery.get("config", {})
+        if isinstance(plugin_path, str) and isinstance(cfg, dict):
+            errors.extend(_validate_discovery_config(product_name, plugin_path, cfg))
+
+    if isinstance(parser, dict):
+        cfg = parser.get("config", {})
+        if isinstance(cfg, dict):
+            errors.extend(_validate_v2_parser_config(product_name, cfg))
+
+    mechanisms = raw.get("mechanisms")
+    if not isinstance(mechanisms, dict):
+        errors.append(f"{path}.mechanisms must be an object")
+    else:
+        for module_key, module_cfg in mechanisms.items():
+            errors.extend(
+                _validate_mechanism_plugin_config(
+                    str(module_key),
+                    module_cfg,
+                    path_prefix=f"{path}.mechanisms",
+                    v2=True,
+                )
+            )
+        errors.extend(_validate_plugin_graph(mechanisms, f"{path}.mechanisms"))
+    return errors
+
+
+def _validate_archive_config(path: str, raw: dict[str, Any]) -> list[str]:
+    errors = _unknown_fields(
+        path, raw, {"recursive_extraction", "compressed_extensions"}
+    )
+    recursive = raw.get("recursive_extraction")
+    if not isinstance(recursive, bool):
+        errors.append(f"{path}.recursive_extraction must be a boolean")
+    extensions = raw.get("compressed_extensions")
+    if not isinstance(extensions, list) or any(
+        not isinstance(value, str) or not value for value in extensions
+    ):
+        errors.append(f"{path}.compressed_extensions must be a string list")
+    return errors
+
+
+def _validate_v2_parser_config(product_name: str, cfg: dict[str, Any]) -> list[str]:
+    path = f"products.{product_name}.parser.config"
+    errors: list[str] = []
+    if "mechanism_modules" in cfg:
+        errors.append(
+            f"{path}.mechanism_modules is not supported in schema v2; "
+            f"use products.{product_name}.mechanisms"
+        )
+    ts_re = cfg.get("timestamp_regex")
+    if not ts_re:
+        errors.append(f"{path} missing field: timestamp_regex")
+    else:
+        try:
+            re.compile(ts_re)
+        except (re.error, TypeError) as exc:
+            errors.append(f"{path}.timestamp_regex: invalid regex - {exc}")
+    gap = cfg.get("active_period_gap_seconds")
+    if gap is not None and (
+        isinstance(gap, bool) or not isinstance(gap, (int, float)) or gap <= 0
+    ):
+        errors.append(f"{path}.active_period_gap_seconds must be positive")
+    if "active_period_gap_threshold" in cfg:
+        errors.append(
+            f"{path}.active_period_gap_threshold was renamed to active_period_gap_seconds"
+        )
+    return errors
+
+
+def _unknown_fields(path: str, raw: dict[str, Any], allowed: set[str]) -> list[str]:
+    unknown = sorted(set(raw) - allowed)
+    return [f"{path} has unknown fields: {unknown}"] if unknown else []
+
+
+def _validate_pipeline_config(raw: Any, *, strict_v2: bool = False) -> list[str]:
     if raw is None:
         return ["pipeline must be an object"]
     if not isinstance(raw, dict):
         return ["pipeline must be an object"]
 
     errors: list[str] = []
+    if strict_v2:
+        errors.extend(
+            _unknown_fields(
+                "pipeline",
+                raw,
+                {
+                    "debug_expand_gz",
+                    "extraction_workers",
+                    "diagnostic_scan_workers",
+                    "keep_workspace",
+                },
+            )
+        )
+        if "keep_workspace" in raw and not isinstance(raw["keep_workspace"], bool):
+            errors.append("pipeline.keep_workspace must be a boolean")
     if "debug_expand_gz" in raw and not isinstance(raw["debug_expand_gz"], bool):
         errors.append("pipeline.debug_expand_gz must be a boolean")
 
@@ -128,7 +283,7 @@ def _validate_plugin_loadable(
     if kind == "discovery":
         expected_methods = ["discover"]
         expected_base = DirectoryDiscoveryPlugin
-    elif kind == "log_parser":
+    elif kind in {"log_parser", "parser"}:
         expected_methods = ["parse", "write_output"]
         expected_base = LogParserPlugin
     else:
@@ -200,71 +355,18 @@ def _validate_discovery_config(
     plugin_path: str,
     cfg: dict[str, Any],
 ) -> list[str]:
-    """根据插件类型校验 discovery config 必需字段。"""
-    errors: list[str] = []
+    """Delegate product fields to the selected discovery extension."""
 
-    # glob 类字段校验
-    for field in ("slot_dir_pattern",):
-        val = cfg.get(field)
-        if val:
-            try:
-                from backend.utils import glob_to_regex
-                glob_to_regex(val)
-            except Exception:
-                errors.append(
-                    f"products.{product_name}.discovery.config.{field}: glob 无效 - {val}"
-                )
-
-    for p in cfg.get("diag_file_patterns", []):
-        try:
-            from backend.utils import glob_to_regex
-            glob_to_regex(p)
-        except Exception:
-            errors.append(
-                f"products.{product_name}.discovery.config.diag_file_patterns: glob 无效 - {p}"
-            )
-
-    loose_cfg = cfg.get("loose_diagnostics")
-    if loose_cfg is not None:
-        if not isinstance(loose_cfg, dict):
-            errors.append(
-                f"products.{product_name}.discovery.config.loose_diagnostics must be an object"
-            )
-        else:
-            enabled = loose_cfg.get("enabled")
-            if enabled is not None and not isinstance(enabled, bool):
-                errors.append(
-                    f"products.{product_name}.discovery.config.loose_diagnostics.enabled must be a boolean"
-                )
-
-            file_patterns = loose_cfg.get("file_patterns", [])
-            if not isinstance(file_patterns, list):
-                errors.append(
-                    f"products.{product_name}.discovery.config.loose_diagnostics.file_patterns must be a list"
-                )
-            else:
-                for pattern in file_patterns:
-                    try:
-                        from backend.utils import glob_to_regex
-                        glob_to_regex(pattern)
-                    except Exception:
-                        errors.append(
-                            "products."
-                            f"{product_name}.discovery.config.loose_diagnostics.file_patterns: "
-                            f"glob 无效 - {pattern}"
-                        )
-
-    # timestamp_regex 校验
-    ts_re = cfg.get("filename_timestamp_regex")
-    if ts_re:
-        try:
-            re.compile(ts_re)
-        except re.error as e:
-            errors.append(
-                f"products.{product_name}.discovery.config.filename_timestamp_regex: 正则无效 - {e}"
-            )
-
-    return errors
+    try:
+        module_path, class_name = plugin_path.rsplit(".", 1)
+        cls = getattr(importlib.import_module(module_path), class_name)
+        validator = getattr(cls, "validate_config", None)
+        return list(validator(product_name, cfg)) if callable(validator) else []
+    except Exception as exc:
+        return [
+            f"products.{product_name}.discovery.plugin={plugin_path!r} "
+            f"配置校验失败: {type(exc).__name__}: {exc}"
+        ]
 
 
 # ── log_parser config 校验 ──────────────────────────────────
@@ -295,6 +397,7 @@ def _validate_log_parser_config(
                 errors.extend(
                     _validate_mechanism_plugin_config(module_key, module_cfg)
                 )
+            errors.extend(_validate_plugin_graph(modules, "mechanism_modules"))
 
     return errors
 
@@ -302,29 +405,63 @@ def _validate_log_parser_config(
 # ── 机制模块配置校验 ──────────────────────────────────
 
 
-def _validate_mechanism_plugin_config(module_key: str, module_cfg: Any) -> list[str]:
-    path = f"mechanism_modules.{module_key}"
+def _validate_mechanism_plugin_config(
+    module_key: str,
+    module_cfg: Any,
+    *,
+    path_prefix: str = "mechanism_modules",
+    v2: bool = False,
+) -> list[str]:
+    path = f"{path_prefix}.{module_key}"
     if not isinstance(module_cfg, dict):
         return [f"{path} 必须是对象"]
 
-    if module_cfg.get("enabled", True) is False:
+    errors: list[str] = []
+    enabled = module_cfg.get("enabled", True)
+    if not isinstance(enabled, bool):
+        errors.append(f"{path}.enabled must be a boolean")
+        return errors
+
+    if enabled is False:
         return []
+
+    dependencies = module_cfg.get("depends_on", [])
+    if v2:
+        errors.extend(
+            _unknown_fields(
+                path,
+                module_cfg,
+                {"plugin", "enabled", "depends_on", "config"},
+            )
+        )
+        if not isinstance(dependencies, list) or any(
+            not isinstance(value, str) or not value.strip() for value in dependencies
+        ):
+            errors.append(f"{path}.depends_on must be a list of non-empty strings")
 
     plugin_path = module_cfg.get("plugin")
     if not isinstance(plugin_path, str) or not plugin_path.strip():
-        return [f"{path}.plugin 必须是非空字符串"]
+        errors.append(f"{path}.plugin 必须是非空字符串")
+        return errors
 
     cfg = module_cfg.get("config", {})
     if not isinstance(cfg, dict):
-        return [f"{path}.config 必须是对象"]
+        errors.append(f"{path}.config 必须是对象")
+        return errors
+    if v2 and "depends_on_module" in cfg:
+        errors.append(
+            f"{path}.config.depends_on_module is not supported in schema v2; "
+            f"use {path}.depends_on"
+        )
 
-    errors = _validate_plugin_loadable_for_base(
+    load_errors = _validate_plugin_loadable_for_base(
         path=path,
         plugin_path=plugin_path,
-        expected_base=MechanismModulePlugin,
-        expected_methods=["parse"],
+        expected_base=MechanismPlugin,
+        expected_methods=["parse", "execute"],
     )
-    if errors:
+    errors.extend(load_errors)
+    if load_errors:
         return errors
 
     try:
@@ -332,7 +469,10 @@ def _validate_mechanism_plugin_config(module_key: str, module_cfg: Any) -> list[
         cls = getattr(importlib.import_module(module_path), class_name)
         validator = getattr(cls, "validate_config", None)
         if callable(validator):
-            errors.extend(validator(module_key, cfg))
+            compatibility_cfg = dict(cfg)
+            if v2 and len(dependencies) == 1:
+                compatibility_cfg.setdefault("depends_on_module", dependencies[0])
+            errors.extend(validator(module_key, compatibility_cfg))
     except Exception as e:
         errors.append(
             f"{path}.plugin={plugin_path!r} 配置校验失败: {type(e).__name__}: {e}"
@@ -341,185 +481,9 @@ def _validate_mechanism_plugin_config(module_key: str, module_cfg: Any) -> list[
     return errors
 
 
-def validate_mechanism_module_config(module_key: str, cfg: dict[str, Any]) -> list[str]:
-    """校验单个机制模块配置，返回错误列表（空表示通过）。"""
-    errors: list[str] = []
-
-    module_name = cfg.get("module_name")
-    if not module_name:
-        errors.append(f"mechanism_modules.{module_key}.module_name 不能为空")
-
-    diag_pattern = cfg.get("diag_pattern")
-    if diag_pattern:
-        try:
-            diag_re = re.compile(diag_pattern)
-        except re.error as e:
-            errors.append(f"mechanism_modules.{module_key}.diag_pattern 正则非法: {e}")
-        else:
-            required = {"Slot", "CPU_Id", "ProcessName", "Context"}
-            missing = required - set(diag_re.groupindex)
-            if missing:
-                errors.append(
-                    f"mechanism_modules.{module_key}.diag_pattern 缺少命名组: {sorted(missing)}"
-                )
-
-    journal_cfg = cfg.get("journal", {})
-    required_substrings = journal_cfg.get("line_pattern2_required_substrings")
-    if required_substrings is not None:
-        if not isinstance(required_substrings, list):
-            errors.append(
-                f"mechanism_modules.{module_key}.journal.line_pattern2_required_substrings "
-                "必须是字符串列表"
-            )
-        else:
-            for idx, value in enumerate(required_substrings):
-                if not isinstance(value, str) or not value:
-                    errors.append(
-                        f"mechanism_modules.{module_key}.journal."
-                        f"line_pattern2_required_substrings[{idx}] 必须是非空字符串"
-                    )
-
-    for field in ("line_pattern", "line_pattern2"):
-        pattern = journal_cfg.get(field)
-        if pattern:
-            try:
-                compiled = re.compile(pattern)
-            except re.error as e:
-                errors.append(
-                    f"mechanism_modules.{module_key}.journal.{field} 正则非法: {e}"
-                )
-                continue
-
-            if compiled.groups not in (3, 4):
-                errors.append(
-                    f"mechanism_modules.{module_key}.journal.{field} 需要 3 或 4 个捕获组: "
-                    "3组=process_name, pid, context；4组=process_name, pid, sequence, context"
-                )
-            elif compiled.groups == 3 and _looks_like_sequence_journal_pattern(
-                pattern, cfg.get("sequence_pattern")
-            ):
-                errors.append(
-                    f"mechanism_modules.{module_key}.journal.{field} 包含序号格式时需要 4 个捕获组: "
-                    "process_name, pid, sequence, context"
-                )
-
-    seq_pattern = cfg.get("sequence_pattern")
-    if seq_pattern:
-        try:
-            re.compile(seq_pattern)
-        except re.error as e:
-            errors.append(
-                f"mechanism_modules.{module_key}.sequence_pattern 正则非法: {e}"
-            )
-
-    for legacy_field in (
-        "board_restart_" + "indicator",
-        "board_restart_" + "whitelist",
-        "process_name_" + "mapping",
-    ):
-        if legacy_field in cfg:
-            errors.append(
-                f"mechanism_modules.{module_key}.{legacy_field} is no longer supported; "
-                "use lifecycle_split V3 fields"
-            )
-
-    errors.extend(_validate_lifecycle_split_config(module_key, cfg.get("lifecycle_split")))
-
-    return errors
-
-
-def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
-    if raw is None:
-        return []
-
-    path = f"mechanism_modules.{module_key}.lifecycle_split"
-    if not isinstance(raw, dict):
-        return [f"{path} must be an object"]
-
-    unsupported = sorted(
-        key
-        for key in raw
-        if key not in {
-            "process_name_mapping",
-            "reliable_processes",
-            "multi_instance_processes",
-        }
-    )
-    if unsupported:
-        return [
-            f"{path} only supports V3 fields: process_name_mapping, "
-            f"reliable_processes, multi_instance_processes; unsupported keys: {unsupported}"
-        ]
-
-    mapping = raw.get("process_name_mapping", {})
-    if not isinstance(mapping, dict):
-        return [f"{path}.process_name_mapping must be an object"]
-
-    alias_to_canonical: dict[str, str] = {}
-    for canonical, aliases in mapping.items():
-        canonical_name = str(canonical)
-        alias_to_canonical[_norm_name(canonical_name)] = canonical_name
-        if aliases is None:
-            continue
-        if isinstance(aliases, str):
-            alias_iterable = [aliases]
-        else:
-            try:
-                alias_iterable = list(aliases)
-            except TypeError:
-                return [f"{path}.process_name_mapping.{canonical_name} must be a list"]
-        for alias in alias_iterable:
-            alias_to_canonical[_norm_name(str(alias))] = canonical_name
-
-    reliable_raw = raw.get("reliable_processes", [])
-    multi_raw = raw.get("multi_instance_processes", [])
-    list_errors = [
-        error for error in (
-            _validate_name_list(f"{path}.reliable_processes", reliable_raw),
-            _validate_name_list(f"{path}.multi_instance_processes", multi_raw),
-        )
-        if error
-    ]
-    if list_errors:
-        return list_errors
-
-    reliable = _canonical_name_set(reliable_raw or [], alias_to_canonical)
-    multi = _canonical_name_set(multi_raw or [], alias_to_canonical)
-    conflicts = reliable & multi
-    if not conflicts:
-        return []
-
-    return [
-        f"{path} config conflict: each canonical process may appear in only one of "
-        "reliable_processes, multi_instance_processes; "
-        f"conflicts={sorted(conflicts)}"
-    ]
-
-
-def _validate_name_list(path: str, raw: Any) -> str | None:
-    if raw is None:
-        return None
-    if isinstance(raw, list):
-        return None
-    return f"{path} must be a list"
-
-
-def _canonical_name_set(raw: Any, alias_to_canonical: dict[str, str]) -> set[str]:
-    if raw is None:
-        return set()
-    names = list(raw)
-    return {
-        _norm_name(alias_to_canonical.get(_norm_name(str(name)), str(name)))
-        for name in names
-    }
-
-
-def _norm_name(value: str) -> str:
-    return value.casefold()
-
-
-def _looks_like_sequence_journal_pattern(pattern: str, seq_pattern: Any) -> bool:
-    """Return True when a 3-group journal regex appears to contain a sequence field."""
-    if "No\\[" in pattern or "No[" in pattern:
-        return True
-    return bool(isinstance(seq_pattern, str) and seq_pattern and seq_pattern in pattern)
+def _validate_plugin_graph(modules: dict[str, Any], path: str) -> list[str]:
+    try:
+        resolve_mechanism_order(modules)
+    except PluginGraphError as exc:
+        return [f"{path}: {issue.message}" for issue in exc.issues]
+    return []

@@ -1,0 +1,28 @@
+{
+  "coverage": {
+    "diagnostic_scope_count": 2,
+    "private_scope_count": 3,
+    "diagnostic_file_count": 3,
+    "journal_file_count": 4,
+    "content_timestamp_count": 106,
+    "time_range": {
+      "start": "2026-01-03T00:00:00.000001",
+      "end": "2026-01-03T07:55:00.123456"
+    }
+  },
+  "modules": [
+    {
+      "module_key": "module1",
+      "module_name": "EXAMPLE",
+      "diag_entry_count": 3,
+      "journal_entry_count": 3,
+      "scope_count": 2,
+      "cycle_count": 2,
+      "process_count": 2
+    }
+  ],
+  "evidence": [
+    "EXAMPLE/slot_1/20260103000100-20260103000200/SERVICE-12345.log",
+    "EXAMPLE/slot_2/20260103063000-20260103063100/SERVICE-54321.log"
+  ]
+}

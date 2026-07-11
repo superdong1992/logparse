@@ -1,128 +1,202 @@
-# CLAUDE.md
+# logparse LAN Development Contract
 
-This file gives repository guidance to Claude Code and other coding agents.
+This file is the mandatory entrypoint for Claude Code and GLM5.1. After the
+handoff, the LAN checkout is the only authoritative source. External copies are
+frozen and receive no code, diff, fixture, configuration, or log synchronization
+from the LAN.
 
-## Mandatory Rule Preflight
+## 1. Mandatory Preflight
 
-Before repo analysis or code edits, run the local rule preflight for the files
-you will inspect or change:
+Before reading implementation files or editing anything:
 
 ```bash
-python scripts/rule_preflight.py --paths backend/parsing/lifecycle_splitter_v3.py
-python scripts/rule_preflight.py --changed
+.venv/bin/python scripts/rule_preflight.py --paths <files-you-will-touch...>
 ```
 
-Read every returned rule source before making claims or edits. In particular:
+Read every returned rule source. Before completion, run:
 
-- `CPU_Id=0` or an empty `cpu_id` is board-level.
-- Only non-zero CPU ids create nested CPU lifecycles.
-- Module1 always uses lifecycle split V3.
-- Module2 reuses module1 lifecycle context and must not add independent lifecycle splitting.
+```bash
+.venv/bin/python scripts/rule_preflight.py --changed
+.venv/bin/python scripts/verify_delivery.py
+.venv/bin/python scripts/change_gate.py --changed
+.venv/bin/python scripts/change_gate.py --changed --enforce \
+  --change-record governance/changes/<change-id>.yaml
+```
 
-## Current Architecture
+Copy `governance/changes/change-record.template.yaml` for the record. Never edit
+the gate, boundary config, tests, or record dishonestly to bypass a requirement.
 
-The project preprocesses diagnostic log packages into structured evidence for
-humans and diagnosis agents. The pipeline is:
+## 2. Modification Zones
+
+The exact paths are defined in `governance/architecture-boundaries.toml`.
+Precedence is red, then yellow, then green; an unclassified source path is red.
+
+### Green — LAN business extension
+
+GLM5.1 may modify these paths for normal product work with focused tests and a
+documented LAN scenario:
 
 ```text
-archive
--> Decompressor
--> DirectoryDiscoveryPlugin
--> LogParserPlugin
--> mechanism module plugins
--> MechOutputWriter
--> metadata.json + result.json
+configs/products/**
+backend/extensions/products/**
+backend/extensions/diagnosis/**
+tests/extensions/**
+.agents/skills/diagnose-*/**
 ```
 
-Important boundaries:
+Current-product knowledge belongs here: `slot`, `CPU`, board topology,
+active/standby role, directory layout, filename/glob/regex/keywords, process
+mapping, and diagnosis knowledge. These concepts must not leak into the generic
+architecture.
 
-- `Decompressor` owns archive extraction. Scanner and parser plugins inspect an already prepared workspace.
-- Ordinary `.gz` logs are streamed by parser code. Use `--debug-expand-gz` only for manual full-text debugging.
-- `metadata.json` is scan and overview metadata. `result.json` is the compact query index. Do not merge them.
-- `ScannerPlugin` and `CompactScannerPlugin` are separate product layouts and should not be collapsed.
+### Yellow — protected business policy
 
-## LAN DFX Operating Model
+Change only when a real LAN case proves the current policy wrong:
 
-Read `docs/lan-dfx-operating-model.md` before changing diagnosis, query, DFX,
-CLI, or output artifacts.
+```text
+backend/domain/lifecycle/**
+backend/domain/correlation/**
+backend/extensions/mechanisms/**
+.agents/skills/logparse-diagnose/**
+```
 
-- Codex work often happens outside the LAN with synthetic or mock logs.
-- Final execution and real-log diagnosis happen inside the LAN.
-- Real logs generally cannot be copied out of the LAN; external handoff should
-  be only one line: `ERROR_CODE: 中文结论`.
-- Standalone logparse must remain deterministic and must not invoke Claude CLI
-  by default.
-- GLM5.1 quantized is available in the LAN through Claude CLI, but should only
-  consume structured DFX reports and bounded context, not perform broad file
-  exploration or path/lifecycle selection.
+The change record must include the real case id, minimal fixture, historical
+corpus result, and schema-impact conclusion. This zone owns lifecycle splitting,
+Module1/Module2 correlation, PID/time fallback, unknown assignment, midpoint,
+range expansion, and clamp rules.
 
-## Lifecycle Split Contract
+Plugin base classes and execution orchestration are red even when a compatibility
+façade sits inside a mechanism or product directory; the TOML's red precedence
+decides. Current-product engine/artifact writers, metadata/result schemas,
+legacy Pipeline, query compatibility contract, and deterministic DFX are
+explicit red exceptions under `backend/extensions/products/current/`; their
+failure semantics, issue-locator behavior, schemas/error codes and DFX budgets
+are not routine product rules. See the TOML for the exact filenames.
 
-Lifecycle splitting is V3-only:
+### Red — frozen architecture
 
-- `Module1Plugin` always uses `LifecycleSplitterV3`.
-- Current `lifecycle_split` config supports only:
-  - `process_name_mapping`
-  - `reliable_processes`
-  - `multi_instance_processes`
-- Current output lifecycle diagnostics live under `lifecycle_split_result`.
-- The only current algorithm value is `interval_v3`.
-- V3 lifecycle evidence is:
-  - `candidate_segments`
-  - `merge_decisions`
-  - `lifecycles`
-  - `journal_evidence`
-  - `issues`
-  - `lifecycle_reliable`
+Do not modify by default:
 
-Do not reintroduce old lifecycle fields or compatibility paths into current code.
-Archived V2 material lives under `docs/archive/lifecycle-v2/`.
+```text
+backend/contracts/**
+backend/ports/**
+backend/application/**
+backend/infrastructure/**
+backend/presentation/**
+governance/**
+scripts/change_gate.py
+scripts/rule_preflight.py
+cli.py
+```
 
-## Main Modules
+A red change requires an Accepted ADR, explicit human approval, contract,
+security, and smoke validation, plus a rollback plan. Governance controls are
+red themselves and have a non-downgradable fallback in `change_gate.py`.
 
-| Path | Responsibility |
-| --- | --- |
-| `backend/decompressor.py` | Safe recursive archive extraction |
-| `backend/pipeline.py` | Product-neutral parse orchestration |
-| `backend/plugins/loader.py` | Config-driven plugin loading |
-| `backend/plugins/default/scanner.py` | Default `diag/ + varlog/` discovery |
-| `backend/plugins/compact/scanner.py` | Compact `boards/ + logs/` discovery |
-| `backend/plugins/default/parser.py` | Parser orchestration and shared diagnostic scan |
-| `backend/plugins/mechanisms/module1.py` | Module1 scanning, V3 lifecycle split, role signals |
-| `backend/plugins/mechanisms/module2.py` | Module2 output derived from module1 lifecycle context |
-| `backend/parsing/lifecycle_splitter_v3.py` | Current lifecycle split algorithm |
-| `backend/parsing/lifecycle_common.py` | Shared V3 lifecycle config/helpers |
-| `backend/parsing/file_iter.py` | Streaming text and extracted-entry iteration |
-| `backend/parsing/timestamp_extractor.py` | Timestamp extraction from text lines |
-| `backend/parsing/process_name_resolver.py` | Current process name/PID parsing |
-| `backend/result_serializer.py` | Compact `result.json` serialization |
-| `backend/metadata.py` | `metadata.json` generation |
-| `backend/query.py` | Query service over result and metadata files |
-| `cli.py` | Human and automation CLI |
+## 3. Architecture Contract
 
-## Useful Commands
+The processing direction is:
+
+```text
+raw package
+-> product topology and format adapter
+-> product-neutral contracts and scopes
+-> protected lifecycle/correlation policy
+-> artifact repository and deterministic query/DFX
+-> bounded diagnosis context for GLM5.1
+```
+
+Dependency direction:
+
+```text
+presentation -> application -> ports/contracts
+infrastructure -> ports/contracts
+green/yellow business code -> public contracts and application services
+yellow lifecycle/correlation policy -> green current-product models
+```
+
+Red contracts/application/infrastructure must not import green or yellow product
+implementations. The red core uses generic source, event, scope, result, and
+diagnostic concepts. Green adapters project the current slot/board/CPU shape;
+yellow domain/mechanism code owns how that topology participates in lifecycle
+and correlation.
+
+Stable boundaries:
+
+- Decompressor alone owns extraction and path-safety enforcement.
+- Scanners inspect a prepared workspace; ordinary `.gz` logs are streamed.
+- Plugins declare API version and dependencies; Module2 depends explicitly on
+  Module1 and never creates an independent lifecycle.
+- Native mechanisms receive bounded `MechanismContext` and return
+  `MechanismOutcome`; only pre-v1 plugins may use the explicit
+  `LegacyMechanismContext` adapter.
+- Artifact paths come from one `ArtifactLayout`; writes are atomic.
+- `metadata.json` is scan coverage, `result.json` is a compact query index, and
+  `mech_modules/` is evidence. Do not merge their responsibilities.
+- Preserve issue-locator entrypoints: `parse`, `mech-target-logs`, `dfx-output`,
+  root `cli.py`, and `.agents/skills/logparse-diagnose/`.
+
+Read `docs/architecture.md` for the full design and ADRs under `docs/adr/` for
+the decisions that may not be silently reversed.
+
+## 4. Lifecycle and Product Rules
+
+Lifecycle splitting remains V3-only:
+
+- `CPU_Id=0` and empty CPU id are board-level current-product values.
+- Only non-zero CPU ids create nested CPU lifecycles.
+- Module1 always uses `LifecycleSplitterV3` / `interval_v3`.
+- Module2 reuses Module1 board and nested CPU lifecycle context.
+- V3 output includes `candidate_segments`, `merge_decisions`, `lifecycles`,
+  `journal_evidence`, `issues`, and `lifecycle_reliable`.
+- Do not restore lifecycle V2 compatibility; archived material is under
+  `docs/archive/lifecycle-v2/`.
+
+These are current-product policies, not generic architecture. Their runtime
+behavior may change only through the yellow-zone evidence workflow.
+
+## 5. Artifact and DFX Rules
+
+The formal task artifacts are:
+
+```text
+parse_manifest.json
+metadata.json
+result.json
+mech_modules/
+performance.json      # only with profile
+dfx_report.json       # only after dfx-output
+dfx_summary.txt       # only after dfx-output
+dfx_context/          # only when deep DFX produces bounded windows
+```
+
+`extracted/` is temporary workspace, not a formal artifact. Never put raw,
+context, or per-line `logs[]` into compact `result.json`. DFX summaries remain a
+single `ERROR_CODE: 中文结论` line without raw log text. Standalone logparse
+must not invoke Claude CLI or GLM5.1; see `docs/lan-dfx-operating-model.md`.
+
+## 6. Testing
+
+Use Python 3.12. On native Windows, replace `.venv/bin/python` with
+`.venv\Scripts\python.exe`:
 
 ```bash
-python cli.py check-config -c config.yaml
-python scripts/rule_preflight.py --changed
-python -m pytest tests -q --basetemp output\pytest-tmp-local -p no:cacheprovider
-python cli.py parse tests\mock_data\diagnostic_information_20260103.zip -c config.yaml --product default -o output\smoke-default
-python cli.py parse tests\mock_data_compact\compact_package_20260103.zip -c config.yaml --product compact -o output\smoke-compact
+.venv/bin/python cli.py check-config -c config.yaml
+.venv/bin/python cli.py doctor -c config.yaml --json
+.venv/bin/python cli.py explain-config -c config.yaml -p default --json
+.venv/bin/python cli.py migrate-config -c legacy-v1.yaml -o config-v2.yaml
+.venv/bin/python cli.py artifact-check output/<task_id> --json
+.venv/bin/python cli.py scaffold-extension --kind product --name <name>
+.venv/bin/python cli.py scaffold-extension --kind mechanism --name <name>
+.venv/bin/python scripts/verify_delivery.py
+.venv/bin/python -m pytest tests -q --basetemp /tmp/logparse-pytest -p no:cacheprovider
+.venv/bin/python cli.py parse tests/mock_data/diagnostic_information_20260103.zip \
+  -c config.yaml --product default -o output/smoke-default
+.venv/bin/python cli.py parse tests/mock_data_compact/compact_package_20260103.zip \
+  -c config.yaml --product compact -o output/smoke-compact
 ```
 
-The `tests/mock_data*` packages and their generator scripts are demo/smoke assets.
-They are useful for end-to-end manual checks, but unit tests should build their
-own focused fixtures unless they explicitly need a full package.
-
-## Testing Notes
-
-Keep tests aligned with current contracts:
-
-- `tests/test_lifecycle_splitter_v3.py` is the lifecycle algorithm contract.
-- `tests/test_module1_plugin.py` verifies module1 always produces V3 lifecycle output.
-- `tests/test_config_validation.py` should reject old lifecycle fields.
-- `tests/test_cli.py` should show only V3 lifecycle DFX for current output.
-- `tests/test_query.py` should verify current query fields flow through serializer -> query -> CLI.
-
-When a refactor touches lifecycle code, check serializer, query, CLI, metadata,
-docs, and tests in the same pass.
+For a focused change, run the closest tests first, then the full suite required
+by the zone. Real-log policy changes also require LAN corpus comparison. Never
+claim a performance improvement without matching scanned files, lines, and
+mechanism entry counts; omitting input is not an optimization.

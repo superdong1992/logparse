@@ -4,7 +4,6 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-import pytest
 
 from backend.utils import (
     extract_dump_time,

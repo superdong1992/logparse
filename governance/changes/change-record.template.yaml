@@ -1,0 +1,53 @@
+schema_version: 1
+change_id: YYYY-MM-DD-short-name
+summary: Describe the behavior being changed and why.
+
+# Declare every zone reported by scripts/change_gate.py.
+zones:
+  - green
+
+# Exact paths or repository-relative glob patterns. Do not include this record.
+paths:
+  - backend/extensions/products/current/**
+  - tests/extensions/products/**
+
+validation:
+  tests:
+    - .venv/bin/python -m pytest tests/extensions/products -q
+  lan_scenario: Describe the real or synthetic product scenario validated in LAN.
+
+  # Required when red is present.
+  contract_tests: []
+  security_tests: []
+  smoke_tests: []
+
+  # Required for a performance-sensitive change. Keep raw task evidence in LAN;
+  # record only non-sensitive revisions, environment, medians, counters and hashes.
+  performance:
+    baseline_revision: ""
+    candidate: ""
+    environment: ""
+    baseline_runs: 0
+    candidate_runs: 0
+    baseline_median_seconds: 0.0
+    candidate_median_seconds: 0.0
+    delta_percent: 0.0
+    scan_counters: {}
+    representative_artifact_hashes: {}
+    verdict: ""
+
+# Required when yellow is present.
+evidence:
+  real_case_id: ""
+  fixture: ""
+  corpus_regression: ""
+
+compatibility:
+  # Required when yellow is present. State none when the schema is unchanged.
+  schema_impact: none
+
+# Required when red is present.
+architecture:
+  adr: ""
+  approval: ""
+  rollback: ""

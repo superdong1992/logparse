@@ -1,37 +1,56 @@
 # logparse Agent Instructions
 
-This repository is configured for Everything Claude Code (ECC) usage in Codex.
-Use the project-local `.codex/config.toml` multi-agent roles when a task benefits
-from read-only exploration, owner-style review, or primary-source documentation
-checks.
+The LAN checkout is the only authoritative repository after handoff. External
+copies are frozen references: do not develop a second branch outside the LAN and
+do not export LAN code, diffs, fixtures, configurations, or logs.
 
-## Repository Rules
+## Mandatory First Read
 
-Read `CLAUDE.md` before repo analysis or code edits. Its rule preflight,
-architecture boundaries, lifecycle V3 contract, and testing notes are the
-repository-specific source of truth.
+Before repository analysis or edits:
 
-Before inspecting or changing files, run the relevant local preflight command
-from `CLAUDE.md`, for example:
+1. Read `CLAUDE.md` completely.
+2. Run `.venv/bin/python scripts/rule_preflight.py --paths <planned-paths...>`.
+3. Read every rule source returned by preflight.
+4. Read `docs/lan-development-guide.md` for implementation work.
+5. Read `docs/lan-dfx-operating-model.md` before changing diagnosis, query,
+   DFX, CLI, or artifacts.
+
+Use Python 3.12 from `.venv`; do not rely on bare `python`. On native Windows,
+use `.venv\Scripts\python.exe`.
+
+## Architecture Change Zones
+
+`governance/architecture-boundaries.toml` is the machine-readable source of
+truth. Unclassified source files are red by default.
+
+- Green: product topology and format adapters, diagnosis knowledge, and their
+  focused tests. `slot`, `CPU`, board, and active/standby are current-product
+  concepts and belong here.
+- Yellow: lifecycle and Module1/Module2 correlation policy. Change only from a
+  real LAN case, with a minimal fixture and corpus regression.
+- Red: contracts, orchestration, filesystem/security, artifact schemas, CLI
+  compatibility, and governance. Do not modify by default.
+
+Before handing off a change, run:
 
 ```bash
-python scripts/rule_preflight.py --changed
+.venv/bin/python scripts/verify_delivery.py
+.venv/bin/python scripts/change_gate.py --changed
+.venv/bin/python scripts/change_gate.py --changed --enforce \
+  --change-record governance/changes/<change-id>.yaml
 ```
 
-## LAN DFX Operating Model
+Never weaken `change_gate.py`, `rule_preflight.py`, or the boundary TOML to make
+a change pass.
 
-Before changing diagnosis, query, DFX, CLI, or output artifacts, read
-`docs/lan-dfx-operating-model.md`.
+## Runtime and Delivery Boundaries
 
-This repo is often implemented outside the LAN with Codex, but real logs and
-final diagnosis run inside the LAN. Keep standalone logparse deterministic: it
-must not call Claude CLI by default, and external handoff should remain a single
-`ERROR_CODE: 中文结论` line without raw log text.
-
-## ECC Boundaries
-
-- Keep workflow contributions in `.agents/skills/` first.
-- Keep machine-specific MCP servers, credentials, and secrets out of this repo.
-- Use read-only agents for exploration and review unless the user explicitly asks
-  for a scoped implementation.
-- Do not commit or push without an explicit user request.
+- Standalone logparse is deterministic and never invokes Claude CLI or GLM5.1.
+- GLM5.1 consumes structured DFX plus explicitly bounded context only.
+- Preserve issue-locator compatibility for `parse`, `mech-target-logs`,
+  `dfx-output`, root `cli.py`, and `.agents/skills/logparse-diagnose/`.
+- Never add raw log bodies to `result.json`, summaries, or outbound handoffs.
+- Do not touch `output/` or `outputs/` unless the user explicitly asks to inspect
+  a named task. They may contain LAN-only evidence.
+- Do not commit, push, tag, or copy material outside the LAN without explicit
+  user authorization and the approved internal workflow.

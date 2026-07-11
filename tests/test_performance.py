@@ -1,4 +1,5 @@
 """Tests for structured performance DFX."""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +7,11 @@ import json
 import pytest
 
 from backend.models import MechLogEntry
-from backend.performance import PerformanceRecorder, resolve_worker_count
+from backend.performance import (
+    PerformanceRecorder,
+    resolve_worker_count,
+    summarize_performance_data,
+)
 
 
 def test_performance_recorder_writes_sanitized_stage_tree(tmp_path):
@@ -32,7 +37,10 @@ def test_performance_recorder_writes_sanitized_stage_tree(tmp_path):
     assert data["schema_version"] == 1
     assert data["config"]["debug_expand_gz"] is False
     assert data["stages"][0]["name"] == "diagnostic_scan.shared"
-    assert data["stage_tree"]["diagnostic_scan"]["children"]["shared"]["elapsed_seconds"] == 1.25
+    assert (
+        data["stage_tree"]["diagnostic_scan"]["children"]["shared"]["elapsed_seconds"]
+        == 1.25
+    )
     assert data["stages"][0]["metrics"]["files"] == 2
     assert data["stages"][0]["metrics"]["lines"] == 100
     assert "must not be persisted" not in payload
@@ -108,7 +116,9 @@ def test_performance_recorder_blocks_sensitive_key_variants_and_unknown_keys(tmp
 def test_performance_recorder_does_not_persist_object_type_name(tmp_path):
     secret_type = type("SECRET_RAW_CONTEXT_PAYLOAD_LINE", (), {})
     recorder = PerformanceRecorder(enabled=True)
-    recorder.record_stage("diagnostic_scan.shared", elapsed_seconds=0.1, files=secret_type())
+    recorder.record_stage(
+        "diagnostic_scan.shared", elapsed_seconds=0.1, files=secret_type()
+    )
 
     data = json.loads(recorder.write(tmp_path).read_text(encoding="utf-8"))
     payload = json.dumps(data, ensure_ascii=False)
@@ -132,3 +142,38 @@ def test_performance_recorder_sanitizes_untrusted_stage_names(tmp_path):
     assert "custom" in data["stage_tree"]
     assert "secret" not in payload
     assert "customer_payload" not in payload
+
+
+def test_summarize_performance_data_exposes_counts_and_stage_anomalies():
+    summary = summarize_performance_data(
+        {
+            "schema_version": 1,
+            "total_seconds": 3.5,
+            "stages": [
+                {
+                    "name": "diagnostic_scan.shared",
+                    "elapsed_seconds": 3.0,
+                    "metrics": {
+                        "files": 2,
+                        "lines": 100,
+                        "module1_entries": 8,
+                        "errors": 1,
+                    },
+                }
+            ],
+        }
+    )
+
+    assert summary["total_seconds"] == 3.5
+    assert summary["observed_counters"] == {
+        "files": 2,
+        "lines": 100,
+        "entries": 8,
+        "errors": 1,
+    }
+    assert summary["anomalies"] == [
+        {
+            "stage": "diagnostic_scan.shared",
+            "reason": "stage reported errors",
+        }
+    ]

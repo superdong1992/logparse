@@ -20,23 +20,30 @@ from __future__ import annotations
 import json
 import re
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
 import click
 
+from backend.application.configuration import (
+    ConfigurationError,
+    explain_config as build_config_explanation,
+    load_config_file,
+    load_raw_config_file,
+    render_migrated_config,
+)
+from backend.application.doctor import run_doctor
 from backend.config_validation import validate_config
-from backend.dfx import build_dfx_output
+from backend.application.parse_service import ParseServiceError
+from backend.contracts.runtime import ParseRequest, ParseRuntimeOptions
+from backend.dfx import build_dfx_output, check_task_artifacts
 from backend.parsing.mech_journal_pattern import (
     JournalPatternMatcher,
     passes_line_pattern2_required_substrings,
 )
 from backend.query import ResultQueryService
-from backend.result_serializer import result_to_dict
-from backend.utils import glob_to_regex
+from backend.presentation.cli.composition import build_parse_application
 from backend.models import ParseResult
-from backend.pipeline import Pipeline
 
 
 def _mechanism_config(module_entry: dict) -> dict:
@@ -60,27 +67,16 @@ def _cycle_process_total_dict(cycle: dict) -> tuple[int, int]:
 def _print_summary(
     result: ParseResult,
     output_dir: Path,
-    result_json_mode: str = "compact",
     detailed: bool = True,
 ) -> None:
-    """打印解析结果摘要 + 落盘 result.json。"""
-    click.echo(f"\n=== 解析结果 ===")
+    """展示产品摘要；正式 result.json 已由 ParseService 原子写入。"""
+    click.echo("\n=== 解析结果 ===")
     click.echo(f"压缩包: {result.package_name}")
     click.echo(f"诊断日志槽位数: {len(result.diagnostic_slots)}")
     click.echo(f"私有日志槽位数: {len(result.private_slots)}")
 
     if not detailed:
         json_output = output_dir / result.task_id / "result.json"
-        json_output.parent.mkdir(parents=True, exist_ok=True)
-        json_output.write_text(
-            json.dumps(
-                result_to_dict(result, result_json_mode),
-                ensure_ascii=False,
-                indent=2,
-                default=str,
-            ),
-            encoding="utf-8",
-        )
         click.echo(f"机制模块结果数: {len(result.mech_results)}")
         click.echo(f"\n完整结果: {json_output}")
         return
@@ -101,7 +97,7 @@ def _print_summary(
             click.echo(f"    └── {log.name} ({log.size_bytes} bytes) [转储时间: {dump}{ts_count}]")
 
     if result.private_slots:
-        click.echo(f"\n--- 私有日志 (varlog) ---")
+        click.echo("\n--- 私有日志 (varlog) ---")
         for ps in result.private_slots:
             cpu_info = f" [CPU: {ps.cpu_id}]" if ps.cpu_id else ""
             click.echo(f"  {ps.dir_name} (slot_id={ps.slot_id}{cpu_info})")
@@ -134,16 +130,6 @@ def _print_summary(
                             click.echo(f"        {p.process_name}-{p.pid}: {p.total_count} 条{missing}")
 
     json_output = output_dir / result.task_id / "result.json"
-    json_output.parent.mkdir(parents=True, exist_ok=True)
-    json_output.write_text(
-        json.dumps(
-            result_to_dict(result, result_json_mode),
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
-    )
     click.echo(f"\n完整结果: {json_output}")
 
 
@@ -166,6 +152,7 @@ def cli(ctx, config):
 @click.option("--product", "-p", default="default", help="产品名（default/compact）")
 @click.option("--debug-expand-gz", is_flag=True, default=False, help="强制在解析过程中将 .gz 日志就地展开")
 @click.option("--profile", is_flag=True, default=False, help="生成 performance.json 并打印性能摘要")
+@click.option("--keep-workspace", is_flag=True, default=False, help="保留任务 extracted 工作区用于人工调试")
 @click.option(
     "--lifecycle-dfx",
     type=click.Choice(["off", "errors", "summary", "decisions", "full"]),
@@ -174,7 +161,18 @@ def cli(ctx, config):
     help="生命周期聚合/切分中文说明输出级别",
 )
 @click.pass_context
-def parse(ctx, package_path, config, output, verbose, product, debug_expand_gz, profile, lifecycle_dfx):
+def parse(
+    ctx,
+    package_path,
+    config,
+    output,
+    verbose,
+    product,
+    debug_expand_gz,
+    profile,
+    keep_workspace,
+    lifecycle_dfx,
+):
     """解析日志压缩包。"""
     if verbose:
         import logging
@@ -189,44 +187,63 @@ def parse(ctx, package_path, config, output, verbose, product, debug_expand_gz, 
     source = Path(package_path)
     output_dir = Path(output)
 
-    raw_config = {}
-    if Path(config_path).exists():
-        import yaml
-        raw_config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
-    else:
+    if not Path(config_path).exists():
         click.echo(f"✗ 配置文件不存在: {config_path}", err=True)
         raise click.exceptions.Exit(1)
-    if debug_expand_gz:
-        raw_config.setdefault("pipeline", {})
-        raw_config["pipeline"]["debug_expand_gz"] = True
+    try:
+        raw_config = load_config_file(Path(config_path))
+    except ConfigurationError as exc:
+        click.echo(f"✗ 配置加载失败: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
     config_errors = validate_config(raw_config)
     if config_errors:
         click.echo(f"✗ 配置检查失败: {len(config_errors)} 个错误", err=True)
         for error in config_errors:
             click.echo(f"  - {error}", err=True)
         raise click.exceptions.Exit(1)
-    pipeline = Pipeline(raw_config)
-    run_kwargs = {"product": product, "verbose": verbose}
-    if profile:
-        run_kwargs["profile"] = True
-    result = pipeline.run(source, output_dir, **run_kwargs)
+    pipeline_config = raw_config.get("pipeline", {})
+    if not isinstance(pipeline_config, dict):
+        pipeline_config = {}
+    application = build_parse_application(raw_config)
+    request = ParseRequest(
+        source=source,
+        output_root=output_dir,
+        product=product,
+        options=ParseRuntimeOptions(
+            extraction_workers=pipeline_config.get("extraction_workers", "auto"),
+            diagnostic_scan_workers=pipeline_config.get(
+                "diagnostic_scan_workers",
+                "auto",
+            ),
+            debug_expand_gz=(
+                debug_expand_gz
+                or bool(pipeline_config.get("debug_expand_gz", False))
+            ),
+            keep_workspace=(
+                keep_workspace
+                or bool(pipeline_config.get("keep_workspace", False))
+            ),
+            profile=profile,
+            verbose=verbose,
+        ),
+    )
+    try:
+        run = application.service.run(request)
+    except ParseServiceError as exc:
+        click.echo(f"✗ 解析失败: {exc}", err=True)
+        click.echo(
+            f"失败清单: {output_dir / exc.task_id / 'parse_manifest.json'}",
+            err=True,
+        )
+        raise click.exceptions.Exit(1) from exc
+    result = run.result
     _print_parse_errors(result, verbose=verbose, lifecycle_dfx=lifecycle_dfx)
 
-    # 输出摘要
-    result_json_mode = raw_config.get("pipeline", {}).get("result_json_mode", "compact")
-    summary_t0 = time.perf_counter()
-    _print_summary(result, output_dir, result_json_mode=result_json_mode, detailed=not profile)
+    _print_summary(result, output_dir, detailed=not profile)
+    click.echo(f"任务清单: {output_dir / result.task_id / 'parse_manifest.json'}")
     if profile:
-        if hasattr(pipeline.performance, "record_stage"):
-            pipeline.performance.record_stage(
-                "cli.result_json",
-                elapsed_seconds=time.perf_counter() - summary_t0,
-                result_json_mode=result_json_mode,
-            )
-        if hasattr(pipeline.performance, "write"):
-            pipeline.performance.write(output_dir / result.task_id)
         click.echo("\n=== 性能摘要 ===")
-        for line in pipeline.performance.summary_lines():
+        for line in application.engine.pipeline.performance.summary_lines():
             click.echo(line)
 
 
@@ -912,6 +929,196 @@ def mech_logs(task_id, slot, cycle, proc, module_name, pid, cpu_id, cpu_cycle, o
     click.echo(log_file.read_text(encoding="utf-8", errors="replace").rstrip())
 
 
+@cli.command("doctor")
+@click.option("--config", "-c", default="config.yaml", help="配置文件路径")
+@click.option("--product", "-p", default=None, help="仅检查指定产品")
+@click.option("--output", "-o", default=None, help="同时检查输出根目录可写性")
+@click.option("--json", "json_output", is_flag=True, help="输出机器可读 JSON")
+def doctor_command(config, product, output, json_output):
+    """只读检查 Python、依赖、配置、插件图和输出目录。"""
+    try:
+        raw = load_config_file(Path(config))
+        report = run_doctor(
+            raw,
+            product=product,
+            output_root=Path(output) if output else None,
+        )
+    except ConfigurationError as exc:
+        click.echo(str(exc), err=True)
+        raise click.exceptions.Exit(1) from exc
+    payload = report.to_dict()
+    if json_output:
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        for check in payload["checks"]:
+            mark = "✓" if check["ok"] else "✗"
+            click.echo(f"{mark} {check['name']}: {check['message']}")
+    if not report.ok:
+        raise click.exceptions.Exit(1)
+
+
+@cli.command("explain-config")
+@click.option("--config", "-c", default="config.yaml", help="配置文件路径")
+@click.option("--product", "-p", default=None, help="仅解释指定产品")
+@click.option("--json", "json_output", is_flag=True, help="输出机器可读 JSON")
+def explain_config_command(config, product, json_output):
+    """显示 schema v2 生效配置、依赖和执行顺序。"""
+    try:
+        payload = build_config_explanation(
+            load_config_file(Path(config)),
+            product=product,
+        )
+    except ConfigurationError as exc:
+        click.echo(str(exc), err=True)
+        raise click.exceptions.Exit(1) from exc
+    if json_output:
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    import yaml
+
+    click.echo(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).rstrip())
+
+
+@cli.command("migrate-config")
+@click.option("--config", "-c", default="config.yaml", help="待迁移配置文件")
+@click.option("--output", "-o", default=None, help="写入新文件；默认输出到 stdout")
+def migrate_config_command(config, output):
+    """确定性迁移 v1 配置为 schema v2。"""
+    try:
+        # Migration owns the source document. Do not expand green product
+        # includes into the red root config before rendering.
+        rendered = render_migrated_config(load_raw_config_file(Path(config)))
+    except ConfigurationError as exc:
+        click.echo(str(exc), err=True)
+        raise click.exceptions.Exit(1) from exc
+    if output is None:
+        click.echo(rendered.rstrip())
+        return
+    target = Path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered, encoding="utf-8")
+    click.echo(f"已写入 schema v2 配置: {target}")
+
+
+@cli.command("artifact-check")
+@click.argument("output_task_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--json", "json_output", is_flag=True, help="输出机器可读 JSON")
+def artifact_check_command(output_task_dir, json_output):
+    """只读校验 manifest、schema、hash、索引与证据目录。"""
+    report = check_task_artifacts(Path(output_task_dir))
+    if json_output:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        mark = "✓" if report["ok"] else "✗"
+        click.echo(f"{mark} artifact-check: {report['status']}")
+        for issue in report["issues"]:
+            click.echo(f"  {issue['code']}: {issue['message']}")
+    if not report["ok"]:
+        raise click.exceptions.Exit(1)
+
+
+@cli.command("scaffold-extension")
+@click.option(
+    "--kind",
+    type=click.Choice(["product", "mechanism"]),
+    required=True,
+    help="扩展类型",
+)
+@click.option("--name", required=True, help="小写 snake_case 扩展名")
+@click.option(
+    "--root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("."),
+    help="仓库根目录",
+)
+@click.option("--force", is_flag=True, help="覆盖已存在的 scaffold 文件")
+def scaffold_extension_command(kind, name, root, force):
+    """生成产品或机制 extension 的最小代码、配置和测试。"""
+    if re.fullmatch(r"[a-z][a-z0-9_]*", name) is None:
+        click.echo("name 必须是小写 snake_case", err=True)
+        raise click.exceptions.Exit(2)
+    files = _extension_scaffold_files(kind, name)
+    existing = [path for relative in files if (path := root / relative).exists()]
+    if existing and not force:
+        click.echo(f"文件已存在: {existing[0]}", err=True)
+        raise click.exceptions.Exit(1)
+    for relative, content in files.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        click.echo(str(target))
+
+
+def _extension_scaffold_files(kind: str, name: str) -> dict[Path, str]:
+    if kind == "product":
+        package = Path("backend/extensions/products") / name
+        return {
+            package / "__init__.py": '"""LAN product extension."""\n',
+            package / "adapter.py": (
+                '"""Replace the skeleton with real LAN topology adapters."""\n\n'
+                "from pathlib import Path\n\n"
+                "from backend.plugins.base import DirectoryDiscoveryPlugin, LogParserPlugin\n\n\n"
+                "class DiscoveryPlugin(DirectoryDiscoveryPlugin):\n"
+                "    def discover(self, extracted_root: Path):\n"
+                "        return [], []\n\n\n"
+                "class ParserPlugin(LogParserPlugin):\n"
+                "    def parse(self, result):\n"
+                "        return result\n\n"
+                "    def write_output(self, mech_result, output_dir: Path) -> Path:\n"
+                "        output_dir.mkdir(parents=True, exist_ok=True)\n"
+                "        return output_dir\n"
+            ),
+            Path("configs/products") / f"{name}.yaml": (
+                "archive:\n"
+                "  recursive_extraction: true\n"
+                "  compressed_extensions: [.zip, .gz]\n"
+                "discovery:\n"
+                f"  plugin: backend.extensions.products.{name}.adapter.DiscoveryPlugin\n"
+                "  config: {}\n"
+                "parser:\n"
+                f"  plugin: backend.extensions.products.{name}.adapter.ParserPlugin\n"
+                "  config:\n"
+                "    timestamp_regex: '(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2})'\n"
+                "    active_period_gap_seconds: 300\n"
+                "mechanisms: {}\n"
+            ),
+            Path("tests/extensions/products") / f"test_{name}_adapter.py": (
+                f"from backend.extensions.products.{name}.adapter import "
+                "DiscoveryPlugin, ParserPlugin\n\n\n"
+                f"def test_{name}_scaffold_imports():\n"
+                "    assert DiscoveryPlugin is not None\n"
+                "    assert ParserPlugin is not None\n"
+            ),
+        }
+
+    module_path = Path("backend/extensions/mechanisms") / f"{name}.py"
+    return {
+        module_path: (
+            '"""LAN mechanism extension scaffold."""\n\n'
+            "from backend.contracts.plugins import MechanismContext, MechanismOutcome\n"
+            "from backend.extensions.mechanisms.base import MechanismPlugin as NativeMechanismPlugin\n\n\n"
+            "class MechanismPlugin(NativeMechanismPlugin):\n"
+            "    def execute(self, context: MechanismContext) -> MechanismOutcome:\n"
+            "        # Consume context.extension_input/dependency_results/scan_batch only.\n"
+            "        return MechanismOutcome()\n"
+        ),
+        Path("tests/extensions/mechanisms") / f"test_{name}.py": (
+            f"from backend.extensions.mechanisms.{name} import MechanismPlugin\n\n\n"
+            f"def test_{name}_descriptor():\n"
+            f"    plugin = MechanismPlugin({{'module_name': '{name}'}}, module_key='{name}')\n"
+            f"    assert plugin.descriptor.key == '{name}'\n"
+            "    assert plugin.requires_legacy_parse_state is False\n"
+        ),
+        Path(".agents/skills") / f"diagnose-{name}" / "SKILL.md": (
+            "---\n"
+            f"name: diagnose-{name}\n"
+            f"description: Diagnose {name} from bounded structured logparse evidence.\n"
+            "---\n\n"
+            "Consume target_logs and structured DFX only. Never export raw logs.\n"
+        ),
+    }
+
+
 @cli.command()
 @click.option("--config", "-c", default="config.yaml", help="配置文件路径")
 def check_config(config):
@@ -922,8 +1129,7 @@ def check_config(config):
         sys.exit(1)
 
     try:
-        import yaml
-        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        raw = load_config_file(config_path)
         click.echo("✓ 配置加载成功")
     except Exception as e:
         click.echo(f"✗ 配置加载失败: {e}")
@@ -947,15 +1153,16 @@ def check_config(config):
 @click.argument("line")
 def test_pattern(config, module, log_type, line):
     """用配置的正则测试一条日志行。"""
-    import yaml
     config_path = Path(config)
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {} if config_path.exists() else {}
+    raw = load_config_file(config_path) if config_path.exists() else {}
 
     # Find module config from first product that has it
     mod_cfg = None
     for prod_name, prod_cfg in raw.get("products", {}).items():
-        parser_cfg = prod_cfg.get("log_parser", {}).get("config", {})
-        modules = parser_cfg.get("mechanism_modules", {})
+        modules = prod_cfg.get("mechanisms")
+        if not isinstance(modules, dict):
+            parser_cfg = prod_cfg.get("log_parser", {}).get("config", {})
+            modules = parser_cfg.get("mechanism_modules", {})
         if module in modules:
             module_entry = modules[module]
             mod_cfg = _mechanism_config(module_entry)

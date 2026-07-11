@@ -17,7 +17,6 @@
       └── other_folder/  (应被忽略)
 """
 
-import os
 import shutil
 import zipfile
 from pathlib import Path

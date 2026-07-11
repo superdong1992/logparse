@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from scripts.change_gate import classify_path, load_boundary_config
+except ModuleNotFoundError:  # Direct execution: python scripts/rule_preflight.py
+    from change_gate import classify_path, load_boundary_config
+
 
 RULE_DOC = "docs/rules/index.md"
 
@@ -34,7 +39,11 @@ RULES: tuple[Rule, ...] = (
         ),
         globs=(
             "backend/parsing/*",
+            "backend/domain/lifecycle/*",
             "backend/plugins/mechanisms/module*.py",
+            "backend/extensions/mechanisms/module*.py",
+            "backend/extensions/products/current/models.py",
+            "backend/extensions/products/current/scopes.py",
             "backend/models.py",
             "tests/test_module*_plugin.py",
             "tests/generate_mock_data.py",
@@ -51,6 +60,9 @@ RULES: tuple[Rule, ...] = (
         ),
         globs=(
             "backend/models.py",
+            "backend/extensions/products/current/models.py",
+            "backend/extensions/products/current/scopes.py",
+            "backend/extensions/products/current/artifacts.py",
             "backend/parsing/output_writer.py",
             "backend/result_serializer.py",
             "backend/query.py",
@@ -73,6 +85,9 @@ RULES: tuple[Rule, ...] = (
         globs=(
             "backend/plugins/mechanisms/module2.py",
             "backend/plugins/mechanisms/module1.py",
+            "backend/extensions/mechanisms/module2.py",
+            "backend/extensions/mechanisms/module1.py",
+            "backend/domain/correlation/*",
             "backend/parsing/output_writer.py",
             "tests/test_module2_plugin.py",
             ".agents/skills/logparse-diagnose/**",
@@ -88,6 +103,7 @@ RULES: tuple[Rule, ...] = (
         ),
         globs=(
             "backend/result_serializer.py",
+            "backend/extensions/products/*/result_serializer.py",
             "backend/query.py",
             "backend/metadata.py",
             "cli.py",
@@ -106,7 +122,14 @@ RULES: tuple[Rule, ...] = (
         globs=(
             "backend/decompressor.py",
             "backend/pipeline.py",
+            "backend/extensions/products/current/pipeline.py",
+            "backend/application/parse_service.py",
+            "backend/application/mechanism_execution.py",
+            "backend/infrastructure/archive*.py",
+            "backend/infrastructure/decompress*.py",
+            "backend/infrastructure/workspace*.py",
             "backend/plugins/*/scanner.py",
+            "backend/extensions/products/*/scanner.py",
             "backend/parsing/file_iter.py",
             "tests/test_decompressor.py",
             "tests/test_scanner_plugin.py",
@@ -125,9 +148,13 @@ RULES: tuple[Rule, ...] = (
         ),
         globs=(
             "backend/config_validation.py",
+            "backend/extensions/mechanisms/validation.py",
             "backend/plugins/mechanisms/module1.py",
+            "backend/extensions/mechanisms/module1.py",
             "backend/parsing/lifecycle_common.py",
             "backend/parsing/lifecycle_splitter_v3.py",
+            "backend/domain/lifecycle/common.py",
+            "backend/domain/lifecycle/splitter_v3.py",
             "config.yaml",
             "tests/test_config_validation.py",
             "tests/test_module1_plugin.py",
@@ -148,6 +175,8 @@ RULES: tuple[Rule, ...] = (
         globs=(
             "backend/parsing/lifecycle_splitter_v3.py",
             "backend/plugins/mechanisms/module1.py",
+            "backend/domain/lifecycle/splitter_v3.py",
+            "backend/extensions/mechanisms/module1.py",
             "backend/result_serializer.py",
             "backend/query.py",
             "cli.py",
@@ -157,11 +186,62 @@ RULES: tuple[Rule, ...] = (
             "docs/lifecycle-dfx-guide.md",
         ),
     ),
+    Rule(
+        rule_id="rules:artifact-contract",
+        doc=f"{RULE_DOC}#rulesartifact-contract",
+        summary="Formal artifacts have separate, versioned responsibilities.",
+        checks=(
+            "parse_manifest is integrity/status, metadata is coverage, result is a compact index, and mech_modules is evidence.",
+            "Use ArtifactLayout/ArtifactRepository and atomic writes for formal artifacts.",
+            "Treat extraction as temporary workspace and never persist raw/context/per-line logs in result.json.",
+        ),
+        globs=(
+            "backend/contracts/artifacts.py",
+            "backend/infrastructure/artifact_layout.py",
+            "backend/infrastructure/artifact_repository.py",
+            "backend/infrastructure/parse_artifact_session.py",
+            "backend/metadata.py",
+            "backend/result_serializer.py",
+            "backend/extensions/products/*/metadata.py",
+            "backend/extensions/products/*/result_serializer.py",
+            "backend/parsing/output_writer.py",
+            "backend/extensions/products/current/artifacts.py",
+            "backend/pipeline.py",
+            "backend/extensions/products/current/pipeline.py",
+            "backend/application/parse_service.py",
+            "tests/test_artifacts.py",
+            "tests/test_output_writer.py",
+            "tests/test_query.py",
+        ),
+    ),
+    Rule(
+        rule_id="rules:deterministic-dfx-boundary",
+        doc=f"{RULE_DOC}#rulesdeterministic-dfx-boundary",
+        summary="logparse selects deterministic evidence; models consume bounded context only.",
+        checks=(
+            "Do not invoke Claude CLI or GLM5.1 from standalone logparse.",
+            "Keep summaries to one ERROR_CODE: 中文结论 line without raw log text.",
+            "Deep DFX is opt-in and limited to 5 windows, 48 lines each, and 80 KiB total.",
+        ),
+        globs=(
+            "backend/dfx.py",
+            "backend/application/*dfx*.py",
+            "backend/presentation/**",
+            "cli.py",
+            "tests/test_dfx.py",
+            "tests/test_cli.py",
+            "docs/lan-dfx-operating-model.md",
+            ".agents/skills/logparse-diagnose/**",
+        ),
+    ),
 )
 
 
 def normalize_path(path: str | Path) -> str:
-    return str(path).replace("\\", "/").lstrip("./")
+    normalized = str(path).replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.rstrip("/")
 
 
 def changed_paths() -> list[str]:
@@ -188,6 +268,17 @@ def select_rules_for_paths(paths: Iterable[str | Path]) -> list[Rule]:
     for rule in RULES:
         if any(_matches_any(path, rule.globs) for path in normalized):
             selected.append(rule)
+
+    boundary_config = load_boundary_config()
+    selected_ids = {rule.rule_id for rule in selected}
+    for path in normalized:
+        classified = classify_path(path, boundary_config)
+        if classified is None:
+            continue
+        boundary_rule = _boundary_rule(classified.zone.name, classified.zone.label, classified.zone.policy)
+        if boundary_rule.rule_id not in selected_ids:
+            selected.append(boundary_rule)
+            selected_ids.add(boundary_rule.rule_id)
     return selected
 
 
@@ -207,6 +298,30 @@ def render_rules(rules: Iterable[Rule]) -> str:
 
 def _matches_any(path: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+
+def _boundary_rule(zone: str, label: str, policy: str) -> Rule:
+    checks_by_zone = {
+        "green": (
+            "Keep product topology and log-format knowledge inside the green extension area.",
+            "Add focused tests and record the LAN validation scenario.",
+        ),
+        "yellow": (
+            "Change only when real LAN evidence proves the current policy wrong.",
+            "Record a case id, minimal fixture, corpus regression, and schema conclusion.",
+        ),
+        "red": (
+            "Do not modify frozen architecture by default.",
+            "Require an accepted ADR, human approval, full validation, and rollback plan.",
+        ),
+    }
+    return Rule(
+        rule_id=f"governance:{zone}",
+        doc="governance/architecture-boundaries.toml",
+        summary=f"{label}: {policy}",
+        checks=checks_by_zone[zone],
+        globs=(),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -102,6 +102,8 @@ Otherwise, return a concise result in this order:
 2. `target_logs`: for each requested process, return one structured entry in the same order as the anchors. Use this shape exactly enough for downstream generated diagnosis skills to copy and read paths without searching:
 
 ```yaml
+schema_version: 1
+api_version: 1
 target_logs:
   - label: client
     module_key: module1
@@ -116,6 +118,9 @@ target_logs:
     caveats:
       - nearest-cycle fallback, V3 issue, truncation, or parse caveat
 ```
+
+Reject an explicit unsupported `result.json` schema as
+`LP_SCHEMA_UNSUPPORTED`; do not guess fields from an unknown artifact version.
 
 If `match_status` is `missing` or `ambiguous`, explain the failure evidence and leave `log_path` absent. A generated diagnosis skill must treat absent `log_path` as missing required evidence.
 3. Matched log content: for each `target_logs` entry that has `log_path`, include the requested log content or a clearly marked focused window.

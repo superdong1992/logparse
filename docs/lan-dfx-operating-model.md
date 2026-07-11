@@ -1,58 +1,88 @@
-# LAN DFX Operating Model
+# LAN-only DFX Operating Model
 
-This repository is designed and partly tested outside the LAN with Codex, while
-final execution and real-log diagnosis happen inside the LAN. Treat that split
-as a product constraint, not an environment accident.
+## Authority and Information Boundary
 
-## Runtime Split
+After the handoff, the LAN repository is the only authoritative logparse source.
+The external checkout is a frozen historical reference. There is no LAN-to-
+external synchronization of code, commits, diffs, fixtures, product
+configuration, or logs.
 
-- Non-LAN: use Codex for design, implementation, unit tests, mock fixtures, and
-  deterministic artifact review.
-- LAN: run real-log parsing, target diagnosis, and optional deep DFX. Real logs
-  generally cannot be copied out.
-- External handoff back to non-LAN Codex should be only one line:
-  `ERROR_CODE: 中文结论`.
+Real logs and final diagnosis remain in the LAN. If an approved workflow needs a
+human-readable conclusion outside that boundary, it is limited to:
+
+```text
+ERROR_CODE: 中文结论
+```
+
+The line must not contain raw log text, paths, private identifiers, or excerpts.
 
 ## logparse Responsibility
 
-`logparse` is deterministic DFX infrastructure. Standalone logparse must not
-invoke Claude CLI by default.
+Standalone logparse is deterministic infrastructure. It:
 
-- Generate structured artifacts from `output/{task_id}`.
-- Prefer stable error codes and explicit diagnostics over prose-only failures.
-- Keep `result.json`, `metadata.json`, `performance.json`, and `mech_modules`
-  responsibilities separate.
-- Default DFX must avoid reading log bodies. Deep DFX may read only selected,
-  bounded target windows inside the LAN.
-- One-line summaries must not quote raw log text.
+- prepares a safe temporary workspace;
+- discovers product logs through explicit extensions;
+- builds versioned metadata, compact query indexes, and mechanism evidence;
+- resolves lifecycle/target selection deterministically;
+- emits stable error codes, structured DFX, and bounded context manifests.
 
-## issue-locator Responsibility
+It does not call Claude CLI, GLM5.1, or another model. Model availability must
+never change parse, query, target selection, or DFX output.
 
-`issue-locator` is the Claude CLI orchestration layer. It may call logparse DFX
-for failed, stalled, invalid-zip, or manual diagnosis flows, then optionally ask
-Claude CLI with GLM5.1 quantized to compress deterministic DFX into one line.
+## GLM5.1 Responsibility
 
-Do not move Claude CLI orchestration into standalone logparse unless the project
-explicitly changes this boundary.
+Claude Code + GLM5.1 develops and diagnoses inside the LAN. For diagnosis,
+GLM5.1 receives only deterministic, preselected inputs:
 
-## GLM5.1 Boundary
+- `dfx_report.json`;
+- `parse_manifest.json` when needed for artifact integrity;
+- `target_logs` returned by `mech-target-logs`;
+- small files explicitly listed in `dfx_context/manifest.json`.
 
-GLM5.1 quantized should receive small, already-selected context:
+Do not ask GLM5.1 to traverse an upload, search the whole output tree, select a
+lifecycle, invent a path, or replace a missing target with related logs.
 
-- `dfx_report.json`
-- small files under `dfx_context/`
-- bounded deep windows selected by deterministic target resolution
+For code changes, GLM5.1 follows the green/yellow/red boundaries in
+`governance/architecture-boundaries.toml`. Product topology such as slot/CPU is
+green; lifecycle and Module1/Module2 policy is yellow; deterministic DFX,
+artifact contracts, and the gate itself are red.
 
-Do not ask GLM5.1 to parse directory trees, choose lifecycle/cycle, assemble
-paths, inspect broad logs, or decide target resolution from raw packages.
+## Default and Deep DFX
 
-## Coding Bias
+Default DFX reads structured artifacts and file metadata, not log bodies. Deep
+DFX is opt-in and runs only in the LAN:
 
-Optimize future changes for fast localization:
+- select targets deterministically before reading content;
+- center windows on `problem_time` when a matching timestamp exists;
+- otherwise use a documented deterministic fallback;
+- allow at most 5 windows, 48 lines per window, and 80 KiB total;
+- record relative path, line range, hash, selection reason, truncation, and
+  caveats in `dfx_context/manifest.json`;
+- do not create `dfx_context/` if no window is produced.
 
-- stable error codes
-- deterministic JSON reports
-- transparent target-resolution diagnostics
-- bounded context windows
-- debug bundles that exclude uploads and full log bodies
-- summaries shaped as `ERROR_CODE: 中文结论`
+`dfx_summary.txt` remains one line and contains no raw evidence.
+
+## issue-locator Compatibility
+
+issue-locator remains the orchestration layer and may call these stable
+entrypoints:
+
+- `parse`
+- `mech-target-logs`
+- `dfx-output`
+- `.agents/skills/logparse-diagnose/`
+
+`result.zip` belongs to issue-locator, not logparse. logparse must not absorb
+model orchestration or result packaging merely because both run inside the LAN.
+
+## Failure Behavior
+
+- Missing/invalid config, unsafe extraction, failed discovery, and artifact
+  writes are fatal and produce structured diagnostics.
+- A mechanism failure may allow independent mechanisms to continue; dependents
+  are skipped explicitly.
+- Missing performance data is normal when profiling is disabled.
+- Missing or ambiguous target evidence remains missing/ambiguous; GLM5.1 does
+  not improvise a replacement.
+- Any model timeout, malformed response, or error-code mismatch falls back to
+  deterministic `dfx_summary.txt`.

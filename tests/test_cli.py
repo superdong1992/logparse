@@ -1,31 +1,58 @@
 """Tests for cli.py."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 import importlib
+import inspect
 import re
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 import yaml
 
 from cli import cli
-from cli import _print_summary
-from backend.parsing.lifecycle_common import LifecycleSplitConfig
 from backend.parsing.timestamp_extractor import TimestampExtractor
-from backend.plugins.mechanisms.module1 import Module1Plugin
-from backend.query import ResultQueryService
 from backend.utils import safe_log_filename, safe_path_segment
 from backend.models import (
-    LogEntry,
-    MechBoardCycle,
-    MechLogEntry,
-    MechProcessLifecycle,
     MechResult,
     MechSlotOutput,
     ParseResult,
-    SlotInfo,
 )
+from backend.contracts.runtime import ParseRun
+
+
+def _patch_parse_application(monkeypatch, cli_module, pipeline_class) -> None:
+    def _build(raw_config):
+        pipeline = pipeline_class(raw_config)
+
+        class Service:
+            def run(self, request):
+                candidates = {
+                    "product": request.product,
+                    "task_id": request.task_id,
+                    "verbose": request.options.verbose,
+                    "profile": request.options.profile,
+                    "keep_workspace": request.options.keep_workspace,
+                }
+                parameters = inspect.signature(pipeline.run).parameters
+                kwargs = {
+                    key: value
+                    for key, value in candidates.items()
+                    if key in parameters and value is not None
+                }
+                result = pipeline.run(
+                    request.source,
+                    request.output_root,
+                    **kwargs,
+                )
+                return ParseRun(result=result)
+
+        return SimpleNamespace(
+            service=Service(),
+            engine=SimpleNamespace(pipeline=pipeline),
+        )
+
+    monkeypatch.setattr(cli_module, "build_parse_application", _build)
 
 
 def _module1_v3_test_config() -> dict:
@@ -158,7 +185,7 @@ def test_parse_profile_passes_profile_and_prints_summary(tmp_path, monkeypatch):
             seen["profile"] = profile
             return ParseResult(task_id="task", package_name=source.name)
 
-    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+    _patch_parse_application(monkeypatch, cli_module, FakePipeline)
 
     result = CliRunner().invoke(
         cli,
@@ -177,6 +204,145 @@ def test_parse_profile_passes_profile_and_prints_summary(tmp_path, monkeypatch):
     assert seen["profile"] is True
     assert "性能DFX: total=1.2s" in result.output
     assert "慢阶段: pipeline.parse 1.0s" in result.output
+
+
+def test_explain_config_json_reports_execution_plan(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["explain-config", "-c", str(config_path), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["schema_version"] == 2
+    assert "default" in payload["products"]
+
+
+def test_migrate_config_writes_schema_v2(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    target = tmp_path / "config-v2.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "migrate-config",
+            "-c",
+            str(config_path),
+            "-o",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    migrated = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert migrated["schema_version"] == 2
+    assert "parser" in migrated["products"]["default"]
+
+
+def test_doctor_json_is_structured(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["doctor", "-c", str(config_path), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert {item["name"] for item in payload["checks"]} >= {
+        "python",
+        "dependencies",
+        "config",
+    }
+
+
+def test_scaffold_extension_creates_green_zone_product_files(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "scaffold-extension",
+            "--kind",
+            "product",
+            "--name",
+            "demo_product",
+            "--root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        tmp_path
+        / "backend/extensions/products/demo_product/adapter.py"
+    ).is_file()
+    assert (tmp_path / "configs/products/demo_product.yaml").is_file()
+    assert (
+        tmp_path / "tests/extensions/products/test_demo_product_adapter.py"
+    ).is_file()
+
+
+def test_scaffold_extension_creates_native_mechanism_contract(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "scaffold-extension",
+            "--kind",
+            "mechanism",
+            "--name",
+            "demo_mechanism",
+            "--root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    implementation = (
+        tmp_path / "backend/extensions/mechanisms/demo_mechanism.py"
+    ).read_text(encoding="utf-8")
+    assert "def execute(self, context: MechanismContext)" in implementation
+    assert "def parse(self, result)" not in implementation
+    assert "return MechanismOutcome()" in implementation
+
+
+def test_migrate_config_preserves_v2_product_include_boundary(tmp_path):
+    product_dir = tmp_path / "configs" / "products"
+    product_dir.mkdir(parents=True)
+    (product_dir / "demo.yaml").write_text(
+        "archive: {}\ndiscovery: {}\nparser: {}\nmechanisms: {}\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "config.yaml"
+    source.write_text(
+        "schema_version: 2\npipeline: {}\nproducts:\n  demo:\n"
+        "    $include: configs/products/demo.yaml\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["migrate-config", "-c", str(source)],
+    )
+
+    assert result.exit_code == 0, result.output
+    migrated = yaml.safe_load(result.output)
+    assert migrated["products"]["demo"] == {
+        "$include": "configs/products/demo.yaml"
+    }
 
 
 def _write_target_log_result(tmp_path, *, with_log=True):
@@ -254,6 +420,8 @@ def test_mech_target_logs_outputs_json_without_cycle_argument(tmp_path):
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
+    assert payload["schema_version"] == 1
+    assert payload["api_version"] == 1
     target = payload["target_logs"][0]
     assert target["label"] == "client"
     assert target["match_status"] == "exact"
@@ -465,7 +633,7 @@ def test_parse_validates_config_before_running_pipeline(tmp_path, monkeypatch):
         def __init__(self, _config):
             raise AssertionError("Pipeline should not run when config is invalid")
 
-    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+    _patch_parse_application(monkeypatch, cli_module, FakePipeline)
 
     result = CliRunner().invoke(
         cli,
@@ -576,7 +744,7 @@ def test_parse_lifecycle_dfx_decisions_prints_v3_chinese_report(tmp_path, monkey
                 ],
             )
 
-    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+    _patch_parse_application(monkeypatch, cli_module, FakePipeline)
 
     result = CliRunner().invoke(
         cli,
@@ -662,7 +830,7 @@ def test_parse_verbose_does_not_print_v3_lifecycle_dfx_without_lifecycle_dfx(tmp
                 ],
             )
 
-    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+    _patch_parse_application(monkeypatch, cli_module, FakePipeline)
 
     result = CliRunner().invoke(
         cli,
@@ -767,7 +935,7 @@ def test_parse_lifecycle_dfx_full_labels_no_wrap_evidence_sources(tmp_path, monk
                 ],
             )
 
-    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+    _patch_parse_application(monkeypatch, cli_module, FakePipeline)
 
     result = CliRunner().invoke(
         cli,

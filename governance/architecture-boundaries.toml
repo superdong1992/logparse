@@ -1,0 +1,134 @@
+schema_version = 1
+default_zone = "red"
+precedence = ["red", "yellow", "green"]
+
+# Runtime data and local tooling are not source changes. The gate ignores them
+# instead of assigning a modification permission.
+ignored_paths = [
+  "output",
+  "output/**",
+  "outputs",
+  "outputs/**",
+  ".venv",
+  ".venv/**",
+  ".pytest_cache",
+  ".pytest_cache/**",
+  ".pytest_tmp",
+  ".pytest_tmp/**",
+  "__pycache__/**",
+  "**/__pycache__/**",
+  "*.pyc",
+  "**/*.pyc",
+]
+
+[authority]
+canonical_environment = "LAN"
+external_repository_status = "frozen-after-handoff"
+outbound_code_sync = false
+raw_log_export = false
+summary_contract = "ERROR_CODE: 中文结论"
+
+[zones.green]
+label = "LAN business extension"
+severity = 1
+policy = "GLM5.1 may change these product-specific files with focused tests and a LAN scenario."
+paths = [
+  "configs/products/**",
+  "backend/extensions/products/**",
+  "backend/extensions/diagnosis/**",
+  "tests/extensions/**",
+  ".agents/skills/diagnose-*/**",
+
+  # Legacy product adapters kept green while their compatibility facades exist.
+  "backend/plugins/default/scanner.py",
+  "backend/plugins/compact/scanner.py",
+  "tests/test_scanner_plugin.py",
+  "tests/test_compact_scanner.py",
+]
+
+[zones.yellow]
+label = "protected business policy"
+severity = 2
+policy = "Change only from real LAN evidence; record a minimal fixture and corpus regression."
+paths = [
+  "backend/domain/lifecycle/**",
+  "backend/domain/correlation/**",
+  "backend/extensions/mechanisms/**",
+  "tests/domain/lifecycle/**",
+  "tests/domain/correlation/**",
+  "tests/extensions/mechanisms/**",
+  "tests/extensions/test_cycle_identity.py",
+  "tests/extensions/test_domain_facades.py",
+  "tests/extensions/test_plugin_facades.py",
+  ".agents/skills/logparse-diagnose/**",
+
+  # Legacy policy locations kept yellow until the migration facades disappear.
+  "backend/parsing/lifecycle_common.py",
+  "backend/parsing/lifecycle_splitter_v3.py",
+  "backend/plugins/mechanisms/**",
+  "tests/test_lifecycle_splitter_v3.py",
+  "tests/test_module1_plugin.py",
+  "tests/test_module2_plugin.py",
+]
+
+[zones.red]
+label = "frozen architecture"
+severity = 3
+policy = "Do not modify by default; require an accepted ADR, human approval, full validation, and rollback plan."
+paths = [
+  "backend/contracts/**",
+  "backend/ports/**",
+  "backend/application/**",
+  "backend/infrastructure/**",
+  "backend/presentation/**",
+  "backend/extensions/mechanisms/base.py",
+  "backend/extensions/products/current/artifacts.py",
+  "backend/extensions/products/current/engine.py",
+  "backend/extensions/products/current/metadata.py",
+  "backend/extensions/products/current/pipeline.py",
+  "backend/extensions/products/current/query.py",
+  "backend/extensions/products/current/dfx.py",
+  "backend/extensions/products/current/result_serializer.py",
+  "governance/**",
+  "scripts/change_gate.py",
+  "scripts/rule_preflight.py",
+  "scripts/verify_delivery.py",
+  "cli.py",
+
+  # Repository authority and agent guardrails are themselves frozen.
+  "AGENTS.md",
+  "CLAUDE.md",
+  "README.md",
+  ".gitignore",
+  "pyproject.toml",
+  "requirements.txt",
+  "config.yaml",
+  "docs/architecture.md",
+  "docs/lan-dfx-operating-model.md",
+  "docs/lan-development-guide.md",
+  "docs/adr/**",
+  "docs/rules/**",
+  ".agents/skills/logparse-develop/**",
+  ".claude/skills/logparse-develop/**",
+  ".codex/**",
+
+  # Legacy architecture locations kept red during migration.
+  "backend/decompressor.py",
+  "backend/pipeline.py",
+  "backend/plugins/loader.py",
+  "backend/plugins/default/parser.py",
+  "backend/plugins/mechanisms/base.py",
+  "backend/result_serializer.py",
+  "backend/metadata.py",
+  "backend/query.py",
+  "backend/dfx.py",
+  "tests/test_decompressor.py",
+  "tests/test_pipeline.py",
+  "tests/test_output_writer.py",
+  "tests/test_query.py",
+  "tests/test_cli.py",
+  "tests/test_rule_preflight.py",
+  "tests/test_change_gate.py",
+  "tests/test_architecture_boundaries.py",
+  "tests/extensions/test_plugin_facades.py",
+]

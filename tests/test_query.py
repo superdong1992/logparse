@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-from backend.query import ResultQueryService
+from backend.query import QueryArtifactSchemaError, ResultQueryService
 from backend.utils import safe_log_filename, safe_path_segment
 
 
@@ -227,6 +226,17 @@ class TestMechModules:
     def test_returns_empty_when_no_file(self, svc):
         assert svc.mech_modules("nonexistent") == []
 
+    def test_rejects_explicit_unknown_result_schema(self, svc, tmp_path):
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        (task_dir / "result.json").write_text(
+            json.dumps({"schema_version": 99, "mech_results": []}),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(QueryArtifactSchemaError, match="expected 2"):
+            svc.read_result("task")
+
 
 class TestMechSlotsMultiModule:
     def test_returns_all_modules_by_default(self, svc, tmp_path):
@@ -392,6 +402,8 @@ class TestResolveTargetLogs:
         )
 
         target = payload["target_logs"][0]
+        assert payload["schema_version"] == 1
+        assert payload["api_version"] == 1
         assert target["label"] == "client"
         assert target["module_key"] == "module1"
         assert target["module_name"] == "EXAMPLE"
@@ -402,6 +414,28 @@ class TestResolveTargetLogs:
         assert target["board_cycle"] == "20260103T000000-20260103T001000"
         assert target["cpu_cycle"] is None
         assert target["log_path"] == str(log_path)
+
+    def test_unknown_result_schema_returns_stable_error(self, svc, tmp_path):
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        (task_dir / "result.json").write_text(
+            json.dumps({"schema_version": 99, "mech_results": []}),
+            encoding="utf-8",
+        )
+
+        payload = svc.resolve_target_logs(
+            "task",
+            problem_time="2026-01-03T00:05:00",
+            module="module1",
+            slot="1",
+            process_name="SERVICE",
+            explain=True,
+        )
+
+        assert payload["schema_version"] == 1
+        assert payload["api_version"] == 1
+        assert payload["target_logs"][0]["error_code"] == "LP_SCHEMA_UNSUPPORTED"
+        assert payload["selection_diagnostics"]["error_code"] == "LP_SCHEMA_UNSUPPORTED"
 
     def test_exact_board_cycle_with_slash_slot_uses_safe_output_path(self, svc, tmp_path):
         _write_result(tmp_path, "task", [

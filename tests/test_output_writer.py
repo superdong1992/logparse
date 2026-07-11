@@ -49,7 +49,7 @@ def _make_mech_result() -> MechResult:
 class TestMechOutputWriter:
     def test_creates_directory_structure(self, writer, tmp_path):
         mech_result = _make_mech_result()
-        output_dir = writer.write(mech_result, tmp_path)
+        writer.write(mech_result, tmp_path)
 
         expected_log = (
             tmp_path / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"

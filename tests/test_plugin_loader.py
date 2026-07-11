@@ -3,8 +3,15 @@ from __future__ import annotations
 
 import pytest
 
+from backend.contracts.plugins import DiagnosticScanBatch, MechanismContext
+from backend.extensions.products.current.mechanism_input import CurrentMechanismInput
+from backend.models import MechResult, ParseResult
 from backend.plugins.base import DirectoryDiscoveryPlugin, LogParserPlugin
-from backend.plugins.loader import instantiate_plugin
+from backend.plugins.loader import (
+    instantiate_mechanism_plugins,
+    instantiate_plugin,
+    load_plugin_class,
+)
 
 
 class TestInstantiatePlugin:
@@ -51,11 +58,11 @@ class TestInstantiatePlugin:
 
 def test_instantiate_mechanism_module_plugin():
     from backend.plugins.loader import instantiate_plugin
-    from backend.plugins.mechanisms.base import MechanismModulePlugin
+    from backend.extensions.mechanisms.base import MechanismPlugin
 
     plugin = instantiate_plugin(
         "backend.plugins.mechanisms.module1.Module1Plugin",
-        MechanismModulePlugin,
+        MechanismPlugin,
         {"module_name": "EXAMPLE"},
         module_key="module1",
         ts_extractor=None,
@@ -77,3 +84,73 @@ def test_mechanism_plugin_base_rejects_wrong_class():
             MechanismModulePlugin,
             {},
         )
+
+
+def test_load_plugin_class_does_not_instantiate():
+    cls = load_plugin_class(
+        "backend.plugins.default.scanner.ScannerPlugin",
+        DirectoryDiscoveryPlugin,
+    )
+
+    assert cls.__name__ == "ScannerPlugin"
+
+
+def test_instantiate_mechanisms_uses_dependency_order(sample_config):
+    module1 = sample_config["mechanism_modules"]["module1"]
+    modules = {
+        "module2": {
+            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+            "depends_on": ["module1"],
+            "config": {
+                "module_name": "MODULE2",
+                "identifying_keyword": "module2",
+                "depends_on_module": "module1",
+                "diag_pattern": (
+                    r"Slot=(?P<Slot>\d+),CPU-Id=(?P<CPU_Id>\d*),"
+                    r"ProcessName=(?P<ProcessName>\w+),Context=(?P<Context>.*)"
+                ),
+            },
+        },
+        "module1": module1,
+    }
+
+    plugins = instantiate_mechanism_plugins(modules)
+
+    assert [plugin.module_key for plugin in plugins] == ["module1", "module2"]
+    assert plugins[1].descriptor.dependencies == ("module1",)
+
+
+def test_mechanism_context_injects_dependency_result(sample_config):
+    module1 = sample_config["mechanism_modules"]["module1"]
+    modules = {
+        "module1": module1,
+        "module2": {
+            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+            "depends_on": ["module1"],
+            "config": {
+                "module_name": "MODULE2",
+                "identifying_keyword": "module2",
+                "depends_on_module": "module1",
+                "diag_pattern": (
+                    r"Slot=(?P<Slot>\d+),CPU-Id=(?P<CPU_Id>\d*),"
+                    r"ProcessName=(?P<ProcessName>\w+),Context=(?P<Context>.*)"
+                ),
+            },
+        },
+    }
+    module2 = instantiate_mechanism_plugins(modules)[1]
+    state = ParseResult()
+
+    outcome = module2.execute(
+        MechanismContext(
+            extension_input=CurrentMechanismInput.from_collections(
+                state.diagnostic_slots,
+                state.private_slots,
+            ),
+            dependency_results={"module1": MechResult(module_key="module1")},
+            scan_batch=DiagnosticScanBatch(entries_by_module={"module2": ()}),
+        )
+    )
+
+    assert outcome.result is None
+    assert not any("result not found" in error for error in state.errors)

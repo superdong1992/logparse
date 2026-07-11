@@ -3,6 +3,7 @@
 !.claude/skills/**
 .superpowers/
 .codex-pydeps/
+.codex/
 __pycache__/
 output/
 .venv/

@@ -1,0 +1,45 @@
+archive:
+  recursive_extraction: true
+  compressed_extensions:
+    - .gz
+    - .zip
+    - .tar.gz
+    - .tgz
+    - .tar
+discovery:
+  plugin: backend.extensions.products.compact.scanner.CompactScannerPlugin
+  config:
+    diagnostic_dir: boards
+    private_dir: logs
+    slot_dir_pattern: slot_*
+    diag_file_patterns:
+      - debug_*.log
+    filename_timestamp_regex: '.*_(\d{8})\..*'
+    private_dir_patterns:
+      - slot_*
+    syslog_file_patterns:
+      - syslog.log
+parser:
+  plugin: backend.extensions.products.current.parser.ParserPlugin
+  config:
+    timestamp_regex: '(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?'
+    active_period_gap_seconds: 7200
+mechanisms:
+  ctrl:
+    plugin: backend.extensions.mechanisms.module1.Module1Plugin
+    enabled: true
+    depends_on: []
+    config:
+      module_name: COMPACT
+      diag_pattern: 'COMPACT\s+(?P<Service>\S+).*?proc=(?P<ProcessName>\S+).*?slot\s+(?P<Slot>\d+).*?cpu\s+(?P<CPU_Id>\d+).*?\|(?P<Context>.+)'
+      active_master_keyword: ''
+      lifecycle_split:
+        process_name_mapping: {}
+        reliable_processes: []
+        multi_instance_processes: []
+      journal:
+        line_pattern: ''
+        line_pattern2: '^\S+\s+\S+\s+(\S+)(?:-(\d+))?:\s+COMPACT\s+No\[(\d+)\](.+)$'
+        line_pattern2_required_substrings: []
+        identifying_keyword: COMPACT
+      sequence_pattern: 'No\[(\d+)\]'

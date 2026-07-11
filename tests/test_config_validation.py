@@ -4,9 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
-from backend.config_validation import validate_config, validate_mechanism_module_config
+from backend.config_validation import validate_config
+from backend.application.configuration import load_config_file
+from backend.extensions.mechanisms.validation import validate_mechanism_module_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -613,15 +614,15 @@ class TestPluginSubclassValidation:
 
 class TestShippedConfigFiles:
     def test_config_yaml_validates_as_v3_only_current_entry(self):
-        cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+        cfg = load_config_file(ROOT / "config.yaml")
 
         assert validate_config(cfg) == []
 
         default_module = (
-            cfg["products"]["default"]["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
+            cfg["products"]["default"]["mechanisms"]["module1"]["config"]
         )
         compact_module = (
-            cfg["products"]["compact"]["log_parser"]["config"]["mechanism_modules"]["ctrl"]["config"]
+            cfg["products"]["compact"]["mechanisms"]["ctrl"]["config"]
         )
         for module in (default_module, compact_module):
             assert set(module["lifecycle_split"]) == {
@@ -638,7 +639,7 @@ class TestShippedConfigFiles:
             "process_name_" + "mapping",
         }
         for product in cfg["products"].values():
-            modules = product["log_parser"]["config"]["mechanism_modules"].values()
+            modules = product["mechanisms"].values()
             for module in modules:
                 assert legacy_lifecycle_fields.isdisjoint(module["config"])
 
@@ -646,3 +647,124 @@ class TestShippedConfigFiles:
         archived_name = "config.lifecycle-" + "v2.yaml"
         assert not (ROOT / archived_name).exists()
         assert (ROOT / "docs" / "archive" / "lifecycle-v2" / archived_name).exists()
+
+
+def _minimal_v2_config() -> dict:
+    return {
+        "schema_version": 2,
+        "pipeline": {
+            "debug_expand_gz": False,
+            "extraction_workers": "auto",
+            "diagnostic_scan_workers": 2,
+            "keep_workspace": False,
+        },
+        "products": {
+            "default": {
+                "archive": {
+                    "recursive_extraction": True,
+                    "compressed_extensions": [".zip", ".gz"],
+                },
+                "discovery": {
+                    "plugin": _DEFAULT_DISCOVERY,
+                    "config": {},
+                },
+                "parser": {
+                    "plugin": _DEFAULT_PARSER,
+                    "config": {
+                        "timestamp_regex": r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})",
+                        "active_period_gap_seconds": 300,
+                    },
+                },
+                "mechanisms": {
+                    "module1": {
+                        "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+                        "enabled": True,
+                        "depends_on": [],
+                        "config": {"module_name": "EXAMPLE"},
+                    }
+                },
+            }
+        },
+    }
+
+
+class TestValidateConfigV2:
+    def test_minimal_v2_config_passes(self):
+        assert validate_config(_minimal_v2_config()) == []
+
+    def test_mechanism_dependency_order_is_not_yaml_order(self):
+        cfg = _minimal_v2_config()
+        mechanisms = cfg["products"]["default"]["mechanisms"]
+        module1 = mechanisms.pop("module1")
+        mechanisms["module2"] = {
+            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+            "enabled": True,
+            "depends_on": ["module1"],
+            "config": {
+                "module_name": "MODULE2",
+                "identifying_keyword": "module2",
+                "diag_pattern": (
+                    r"Slot=(?P<Slot>\d+),CPU-Id=(?P<CPU_Id>\d*),"
+                    r"ProcessName=(?P<ProcessName>\w+),Context=(?P<Context>.*)"
+                ),
+            },
+        }
+        mechanisms["module1"] = module1
+
+        assert validate_config(cfg) == []
+
+    def test_missing_dependency_is_rejected(self):
+        cfg = _minimal_v2_config()
+        cfg["products"]["default"]["mechanisms"]["module1"]["depends_on"] = [
+            "missing"
+        ]
+
+        errors = validate_config(cfg)
+
+        assert any("missing mechanism" in error for error in errors)
+
+    def test_disabled_dependency_is_rejected(self):
+        cfg = _minimal_v2_config()
+        mechanisms = cfg["products"]["default"]["mechanisms"]
+        mechanisms["module1"]["enabled"] = False
+        mechanisms["consumer"] = {
+            "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+            "enabled": True,
+            "depends_on": ["module1"],
+            "config": {"module_name": "CONSUMER"},
+        }
+
+        errors = validate_config(cfg)
+
+        assert any("disabled mechanism" in error for error in errors)
+
+    def test_dependency_cycle_is_rejected(self):
+        cfg = _minimal_v2_config()
+        mechanisms = cfg["products"]["default"]["mechanisms"]
+        mechanisms["module1"]["depends_on"] = ["module2"]
+        mechanisms["module2"] = {
+            "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+            "depends_on": ["module1"],
+            "config": {"module_name": "MODULE2"},
+        }
+
+        errors = validate_config(cfg)
+
+        assert any("dependency cycle" in error for error in errors)
+
+    def test_v2_rejects_legacy_mechanism_dependency_field(self):
+        cfg = _minimal_v2_config()
+        module = cfg["products"]["default"]["mechanisms"]["module1"]
+        module["config"]["depends_on_module"] = "other"
+
+        errors = validate_config(cfg)
+
+        assert any("depends_on_module" in error for error in errors)
+
+    def test_v2_rejects_unknown_structural_fields(self):
+        cfg = _minimal_v2_config()
+        cfg["pipeline"]["result_json_mode"] = "full"
+
+        errors = validate_config(cfg)
+
+        assert any("unknown fields" in error for error in errors)

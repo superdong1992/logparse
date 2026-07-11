@@ -1,0 +1,28 @@
+{
+  "coverage": {
+    "diagnostic_scope_count": 2,
+    "private_scope_count": 2,
+    "diagnostic_file_count": 3,
+    "journal_file_count": 2,
+    "content_timestamp_count": 24,
+    "time_range": {
+      "start": "2026-01-03T00:00:00",
+      "end": "2026-01-03T07:55:00"
+    }
+  },
+  "modules": [
+    {
+      "module_key": "ctrl",
+      "module_name": "COMPACT",
+      "diag_entry_count": 5,
+      "journal_entry_count": 3,
+      "scope_count": 2,
+      "cycle_count": 2,
+      "process_count": 2
+    }
+  ],
+  "evidence": [
+    "COMPACT/slot_1/20260103000100-20260103030000/svc_master-100.log",
+    "COMPACT/slot_2/20260103063001-20260103063101/svc_master-200.log"
+  ]
+}

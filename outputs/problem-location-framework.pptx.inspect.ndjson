@@ -1,0 +1,57 @@
+{"kind":"deck","id":"pr/tsib70","name":"Deck"}
+{"kind":"layout","layoutId":"1c2cf3b1-2886-447d-b548-8a9c7e4f1be9","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"3a273161-b01a-4968-85bb-a0f81a5d37be","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/vklrjq","slide":1,"title":"问题定位框架把交互、解析和诊断分成三层","textShapes":23}
+{"kind":"shape","id":"sh/mhk3q5o7","slide":1,"name":"title-rule","bbox":[41,145,1197,2]}
+{"kind":"shape","id":"sh/t83itgfm","slide":1,"name":"col-panel-01","bbox":[41,213,375,350]}
+{"kind":"shape","id":"sh/4nap4r65","slide":1,"name":"col-panel-02","bbox":[453,213,375,350]}
+{"kind":"shape","id":"sh/bq1oryts","slide":1,"name":"col-panel-03","bbox":[864,213,375,350]}
+{"kind":"shape","id":"sh/m58z25kb","slide":1,"name":"flow-band","bbox":[41,596,1197,72]}
+{"kind":"textbox","id":"sh/twra5gbq","slide":1,"name":"slide-title","text":"问题定位框架把交互、解析和诊断分成三层","textPreview":"问题定位框架把交互、解析和诊断分成三层","textChars":19,"textLines":1,"bbox":[41,36,1197,96]}
+{"kind":"textbox","id":"sh/4byhgn29","slide":1,"name":"col-label-01","text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[69,242,72,28]}
+{"kind":"textbox","id":"sh/bm58z25k","slide":1,"name":"col-title-01","text":"issue-locator","textPreview":"issue-locator","textChars":13,"textLines":1,"bbox":[69,282,310,42]}
+{"kind":"textbox","id":"sh/m1cfa9w3","slide":1,"name":"col-subtitle-01","text":"任务与交互编排层","textPreview":"任务与交互编排层","textChars":8,"textLines":1,"bbox":[69,328,310,34]}
+{"kind":"textbox","id":"sh/cfa9w3m9","slide":1,"name":"col-body-01","text":"收集日志、问题时间和目标进程\n生成 prompt 与 diagnosis_request\n拉起 Claude 并校验 result.zip","textPreview":"收集日志、问题时间和目标进程 | 生成 prompt 与 diagnosis_request | 拉起 Claude 并校验 result.zip","textChars":69,"textLines":3,"bbox":[69,383,310,140]}
+{"kind":"textbox","id":"sh/1032lszq","slide":1,"name":"col-label-02","text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[481,242,72,28]}
+{"kind":"textbox","id":"sh/u9knih4b","slide":1,"name":"col-title-02","text":"logparse","textPreview":"logparse","textChars":8,"textLines":1,"bbox":[481,282,310,42]}
+{"kind":"textbox","id":"sh/judg7ads","slide":1,"name":"col-subtitle-02","text":"确定性解析与查询层","textPreview":"确定性解析与查询层","textChars":9,"textLines":1,"bbox":[481,328,310,34]}
+{"kind":"textbox","id":"sh/c7u54zid","slide":1,"name":"col-body-02","text":"解析日志包，生成 result.json 与 metadata.json\n用 V3 生命周期组织 mech_modules\n通过 mech-target-logs 定位目标日志","textPreview":"解析日志包，生成 result.json 与 metadata.json | 用 V3 生命周期组织 mech_modules | 通过 mech-target-logs 定位目标日志","textChars":88,"textLines":3,"bbox":[481,383,310,140]}
+{"kind":"textbox","id":"sh/1orytsvu","slide":1,"name":"col-label-03","text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[892,242,72,28]}
+{"kind":"textbox","id":"sh/u18jqh0f","slide":1,"name":"col-title-03","text":"skills","textPreview":"skills","textChars":6,"textLines":1,"bbox":[892,282,310,42]}
+{"kind":"textbox","id":"sh/jm1cfa9w","slide":1,"name":"col-subtitle-03","text":"证据收敛与业务判断层","textPreview":"证据收敛与业务判断层","textChars":10,"textLines":1,"bbox":[892,328,310,34]}
+{"kind":"textbox","id":"sh/cvixczed","slide":1,"name":"col-body-03","text":"logparse-diagnose 返回 target_logs\ndiagnose-* 只读指定 log_path\n按业务规则生成中文结论","textPreview":"logparse-diagnose 返回 target_logs | diagnose-* 只读指定 log_path | 按业务规则生成中文结论","textChars":69,"textLines":3,"bbox":[892,383,310,140]}
+{"kind":"textbox","id":"sh/5gbq1ory","slide":1,"name":"flow-1","text":"上传日志","textPreview":"上传日志","textChars":4,"textLines":1,"bbox":[65,620,168,32]}
+{"kind":"textbox","id":"sh/90je9cvi","slide":1,"name":"flow-arrow-1","text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[239,617,42,36]}
+{"kind":"textbox","id":"sh/gfmlkjm1","slide":1,"name":"flow-2","text":"生成 prompt","textPreview":"生成 prompt","textChars":9,"textLines":1,"bbox":[291,620,168,32]}
+{"kind":"textbox","id":"sh/rytsvu9k","slide":1,"name":"flow-arrow-2","text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[465,617,42,36]}
+{"kind":"textbox","id":"sh/yd0z6103","slide":1,"name":"flow-3","text":"调用 logparse-diagnose","textPreview":"调用 logparse-diagnose","textChars":20,"textLines":1,"bbox":[517,620,168,32]}
+{"kind":"textbox","id":"sh/9s36hcrm","slide":1,"name":"flow-arrow-3","text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[691,617,42,36]}
+{"kind":"textbox","id":"sh/g7adsji5","slide":1,"name":"flow-4","text":"返回 target_logs","textPreview":"返回 target_logs","textChars":14,"textLines":1,"bbox":[743,620,168,32]}
+{"kind":"textbox","id":"sh/rmhk3q5o","slide":1,"name":"flow-arrow-4","text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[917,617,42,36]}
+{"kind":"textbox","id":"sh/y1kre1w7","slide":1,"name":"flow-5","text":"生成 result.zip / result.txt","textPreview":"生成 result.zip / result.txt","textChars":26,"textLines":1,"bbox":[969,620,168,32]}
+{"kind":"textbox","id":"sh/5o7qpg3e","slide":1,"name":"page-1","text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[1184,659,54,25]}
+{"kind":"notes","id":"nt/vklrjq","slide":1,"text":""}
+{"kind":"slide","id":"sl/wzebo2","slide":2,"title":"target_logs 契约把模型判断限制在可验证证据内","textShapes":11}
+{"kind":"shape","id":"sh/3ylc7u54","slide":2,"name":"title-rule","bbox":[41,145,1197,2]}
+{"kind":"shape","id":"sh/sji5snel","slide":2,"name":"left-panel","bbox":[41,249,375,380]}
+{"kind":"shape","id":"sh/h4byhgn2","slide":2,"name":"accent-rule","bbox":[41,249,8,380]}
+{"kind":"shape","id":"sh/a5gbq1or","slide":2,"name":"bullet-1","bbox":[471,252,20,20]}
+{"kind":"shape","id":"sh/3m94fu18","slide":2,"name":"row-rule-1","bbox":[509,323,730,1]}
+{"kind":"shape","id":"sh/s72x4nap","slide":2,"name":"bullet-2","bbox":[471,356,20,20]}
+{"kind":"shape","id":"sh/lszqtcj6","slide":2,"name":"row-rule-2","bbox":[509,427,730,1]}
+{"kind":"shape","id":"sh/a1gvy90j","slide":2,"name":"bullet-3","bbox":[471,460,20,20]}
+{"kind":"shape","id":"sh/zidonyd0","slide":2,"name":"row-rule-3","bbox":[509,531,730,1]}
+{"kind":"shape","id":"sh/re1w7mp0","slide":2,"name":"bullet-4","bbox":[471,564,20,20]}
+{"kind":"shape","id":"sh/2t83itgf","slide":2,"name":"row-rule-4","bbox":[509,635,730,1]}
+{"kind":"textbox","id":"sh/9knih4by","slide":2,"name":"slide-title","text":"target_logs 契约把模型判断限制在可验证证据内","textPreview":"target_logs 契约把模型判断限制在可验证证据内","textChars":28,"textLines":1,"bbox":[41,36,1197,96]}
+{"kind":"textbox","id":"sh/kzupwb2h","slide":2,"name":"left-claim","text":"核心约束\n模型不负责选择生命周期、拼接路径或遍历日志。\n它只基于 target_logs[*].log_path 指向的目标日志做业务判断。","textPreview":"核心约束 | 模型不负责选择生命周期、拼接路径或遍历日志。 | 它只基于 target_logs[*].log_path 指向的目标日志做业务判断。","textChars":70,"textLines":3,"bbox":[69,282,314,290]}
+{"kind":"textbox","id":"sh/rqd4vmtw","slide":2,"name":"control-label-1","text":"目标输入","textPreview":"目标输入","textChars":4,"textLines":1,"bbox":[509,249,196,68]}
+{"kind":"textbox","id":"sh/25kb6xkf","slide":2,"name":"control-body-1","text":"页面只收集 problem_time、slot、process_name 和可选 pid；module 由所选 diagnose-* skill 固定带入。","textPreview":"页面只收集 problem_time、slot、process_name 和可选 pid；module 由所选 diagnose-* skill 固定带入。","textChars":78,"textLines":1,"bbox":[732,249,507,76]}
+{"kind":"textbox","id":"sh/9w3m94fu","slide":2,"name":"control-label-2","text":"确定性选择","textPreview":"确定性选择","textChars":5,"textLines":1,"bbox":[509,353,196,68]}
+{"kind":"textbox","id":"sh/kb6xkf6d","slide":2,"name":"control-body-2","text":"logparse-diagnose 调用 mech-target-logs，由 CLI 负责生命周期、周期和日志路径选择。","textPreview":"logparse-diagnose 调用 mech-target-logs，由 CLI 负责生命周期、周期和日志路径选择。","textChars":61,"textLines":1,"bbox":[732,353,507,76]}
+{"kind":"textbox","id":"sh/r2p8nqxs","slide":2,"name":"control-label-3","text":"匹配状态","textPreview":"匹配状态","textChars":4,"textLines":1,"bbox":[509,457,196,68]}
+{"kind":"textbox","id":"sh/2hwfyxob","slide":2,"name":"control-body-3","text":"exact、nearest、unknown、missing、ambiguous 直接暴露证据强弱；缺失目标不允许被相关日志替代。","textPreview":"exact、nearest、unknown、missing、ambiguous 直接暴露证据强弱；缺失目标不允许被相关日志替代。","textChars":64,"textLines":1,"bbox":[732,457,507,76]}
+{"kind":"textbox","id":"sh/q1orytsv","slide":2,"name":"control-label-4","text":"失败 DFX","textPreview":"失败 DFX","textChars":6,"textLines":1,"bbox":[509,561,196,68]}
+{"kind":"textbox","id":"sh/fmlkjm1c","slide":2,"name":"control-body-4","text":"dfx-output 用于失败、停滞、zip 无效或手动排查，输出 dfx_report.json 与一行 ERROR_CODE: 中文结论。","textPreview":"dfx-output 用于失败、停滞、zip 无效或手动排查，输出 dfx_report.json 与一行 ERROR_CODE: 中文结论。","textChars":71,"textLines":1,"bbox":[732,561,507,76]}
+{"kind":"textbox","id":"sh/87ed8bat","slide":2,"name":"page-2","text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[1184,659,54,25]}
+{"kind":"notes","id":"nt/wzebo2","slide":2,"text":""}

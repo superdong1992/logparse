@@ -6,12 +6,13 @@ persist raw log lines, contexts, or other source payload snippets.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
 from pathlib import Path
 from typing import Any
+
+from backend.infrastructure.artifact_repository import ArtifactRepository
 
 
 SENSITIVE_METRIC_KEYS = {"raw", "context", "line", "payload", "log"}
@@ -31,7 +32,6 @@ SAFE_METRIC_KEYS = {
     "diagnostic_files",
     "diagnostic_scan_workers",
     "diagnostic_scan_workers_resolved",
-    "diagnostic_slots",
     "error",
     "errors",
     "extraction_workers",
@@ -39,18 +39,15 @@ SAFE_METRIC_KEYS = {
     "files",
     "lines",
     "mech_results",
-    "private_slots",
-    "result_json_mode",
-    "slots",
     "timestamps",
 }
-SAFE_METRIC_KEY_PATTERN = re.compile(r"^module\d+_entries$")
+SAFE_METRIC_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+ENTRY_METRIC_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*_entries$")
 SAFE_TEXT_METRIC_KEYS = {
     "diagnostic_scan_workers",
     "extraction_workers",
-    "result_json_mode",
 }
-SAFE_TEXT_METRIC_VALUES = {"auto", "compact", "full", "summary"}
+SAFE_TEXT_METRIC_VALUES = {"auto", "summary"}
 
 
 def resolve_worker_count(
@@ -131,13 +128,9 @@ class PerformanceRecorder:
         }
 
     def write(self, output_dir: Path) -> Path:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / "performance.json"
-        path.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        return ArtifactRepository.for_task_dir(output_dir).write_performance(
+            self.to_dict()
         )
-        return path
 
     def summary_lines(self, *, top_n: int = 5) -> list[str]:
         data = self.to_dict()
@@ -161,7 +154,9 @@ class PerformanceRecorder:
         for stage in slow:
             lines.append(f"慢阶段: {stage['name']} {stage['elapsed_seconds']:.1f}s")
         if slow:
-            lines.append(f"建议: 优先查看 performance.json 中 {slow[0]['name']} 的子阶段和计数")
+            lines.append(
+                f"建议: 优先查看 performance.json 中 {slow[0]['name']} 的子阶段和计数"
+            )
         else:
             lines.append("建议: performance.json 已生成，可用于隔离环境转述")
         return lines
@@ -227,7 +222,8 @@ class PerformanceRecorder:
                 if nested:
                     clean[safe_key] = nested
             else:
-                clean[safe_key] = "<object>"
+                if safe_key in SAFE_METRIC_KEYS:
+                    clean[safe_key] = "<object>"
         return clean
 
     @staticmethod
@@ -258,8 +254,71 @@ class PerformanceRecorder:
     def _is_sensitive_key(key: Any) -> bool:
         normalized = re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower().replace("-", "_")
         tokens = set(normalized.split("_"))
-        if tokens & {"raw", "context", "payload", "log", "line"}:
+        if tokens & {"raw", "context", "payload", "log", "line", "secret"}:
             return True
         if normalized in SENSITIVE_METRIC_KEYS:
             return True
         return False
+
+
+def summarize_performance_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Return deterministic DFX facts from a performance artifact.
+
+    Missing performance data is handled by the caller because profiling is
+    optional. Invalid data raises ValueError so DFX can report it explicitly.
+    """
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        raise ValueError("unsupported performance schema")
+    stages = data.get("stages")
+    if not isinstance(stages, list):
+        raise ValueError("performance stages must be a list")
+
+    normalized_stages: list[dict[str, Any]] = []
+    counters = {"files": 0, "lines": 0, "entries": 0, "errors": 0}
+    anomalies: list[dict[str, Any]] = []
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        name = str(stage.get("name") or "custom")
+        try:
+            elapsed = max(0.0, float(stage.get("elapsed_seconds") or 0.0))
+        except (TypeError, ValueError):
+            elapsed = 0.0
+            anomalies.append({"stage": name, "reason": "invalid elapsed_seconds"})
+        metrics = stage.get("metrics") if isinstance(stage.get("metrics"), dict) else {}
+        normalized_stages.append({"name": name, "elapsed_seconds": elapsed})
+        for key, value in metrics.items():
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            normalized_key = str(key).lower()
+            if normalized_key in {"files", "diagnostic_files"}:
+                counters["files"] += int(value)
+            elif normalized_key == "lines":
+                counters["lines"] += int(value)
+            elif normalized_key == "errors":
+                counters["errors"] += int(value)
+            elif ENTRY_METRIC_KEY_PATTERN.fullmatch(normalized_key):
+                counters["entries"] += int(value)
+        if metrics.get("error") is True or (
+            isinstance(metrics.get("errors"), (int, float))
+            and metrics.get("errors", 0) > 0
+        ):
+            anomalies.append({"stage": name, "reason": "stage reported errors"})
+
+    slowest = sorted(
+        normalized_stages,
+        key=lambda item: (-item["elapsed_seconds"], item["name"]),
+    )[:5]
+    try:
+        total_seconds = max(0.0, float(data.get("total_seconds") or 0.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid performance total_seconds") from exc
+    return {
+        "available": True,
+        "schema_version": 1,
+        "total_seconds": total_seconds,
+        "stage_count": len(normalized_stages),
+        "slowest_stages": slowest,
+        "observed_counters": counters,
+        "anomalies": anomalies[:10],
+    }
