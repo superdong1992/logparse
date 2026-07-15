@@ -1,0 +1,104 @@
+schema_version: 1
+change_id: 2026-07-15-product-log-config-discovery
+summary: >-
+  Add a read-only, agent-neutral product-log onboarding use case. Red layers own
+  the versioned CLI/JSON contract, safe bounded input, candidate documents,
+  isolated regex execution, and orchestration; the green adapter owns only
+  current-product format inference and schema-v2 fragment projection. The
+  result is a non-final JSON draft and does not change lifecycle policy or
+  persist configuration.
+
+zones:
+  - red
+  - green
+
+paths:
+  - backend/contracts/product_onboarding.py
+  - backend/ports/product_onboarding.py
+  - backend/application/product_onboarding.py
+  - backend/infrastructure/product_onboarding_samples.py
+  - backend/infrastructure/product_onboarding_candidate.py
+  - backend/infrastructure/product_onboarding_regex.py
+  - backend/infrastructure/_product_onboarding_regex_worker.py
+  - backend/presentation/cli/product_onboarding.py
+  - backend/presentation/cli/composition.py
+  - backend/extensions/products/onboarding/__init__.py
+  - backend/extensions/products/onboarding/current_module1.py
+  - cli.py
+  - docs/product-onboarding-agent-guide.md
+  - docs/adr/0005-product-log-onboarding-boundary.md
+  - tests/contracts/test_product_onboarding_contracts.py
+  - tests/application/test_product_onboarding.py
+  - tests/infrastructure/test_product_onboarding_security.py
+  - tests/infrastructure/test_product_onboarding_regex.py
+  - tests/presentation/test_product_onboarding_cli.py
+  - tests/extensions/products/test_product_onboarding_adapter.py
+  - tests/test_rule_preflight.py
+
+validation:
+  tests:
+    - >-
+      Focused onboarding, architecture, and rule-preflight suite: 94 passed,
+      1 skipped because Windows symbolic-link creation is unavailable.
+    - >-
+      scripts/verify_delivery.py without deselection: Ruff, compileall, and
+      check-config passed; 563 tests passed and 1 Windows symbolic-link test
+      skipped; line coverage 87.53 percent, branch coverage 73.57 percent, and
+      reported architecture-core line coverage 100.00 percent.
+  lan_scenario: >-
+    Synthetic LAN-safe samples cover explicit plain and gzip files, rotated
+    filenames, mixed timestamp families, binary/decode signals, sampling
+    budgets, candidate replay, and plain/gzip runtime parsing through the
+    projected schema-v2 fragment. Tests use synthetic tokens only and do not
+    inspect output/, outputs/, or real LAN logs.
+  contract_tests:
+    - >-
+      tests/contracts/test_product_onboarding_contracts.py and
+      tests/application/test_product_onboarding.py verify schema v1 candidate
+      and report envelopes, stable status/exit semantics, single-read
+      orchestration, schema-v2 wrapping, and non-final readiness.
+    - >-
+      tests/presentation/test_product_onboarding_cli.py verifies root CLI
+      analyze/validate/build-draft output, one JSON per stream, exit codes
+      0/2/3/4, and unchanged read-only behavior.
+  security_tests:
+    - >-
+      tests/infrastructure/test_product_onboarding_security.py covers regular
+      files, directories, symlinks where available, archives, duplicates,
+      basename collisions, encodings, gzip failures, candidate byte/depth/node
+      limits, malformed JSON, duplicate keys, and content/path redaction.
+    - >-
+      tests/infrastructure/test_product_onboarding_regex.py covers direct pure
+      worker evaluation, parent-side line and serialized-input limits, worst-
+      case JSON escaping, real subprocess replay, unsafe regex shapes, the hard
+      timeout, worker failure, malformed/oversized IPC, and aggregate-only
+      output.
+  smoke_tests:
+    - >-
+      tests/extensions/products/test_product_onboarding_adapter.py exercises
+      plain and inner-gzip flat-zip discovery/parser runtime integration.
+    - >-
+      Root CLI default diagnostic_information_20260103.zip and compact
+      compact_package_20260103.zip parse smokes both exited 0 using separate
+      system temporary output roots; no repository output/ path was touched.
+    - >-
+      Final delivery ran check-config, changed-path preflight, and red+green
+      change-gate enforcement without deselection or gate changes.
+
+compatibility:
+  schema_impact: >-
+    Adds candidate/report schema version 1 and a new root CLI command. Existing
+    config schema v2, parse artifacts, parse, mech-target-logs, dfx-output, and
+    issue-locator contracts are unchanged.
+
+architecture:
+  adr: docs/adr/0005-product-log-onboarding-boundary.md
+  approval: >-
+    The user explicitly approved crossing the red zone and implementing the
+    architecture-appropriate red/green split in Codex on 2026-07-15.
+  rollback: >-
+    Remove the root product-onboarding command registration to disable the
+    feature, then revert the onboarding presentation, application, ports,
+    contracts, infrastructure, tests, documentation, and green adapter. The
+    use case is read-only and creates no data, configuration, or artifact
+    migration requiring cleanup.

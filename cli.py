@@ -42,7 +42,11 @@ from backend.parsing.mech_journal_pattern import (
     passes_line_pattern2_required_substrings,
 )
 from backend.query import ResultQueryService
-from backend.presentation.cli.composition import build_parse_application
+from backend.presentation.cli.composition import (
+    build_parse_application,
+    build_product_onboarding_application,
+)
+from backend.presentation.cli.product_onboarding import run_product_onboarding
 from backend.models import ParseResult
 
 
@@ -144,6 +148,30 @@ def cli(ctx, config):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+@cli.command(
+    "product-onboarding",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.argument("arguments", nargs=-1, type=click.UNPROCESSED)
+def product_onboarding_command(arguments):
+    """Analyze explicit samples and validate a configuration candidate.
+
+    \b
+    Operations:
+      analyze --input FILE [--input FILE ...]
+      validate --input FILE ... --candidate CANDIDATE.json
+      build-draft --input FILE ... --candidate CANDIDATE.json
+    """
+
+    exit_code = run_product_onboarding(
+        arguments,
+        service_factory=build_product_onboarding_application,
+    )
+    raise click.exceptions.Exit(exit_code)
+
+
 @cli.command()
 @click.argument("package_path", type=click.Path(exists=True))
 @click.option("--config", "-c", default=None, help="配置文件路径")

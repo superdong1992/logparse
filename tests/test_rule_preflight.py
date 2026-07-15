@@ -144,4 +144,4 @@ def test_rule_preflight_maps_product_result_projection_contract():
 
     assert "rules:compact-result-contract" in rendered
     assert "rules:artifact-contract" in rendered
-    assert "governance:green" in rendered
+    assert "governance:red" in rendered
