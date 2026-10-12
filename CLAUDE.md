@@ -18,6 +18,10 @@
 
 变更记录来自 `governance/changes/change-record.template.yaml`。测试、授权和案例均须如实记录，不能修改校验器或伪造记录绕过要求。不得把 mock 验证写成真实 LAN 验收。
 
+## 按任务阅读
+
+完成预检后，按 [AI 阅读入口](docs/ai-reading-guide.md) 选择所需材料。代码职责与真实调用链统一见 [架构](docs/architecture.md)；产品支持矩阵、字段语义和处理示例统一见 [产品日志规格](docs/product-log-specification.md)。分析结论须引用当前配置、实现符号或测试，并区分合成验证、真实 LAN 验收与尚未确认的业务语义。该要求适用于 GLM5.2 等局域网代理。
+
 ## 风险分区
 
 精确路径以 `governance/architecture-boundaries.toml` 为准，红优先于黄、黄优先于绿，未知源文件默认红区。

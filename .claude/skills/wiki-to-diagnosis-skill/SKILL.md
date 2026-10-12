@@ -11,7 +11,7 @@ description: 把 Markdown 定位 wiki 生成为仓内 diagnose-* 诊断技能，
 
 ## 提取与生成
 
-从 wiki 提取中文标题、问题范围、目标角色及必需性、诊断步骤、判断规则、结果要求；选择 `diagnose-<english-topic-slug>` 名称，优先沿用合法的 wiki 名称。模块名固定写入 frontmatter；输入路径、配置文件、输出目录、时间和各进程 slot/process/PID 留待运行时收集。
+从 wiki 提取中文标题、问题范围、目标角色及必需性、诊断步骤、判断规则、结果要求；选择 `diagnose-<english-topic-slug>` 名称，优先沿用合法的 wiki 名称。模块名固定写入 frontmatter；输入路径、配置文件、产品 `product`、输出目录、时间和各进程 slot/process/PID 留待运行时收集。原始输入必须明确产品并交给 `logparse-diagnose`，缺失时先询问，不默认为 `default`；已有结果无需补传产品或重新解析。
 
 - 正文保存于 `.agents/skills/<skill_name>/SKILL.md`，较长的 wiki 知识放在同目录 `references/`。
 - Claude 包装入口保存于 `.claude/skills/<skill_name>/SKILL.md`，只加载规范正文；复制相同 frontmatter，不复制流程。

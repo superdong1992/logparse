@@ -4,6 +4,8 @@ logparse 预处理设备诊断日志：安全解压、按产品发现日志、�
 
 当前处于所有者批准的移交前精简阶段，见 [ADR-0006](docs/adr/0006-pre-handoff-simplification.md)。开发前阅读 `CLAUDE.md` 和 [开发指南](docs/lan-development-guide.md)；正式移交后只在 LAN 内维护。
 
+分析代码或交给 GLM5.2 阅读时，从 [AI 阅读入口](docs/ai-reading-guide.md) 开始。实际调用链与职责见 [架构](docs/architecture.md)，default/compact 的支持矩阵、日志字段、合成示例和已知限制见 [产品日志规格](docs/product-log-specification.md)。
+
 ## 快速开始
 
 使用 Python 3.12 创建 `.venv` 并安装依赖。以下示例使用 POSIX 路径；Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。
@@ -104,4 +106,4 @@ output/<task_id>/
 
 交付检查包含 Ruff、compileall、配置、完整测试及行/分支/核心覆盖率门槛。性能对比用 `scripts/compare_parse_outputs.py` 核对业务产物和扫描计数，再单独比较 `performance.json`；详见 [性能验收](docs/large-package-performance.md)。
 
-持续维护的文档：[使用说明](docs/usage.md)、[架构](docs/architecture.md)、[开发指南](docs/lan-development-guide.md)、[DFX 边界](docs/lan-dfx-operating-model.md)、[生命周期 DFX](docs/lifecycle-dfx-guide.md)、[产品接入](docs/product-onboarding-agent-guide.md)、[ADR](docs/adr/)。历史实施方案已从工作树移除，历史依据保留在 Git、ADR 和 `governance/changes/`。
+持续维护的文档：[AI 阅读入口](docs/ai-reading-guide.md)、[产品日志规格](docs/product-log-specification.md)、[使用说明](docs/usage.md)、[架构](docs/architecture.md)、[开发指南](docs/lan-development-guide.md)、[DFX 边界](docs/lan-dfx-operating-model.md)、[生命周期 DFX](docs/lifecycle-dfx-guide.md)、[产品接入](docs/product-onboarding-agent-guide.md)、[ADR](docs/adr/)。历史实施方案已从工作树移除，历史依据保留在 Git、ADR 和 `governance/changes/`。

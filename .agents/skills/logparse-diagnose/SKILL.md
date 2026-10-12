@@ -16,7 +16,7 @@ Load `references/preprocess-output.md` when you need field meanings, path layout
 For weak-model or generated diagnosis callers, follow this path first:
 
 1. Collect `input_path`, `problem_time`, and one target anchor per requested process: `module + slot + process_name + optional pid + optional label`.
-2. Resolve `input_path` to a result root containing `result.json`. If parsing raw log input is needed, require a concrete `config_path` that includes the YAML filename, such as `config.yaml`; current module1 lifecycle splitting is V3-only.
+2. 将 `input_path` 解析为包含 `result.json` 的结果目录。原始输入必须提供完整根配置文件 `config_path`（包含具体 YAML 文件名，如 `config.yaml`）和明确的 `product`；沿用用户已指定的产品，缺失时先询问。已有结果不重新解析，也无需补传产品。当前 module1 生命周期仅支持 V3。
 3. Run `.venv/bin/python cli.py mech-target-logs ...` once per target anchor and use the returned JSON as the only target-log selection result.
 4. Return `target_logs` plus matched log content/windows. Stop on missing or ambiguous requested targets instead of substituting related logs.
 
@@ -35,7 +35,8 @@ Collect or infer these inputs:
 - Input path: either raw log input or a preprocessed result directory such as `output/{task_id}` containing `result.json`. Raw log input can be a compressed log package, a single non-compressed diagnostic log file, or a raw log directory.
 - Approximate problem time. Preserve the user's timezone wording if present.
 - One or more target anchors. Each anchor should include `module`, `slot`, and `process_name`; `pid` and a user label such as `client` or `server` are optional.
-- Parse settings when the input is raw log input: concrete config file path, output directory, and whether verbose output is desired. `config_path` must include the YAML filename, not just a directory. In generated-skill handoffs, do not fall back to an implicit default.
+- 原始输入的解析设置：完整根配置文件 `config_path`、产品 `product`、输出目录，以及是否启用详细输出。`config_path` 必须包含具体 YAML 文件名，不能只传目录或被 include 的产品配置片段。
+- `product` 对应根配置 `products` 下的键，例如 `default` 或 `compact`。原始输入必须明确指定产品；用户已提供时直接沿用，缺失时先询问，不根据文件名或模块名猜测，也不默认为 `default`。已有 `result.json` 时无需补传产品。
 
 If the input path, problem time, module, slot, or process name is missing and cannot be inferred, ask for it. If a PID is supplied, use it as a strict additional match.
 
@@ -44,8 +45,8 @@ If the input path, problem time, module, slot, or process name is missing and ca
 1. Resolve the input into a preprocessed result root.
    - Prefer the directory containing `result.json`.
    - If only an output base and task id are given, use `output/{task_id}/result.json`.
-   - If the input is a raw file or a directory without `result.json`, parse it first with `.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>`.
-   - Use parse settings from the prompt. For generated diagnosis skills, require `config_path`; do not omit `-c <config_path>` or provide only a config directory. In interactive manual diagnosis, use repository `config.yaml` only when the user explicitly accepts that default.
+   - 原始文件或不含 `result.json` 的目录先执行 `.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir>`。
+   - 沿用用户或生成技能传入的解析设置。原始输入必须明确 `config_path` 和 `product`，命令同时保留 `-c <config_path>` 与 `--product <product>`；缺少产品时先询问，不调用 parse。手动交互时，仅在用户明确接受后使用仓库 `config.yaml`。已有结果直接复用，不为补产品参数重新解析；后续查询无需 `--product`。
    - After parsing, verify the parsed result has V3 lifecycle payloads before diagnosing.
    - After parsing, derive `task_id` from the CLI output or package stem, then use `<output_dir>/<task_id>/result.json`.
    - Read `metadata.json` when available for scanner coverage, original paths, active periods, private slots, and parse errors.
@@ -138,8 +139,8 @@ Use normal shell and JSON tooling available in the current environment. These co
 
 ```bash
 .venv/bin/python cli.py info <task_id> -o <output_dir>
-.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>
-.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir> --verbose
+.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir> --verbose
 .venv/bin/python cli.py list-slots <task_id> -o <output_dir>
 .venv/bin/python cli.py mech-slots <task_id> -o <output_dir>
 .venv/bin/python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module_key_or_name> --slot <slot_id> --process-name <process_name> --pid <pid> --label <label> -o <output_dir>

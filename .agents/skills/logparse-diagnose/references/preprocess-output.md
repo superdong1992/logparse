@@ -7,10 +7,10 @@ Use this reference when locating issues from logparse output. The input can be r
 When the user gives raw log input instead of a result root, run the repository parser before diagnosis:
 
 ```bash
-.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir>
 ```
 
-Use config/output values from the prompt. For generated diagnosis skills, require a concrete `config_path` that includes the YAML filename, such as `config.yaml` or `configs/v3.yaml`; do not omit `-c <config_path>` and do not provide only a config directory. In interactive manual diagnosis, use the repository `config.yaml` only when the user explicitly accepts that default. Current module1 lifecycle splitting is V3-only. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
+沿用用户或生成技能传入的配置、产品和输出目录。原始输入必须提供完整根配置文件 `config_path`（包含具体 YAML 文件名，如 `config.yaml`），不能只传配置目录或被 include 的产品片段。`product` 必须是根配置 `products` 下明确选择的键；缺失时先询问，不根据文件名或模块名猜测，也不默认为 `default`。命令同时保留 `-c <config_path>` 和 `--product <product>`。手动交互时，仅在用户明确接受后使用仓库 `config.yaml`。已有 `result.json` 时直接复用，不要求补传产品或重新解析；后续查询无需 `--product`。当前 module1 生命周期仅支持 V3，继续诊断前检查结果中的 V3 生命周期数据。
 
 所有仓库命令使用 `.venv` 中的 Python 3.12。原生 Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`；不要依赖 PATH 上的其他 Python。环境准备见 `docs/lan-development-guide.md`。
 
@@ -117,8 +117,8 @@ These commands are useful for quick checks. Use the repository root as the worki
 
 ```bash
 .venv/bin/python cli.py info <task_id> -o <output_dir>
-.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>
-.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir> --verbose
+.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir> --verbose
 .venv/bin/python cli.py list-slots <task_id> -o <output_dir>
 .venv/bin/python cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
 .venv/bin/python cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>

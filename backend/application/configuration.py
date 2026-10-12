@@ -1,4 +1,4 @@
-"""Application services for config inspection and migration commands."""
+"""加载产品配置引用，检查 schema v2 并说明实际生效的配置。"""
 
 from __future__ import annotations
 

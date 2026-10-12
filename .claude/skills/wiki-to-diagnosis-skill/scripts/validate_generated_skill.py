@@ -8,6 +8,7 @@ import zipfile
 import yaml
 
 NAME_PATTERN = re.compile(r"^diagnose-[a-z0-9-]{1,54}$")
+PARSE_COMMAND_PATTERN = re.compile(r"cli\.py[ \t]+parse[ \t]+[^\s`][^\r\n`]*")
 
 
 class ValidationResult:
@@ -57,6 +58,34 @@ def _read_skill(skill_dir: Path) -> tuple[dict[str, str], str, list[str]]:
 
 def _contains_all(text: str, phrases: list[str]) -> list[str]:
     return [phrase for phrase in phrases if phrase not in text]
+
+
+def _section_body(body: str, heading: str) -> str:
+    match = re.search(
+        rf"^{re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)",
+        body,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match else ""
+
+
+def _validate_product_handoff(body: str) -> list[str]:
+    errors = []
+    inputs = _section_body(body, "## 运行时输入")
+    if not re.search(r"^[ \t]*[-*][ \t]+`product`[ \t]*[:：][ \t]*\S", inputs, re.MULTILINE):
+        errors.append("运行时输入必须单独声明 product 字段")
+
+    handoff = _section_body(body, "## 先调用 logparse-diagnose skill")
+    fields = "input_path + config_path + product + output_dir + problem_time + targets[]"
+    if fields not in handoff:
+        errors.append(f"logparse-diagnose 交接清单必须包含：{fields}")
+    if not PARSE_COMMAND_PATTERN.search(handoff):
+        errors.append("logparse-diagnose 交接章节必须包含完整的 cli.py parse 预处理命令")
+
+    for command in PARSE_COMMAND_PATTERN.findall(body):
+        if not re.search(r"(?:^|[ \t])--product[ \t]+<product>(?=[ \t]|$)", command):
+            errors.append("每条 cli.py parse 预处理命令都必须显式传入 --product <product>")
+    return errors
 
 
 def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
@@ -135,6 +164,7 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
     ]
     missing_phrases = _contains_all(body, required_phrases)
     errors.extend(f"missing required contract phrase: {phrase}" for phrase in missing_phrases)
+    errors.extend(_validate_product_handoff(body))
 
     return ValidationResult(errors)
 

@@ -2,6 +2,10 @@
 
 以下命令使用 `.venv` 中的 Python 3.12；Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。配置必须显式声明 `schema_version: 2`，旧 v1 配置及 `migrate-config` 已移除。
 
+按任务查阅代码见 [AI 阅读入口](ai-reading-guide.md)，实现职责见 [架构](architecture.md)，两套产品的目录、字段、过滤规则、完整合成示例及已知限制见 [产品日志规格](product-log-specification.md)。本文保留命令用法，日志规格以专题文档为准。
+
+产品由 `--product` 显式选择，CLI 默认使用 `default`。同一根配置同时包含 default 和 compact 时，仅指定 `-c config.yaml` 不会自动识别 compact。原始输入的预处理命令应明确使用 `--product default` 或 `--product compact`；已有任务按其 `metadata.json` / manifest 核对产品，不重新解析。
+
 ## Parse Packages
 
 Default product:

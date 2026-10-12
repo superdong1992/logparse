@@ -1,0 +1,69 @@
+schema_version: 1
+change_id: 2026-10-12-diagnosis-product-selection
+summary: 修复诊断技能及生成模板漏传产品参数，校验输入、交接和预处理命令；保持日期解析及 CLI 默认行为不变。
+zones:
+  - green
+  - yellow
+  - red
+paths:
+  - .agents/skills/logparse-diagnose/SKILL.md
+  - .agents/skills/logparse-diagnose/references/preprocess-output.md
+  - .claude/skills/wiki-to-diagnosis-skill/SKILL.md
+  - .claude/skills/wiki-to-diagnosis-skill/references/generated-skill-contract.md
+  - .claude/skills/wiki-to-diagnosis-skill/references/wiki-template.md
+  - .claude/skills/wiki-to-diagnosis-skill/scripts/validate_generated_skill.py
+  - tests/test_generated_skill_contract.py
+  - tests/test_parse_integration.py
+  - docs/adr/0008-diagnosis-product-selection.md
+  - docs/ai-reading-guide.md
+  - docs/product-log-specification.md
+  # 以下为开始本轮前已有的未提交修改，单独保留来源，供完整工作树门禁核对。
+  - CLAUDE.md
+  - README.md
+  - backend/application/configuration.py
+  - backend/extensions/products/current/models.py
+  - docs/architecture.md
+  - docs/usage.md
+  - docs/adr/0007-ai-documentation-evidence.md
+  - governance/changes/2026-10-12-ai-reading-docs.yaml
+prior_work:
+  record: governance/changes/2026-10-12-ai-reading-docs.yaml
+  adr: docs/adr/0007-ai-documentation-evidence.md
+  handling: 保留此前文档、导航及两处文档字符串修改。本轮仅同步 ai-reading-guide 和 product-log-specification 中的产品参数说明，不把原有修改算成本轮新增实现。
+validation:
+  environment: Windows，.venv 中的 Python 3.12.14；使用仓内 .pytest_tmp 独立临时目录和合成样例，不读取现有 output/outputs。
+  tests:
+    - tests/test_generated_skill_contract.py：35 passed，覆盖原有24项及新增11项产品参数回归。
+    - tests/test_parse_integration.py：6 passed，CLI 解析显式选择 default/compact，并验证对应产品、模块、进程、PID 和目标证据。
+    - .venv\Scripts\python.exe scripts/verify_delivery.py：760 passed, 2 skipped；Ruff、compileall 和 check-config 通过。
+    - 覆盖率 line 90.70%、branch 78.09%、architecture_core 90.71%，达到既有80/70/90门槛。
+    - 两个修改过的技能均通过 skill-creator/scripts/quick_validate.py，使用 -X utf8 避免 Windows 默认 GBK 解码问题。
+  lan_scenario: 本地使用仓内合成技能正文和两套产品 mock 验证参数传递、解析及确定性目标查询；没有真实 LAN 案例，未执行真实历史 corpus 或2GB包验收。
+  contract_tests:
+    - 产品输入、交接清单、预处理命令分别缺失时拒绝；将字段放在其他章节、只在其他说明中提及产品或部分命令漏参也不能通过。
+    - 规范技能及参考文件的完整 parse 示例都显式传产品；生成模板及对应 Claude 入口校验通过。
+    - 两产品 CLI 显式选择返回对应 manifest.product 和机制键，目标为 exact / LP_TARGET_OK；原有产物、查询和 DFX 闭环继续通过。
+  security_tests:
+    - 完整交付检查覆盖解压安全、样本读取、工作区链接边界、产物完整性与 DFX 上下文约束；760项通过、2项跳过，未削弱任何门禁或安全检查。
+  smoke_tests:
+    - tests/test_parse_integration.py 的两产品 CLI 解析及目标查询均通过，目标日志存在；同文件原有 ParseService 与 DFX 闭环通过。
+  delivery_checks:
+    - rule_preflight.py --changed、change_gate.py --changed 及使用本记录的 --enforce 检查通过。
+    - git diff --check 通过；本轮涉及的8份 Markdown 中123个本地链接全部有效。
+    - 独立复核已确认原始输入与已有结果的处理规则、产品交接及命令示例一致，未修改日期解析。
+  limitations:
+    - 首次完整验证在沙盒中为746 passed、14 failed、2 skipped；失败集中在 Windows 文件元数据及目录联接权限。自动审批允许后，在沙盒外重跑同一 verify_delivery.py，结果为760 passed、2 skipped。
+    - 聚焦解析测试首次受系统 Temp 权限影响，改用仓内独立临时目录后通过；未修改运行时代码以规避权限检查。
+    - 合成回归不代表真实产品命名、日志规格或 LAN 验收；文件名日期解析未修改。
+evidence:
+  real_case_id: 不适用；本轮只修技能参数交接，不调整生命周期或关联业务规则，没有使用真实 LAN 案例。
+  fixture: tests/test_generated_skill_contract.py 中的合成技能正文，以及 tests/mock_data 和 tests/mock_data_compact 中已有测试包。
+  corpus_regression: 仓内完整测试通过；真实 LAN 历史 corpus 未执行，不以合成验证替代。
+compatibility:
+  schema_impact: 产物、配置和 CLI schema 不变；诊断技能处理原始输入时新增必填 product，已有 result.json 的结果目录无需补传产品或重新解析。
+architecture:
+  adr:
+    - docs/adr/0007-ai-documentation-evidence.md
+    - docs/adr/0008-diagnosis-product-selection.md
+  approval: 所有者明确选择原始输入必须指定产品，要求只修第二项并授权执行计划；本轮按 ADR-0008 执行，既有文档修改仍归 ADR-0007，不扩大 ADR-0006 的授权。
+  rollback: 只撤回本轮技能、模板、校验器、测试及产品参数说明的差异，移除本轮新增 ADR 和记录；保留已有文档修改，不执行全仓重置，不提交、推送或外传。

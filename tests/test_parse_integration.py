@@ -80,8 +80,33 @@ def test_parse_service_artifact_query_and_dfx_closed_loop(
     assert (task_dir / "dfx_summary.txt").read_text(encoding="utf-8").count("\n") <= 1
 
 
-def test_default_mock_target_resolution_cli_contract(tmp_path: Path) -> None:
-    source = ROOT / "tests/mock_data/diagnostic_information_20260103.zip"
+@pytest.mark.parametrize(
+    ("product", "source", "module", "process", "pid"),
+    [
+        (
+            "default",
+            ROOT / "tests/mock_data/diagnostic_information_20260103.zip",
+            "module1",
+            "SERVICE",
+            "12345",
+        ),
+        (
+            "compact",
+            ROOT / "tests/mock_data_compact/compact_package_20260103.zip",
+            "ctrl",
+            "svc_master",
+            "100",
+        ),
+    ],
+)
+def test_explicit_product_mock_target_resolution_cli_contract(
+    tmp_path: Path,
+    product: str,
+    source: Path,
+    module: str,
+    process: str,
+    pid: str,
+) -> None:
     parse_result = CliRunner().invoke(
         cli,
         [
@@ -89,11 +114,20 @@ def test_default_mock_target_resolution_cli_contract(tmp_path: Path) -> None:
             str(source),
             "-c",
             str(ROOT / "config.yaml"),
+            "--product",
+            product,
             "-o",
             str(tmp_path),
         ],
     )
     assert parse_result.exit_code == 0, parse_result.output
+    task_dir = tmp_path / source.stem
+    manifest = json.loads(
+        (task_dir / "parse_manifest.json").read_text(encoding="utf-8")
+    )
+    result = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+    assert manifest["product"] == product
+    assert {item["module_key"] for item in result["mech_results"]} == {module}
 
     target = CliRunner().invoke(
         cli,
@@ -105,21 +139,26 @@ def test_default_mock_target_resolution_cli_contract(tmp_path: Path) -> None:
             "--problem-time",
             "2026-01-03T00:01:30",
             "--module",
-            "module1",
+            module,
             "--slot",
             "1",
             "--process-name",
-            "SERVICE",
+            process,
             "--pid",
-            "12345",
+            pid,
             "--explain",
         ],
     )
 
     assert target.exit_code == 0, target.output
     payload = json.loads(target.output)
-    assert payload["target_logs"][0]["match_status"] == "exact"
-    assert payload["target_logs"][0]["error_code"] == "LP_TARGET_OK"
+    selected = payload["target_logs"][0]
+    assert selected["module_key"] == module
+    assert selected["process_name"] == process
+    assert selected["pid"] == pid
+    assert selected["match_status"] == "exact"
+    assert selected["error_code"] == "LP_TARGET_OK"
+    assert Path(selected["log_path"]).is_file()
 
 
 def test_repeated_parse_is_deterministic_except_created_time(tmp_path: Path) -> None:

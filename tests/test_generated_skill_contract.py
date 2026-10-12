@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import re
 import textwrap
 import zipfile
 
@@ -64,8 +65,9 @@ module_name: EXAMPLE
 
 ## 运行时输入
 
-先收集全局输入 `input_path`、`config_path`、`output_dir` 和 `problem_time`。
+先收集全局输入 `input_path`、`config_path`、`product`、`output_dir` 和 `problem_time`。
 `config_path` 是 repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml`，不要只传配置目录。
+- `product`：原始日志输入必须明确产品；缺失时先询问，不默认使用 default。
 `input_path` 可以是原始日志输入或 `output/{task_id}` 预处理结果目录。
 原始日志输入可以是日志压缩包、单个非压缩诊断日志，或原始日志目录。
 当 `input_path` 是原始日志输入时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。
@@ -84,8 +86,8 @@ module_name: EXAMPLE
 
 `logparse-diagnose` 也是本项目里的一个 Claude skill，路径是 `.claude/skills/logparse-diagnose/SKILL.md`。
 不要把 `logparse-diagnose` 当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill。
-调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。
-原始日志输入预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>`。
+调用时必须把 `input_path + config_path + product + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。
+原始日志输入预处理由 `logparse-diagnose` 等价执行 `.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir>`。
 不要省略配置文件路径，不要只传配置目录，不要自行运行 parse。
 对每个 anchor 调用 `cli.py mech-target-logs`，返回结构化 `target_logs` 清单。
 组装 targets[] 时必须使用 frontmatter 固定 module_name，并把该值写入每组 targets[].module，再合并每组运行时提供的 slot、process_name 和可选 pid。
@@ -113,7 +115,7 @@ module_name: EXAMPLE
 每份日志必须来自 `target_logs[*].log_path`。
 复制日志时使用安全扁平文件名，替换路径分隔符和 Windows 非法字符。
 当 `target_logs` 含 `cpu_id` 时，zip 内日志文件名必须包含 `cpu_<cpu_id>`。
-打包时使用 `python3.12 scripts/pack_result_zip.py <work_dir> <result_zip>`。
+打包时使用 `.venv/bin/python scripts/pack_result_zip.py <work_dir> <result_zip>`。
 """
 
 
@@ -245,6 +247,89 @@ def test_generated_skill_contract_rejects_missing_config_path_handoff(tmp_path):
     assert any("config_path" in error for error in result.errors)
 
 
+@pytest.mark.parametrize("declaration", ["- `product`：产品名", "  * `product` :  产品名"])
+def test_generated_skill_contract_accepts_product_declaration_formatting(tmp_path, declaration):
+    body = re.sub(r"^- `product`：.*$", declaration, VALID_SKILL, flags=re.MULTILINE)
+    skill_dir = _write_skill(tmp_path, body)
+
+    result = _load_validator().validate_skill_dir(skill_dir)
+
+    assert result.ok, result.errors
+
+
+def test_generated_skill_contract_rejects_product_input_only_in_other_section(tmp_path):
+    declaration = next(line for line in VALID_SKILL.splitlines() if line.startswith("- `product`："))
+    body = VALID_SKILL.replace(declaration + "\n", "") + "\n" + declaration + "\n"
+    skill_dir = _write_skill(tmp_path, body)
+
+    result = _load_validator().validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert "运行时输入必须单独声明 product 字段" in result.errors
+
+
+def test_generated_skill_contract_rejects_product_handoff_only_in_other_section(tmp_path):
+    fields = "input_path + config_path + product + output_dir + problem_time + targets[]"
+    body = VALID_SKILL.replace(fields, fields.replace(" + product", ""))
+    body += f"\n补充字段：`{fields}`。\n"
+    skill_dir = _write_skill(tmp_path, body)
+
+    result = _load_validator().validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("交接清单" in error and "product" in error for error in result.errors)
+
+
+@pytest.mark.parametrize("option", ["", "--product default", "--product <other_product>"])
+def test_generated_skill_contract_rejects_parse_without_product_handoff(tmp_path, option):
+    body = VALID_SKILL.replace("--product <product>", option)
+    body += "\n补充说明：`--product <product>`。\n"
+    skill_dir = _write_skill(tmp_path, body)
+
+    result = _load_validator().validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("每条 cli.py parse" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_one_parse_example_missing_product(tmp_path):
+    body = VALID_SKILL + (
+        "\n补充命令：`.venv/bin/python cli.py parse <input_path> "
+        "-c <config_path> -o <output_dir> --verbose`。\n"
+    )
+    skill_dir = _write_skill(tmp_path, body)
+
+    result = _load_validator().validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("每条 cli.py parse" in error for error in result.errors)
+
+
+def test_generated_skill_contract_rejects_parse_command_only_in_other_section(tmp_path):
+    command_line = next(line for line in VALID_SKILL.splitlines() if "cli.py parse " in line)
+    body = VALID_SKILL.replace(command_line + "\n", "") + "\n" + command_line + "\n"
+    skill_dir = _write_skill(tmp_path, body)
+
+    result = _load_validator().validate_skill_dir(skill_dir)
+
+    assert not result.ok
+    assert any("交接章节必须包含完整" in error for error in result.errors)
+
+
+@pytest.mark.parametrize("relative_path", ["SKILL.md", "references/preprocess-output.md"])
+def test_canonical_diagnosis_parse_examples_pass_product_explicitly(relative_path):
+    path = ROOT / ".agents" / "skills" / "logparse-diagnose" / relative_path
+    commands = [
+        line.split("cli.py parse ", 1)[1].split("`", 1)[0]
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "cli.py parse " in line
+    ]
+
+    assert commands, f"{path} 中缺少预处理命令示例"
+    for command in commands:
+        assert "--product <product>" in command, f"{path} 中的预处理命令漏传产品：{command}"
+
+
 def test_generated_skill_contract_rejects_missing_frontmatter_module_name(tmp_path):
     validator = _load_validator()
     skill_dir = _write_skill(
@@ -310,8 +395,8 @@ def test_generated_skill_contract_rejects_legacy_package_only_input_guidance(tmp
             "当 `input_path` 是原始日志输入时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。\n",
             "当 `input_path` 是原始日志包时必须提供 `config_path`；已有 `output/{task_id}/result.json` 时不重新解析。\n",
         ).replace(
-            "原始日志输入预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>`。",
-            "原始日志包预处理由 `logparse-diagnose` 等价执行 `python3.12 cli.py parse <package_path> -c <config_path> -o <output_dir>`。",
+            "原始日志输入预处理由 `logparse-diagnose` 等价执行 `.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir>`。",
+            "原始日志包预处理由 `logparse-diagnose` 等价执行 `.venv/bin/python cli.py parse <package_path> -c <config_path> --product <product> -o <output_dir>`。",
         ),
     )
 

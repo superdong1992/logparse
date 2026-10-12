@@ -1,7 +1,7 @@
 """当前产品的数据模型。
 
-这里允许出现 slot、CPU、板卡等 LAN 产品概念。通用 contracts 不应导入本
-模块；旧代码经由 ``backend.extensions.products.current.models`` façade 逐步迁移。
+这里保存 slot、CPU、板卡等产品概念及解析状态。产品适配器和生命周期、
+关联策略使用这些模型；通用 contracts 不应导入本模块。
 """
 
 from __future__ import annotations

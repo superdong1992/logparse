@@ -1,0 +1,52 @@
+schema_version: 1
+change_id: 2026-10-12-ai-reading-docs
+summary: 补齐代理阅读入口、当前产品日志规格和架构导航，记录已知限制；仅清理两处陈旧文档字符串，不改变运行行为。
+zones:
+  - green
+  - red
+paths:
+  - README.md
+  - CLAUDE.md
+  - docs/ai-reading-guide.md
+  - docs/architecture.md
+  - docs/product-log-specification.md
+  - docs/usage.md
+  - docs/adr/0007-ai-documentation-evidence.md
+  - backend/application/configuration.py
+  - backend/extensions/products/current/models.py
+validation:
+  baseline_revision: 0ad92ff
+  environment: Windows，.venv 中的 Python 3.12.14；测试与合成样例使用仓内临时目录，不访问现有 output/outputs。
+  tests:
+    - 聚焦测试通过：test_docs、test_configuration_services、test_parse_integration、test_query、test_generated_skill_contract，共 92 passed。
+    - .venv\Scripts\python.exe scripts/verify_delivery.py：748 passed, 2 skipped；Ruff、compileall、check-config 均通过。
+    - 覆盖率 line 90.70%、branch 78.09%、architecture_core 90.71%，达到既有 80/70/90 门槛。
+    - 两处 Python 文件移除模块文档字符串后的 AST 与 HEAD 一致，运行代码未变。
+  lan_scenario: 只核对当前代码、产品配置和仓内 default/compact 合成包。没有使用真实 LAN 案例，真实历史 corpus 未执行。
+  contract_tests:
+    - 聚焦测试覆盖两产品 ParseService、golden、紧凑索引、严格 PID 目标查询、DFX 及生成技能契约。
+  security_tests:
+    - 完整 verify_delivery.py 已覆盖解压安全、候选输入安全、产物原子写入与完整性、工作区与链接边界、DFX 正文及预算约束；共 2 项测试跳过。
+  smoke_tests:
+    - 新文档的两产品 parse、mech-target-logs 和 dfx-output 命令已执行；均为 exact / LP_TARGET_OK，DFX 为 LP_DFX_OK。
+  documentation_checks:
+    - 七份入口、架构、规格与 ADR 文档中的 202 个仓内 Markdown 链接均指向已有路径。
+    - 独立复核已覆盖调用链、版本号、两产品配置、字段与时区、生命周期、严格 PID、缺失目标、DFX 和诊断打包边界，无未解决问题。
+    - rule_preflight.py --changed、change_gate.py --changed 及带本记录的 --enforce 检查均通过；git diff --check 通过。
+  model_evaluation:
+    status: not_run
+    reason: 本轮未连接已配置 GLM5.2 的 LAN 会话；已提供固定核对题、参考依据和前后对比步骤，未调用模型或外发代码。
+    guide: docs/ai-reading-guide.md
+  limitations:
+    - 首次合成命令在沙盒系统临时目录遇到 WinError 5；将 TEMP/TMP 指向仓内临时目录后通过，不作为产品功能失败。
+    - 完整检查首次在沙箱中为 734 passed、14 failed、2 skipped，失败集中在文件元数据和 Windows 链接边界；获准在沙箱外重跑同一 verify_delivery.py 后为 748 passed、2 skipped。未改代码或降低门槛以消除失败。
+    - 真实 LAN corpus、2GB 包验收和 GLM5.2 实际答题评估均未执行，不以合成测试替代。
+compatibility:
+  schema_impact: none；CLI/API、配置结构、产物 schema、业务算法与诊断技能输入契约不变。
+architecture:
+  adr: docs/adr/0007-ai-documentation-evidence.md
+  approval: 所有者明确要求实施《基于最新代码调整 GLM5.2 文档方案》，授权文档、导航及两处陈旧文档字符串的修改。本记录不扩大 ADR-0006 的精简授权。
+  rollback: 只撤回本轮新增文档、导航段落及两处文档字符串，保留 ADR-0006 的实现和其他工作；不执行全仓重置，不提交或外传材料。
+follow_up:
+  - LOGSPEC-001：compact 文件名捕获 8 位日期，共用 dump_time 函数按 14 位日期时间解析；本轮仅记录，不修复。
+  - LOGSPEC-002：现有诊断技能及生成模板预处理示例未传 --product，CLI 默认选择 default；本轮文档示例显式选产品，技能接口修复另行处理。

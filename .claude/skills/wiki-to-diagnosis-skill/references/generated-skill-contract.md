@@ -31,7 +31,8 @@ module_name: <module_name>
 先收集全局输入：
 
 - `input_path`：原始日志输入或 `output/{task_id}` 预处理结果目录。原始日志输入可以是日志压缩包、单个非压缩诊断日志，或原始日志目录。
-- `config_path`：repo 内 V3 配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml` 或 `configs/v3.yaml`，不要只传配置目录。`input_path` 是原始日志输入时必填；已有 `output/{task_id}/result.json` 时不重新解析。
+- `config_path`：完整根配置文件路径，必须包含具体 YAML 文件名，例如 `config.yaml`，不要只传配置目录，也不能直接使用被 include 的产品片段。`input_path` 是原始日志输入时必填；已有 `output/{task_id}/result.json` 时不重新解析。
+- `product`：根配置 `products` 下的产品键，例如 `default` 或 `compact`。原始日志输入时必填；沿用用户已指定的产品，缺失时先询问，不根据文件名或模块名猜测，也不默认为 `default`。已有 `result.json` 时无需补传产品。
 - `output_dir`：解析输出目录，例如 `output`；传给 `logparse-diagnose` 时必须明确。
 - `problem_time`：问题发生的近似时间，保留用户给出的时区描述。
 - 固定 module_name：当前 skill 的 frontmatter `module_name: <module_name>`，运行时不再向用户询问模块。
@@ -52,7 +53,7 @@ module_name: <module_name>
 
 不要把 `logparse-diagnose` 当成 shell 命令、Python 模块或普通说明文字。必须先调用/加载这个 skill，让它完成：
 
-调用时必须把 `input_path + config_path + output_dir + problem_time + targets[]` 一起交给 `logparse-diagnose`。如果 `input_path` 是原始日志输入，不要省略配置文件路径，不要只传配置目录；预处理必须等价于 `.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>`。当前定位 skill 不要自行运行 parse。
+原始日志输入的交接字段为 `input_path + config_path + product + output_dir + problem_time + targets[]`，必须一起交给 `logparse-diagnose`。不要省略配置文件路径或产品，不要只传配置目录；预处理必须等价于 `.venv/bin/python cli.py parse <input_path> -c <config_path> --product <product> -o <output_dir>`。当前定位 skill 不要自行运行 parse。已有 `result.json` 时交接结果路径、输出目录、问题时间和目标即可，不要求补传 `config_path` 或 `product`，也不重新解析；后续查询无需 `--product`。
 
 1. 对 `input_path` 做预处理；
 2. 根据每组 `固定 module_name + slot + process_name + 可选 pid` 生成 anchor；
