@@ -1,0 +1,35 @@
+schema_version: 1
+change_id: 2026-10-12-config-migration-guide
+summary: 补充旧 default 配置迁移到 schema v2 并命名为 galaxy 的操作指南，在使用说明加入入口。
+zones:
+  - red
+paths:
+  - docs/config-migration-v2.md
+  - docs/usage.md
+  - docs/adr/0009-config-migration-guide.md
+validation:
+  environment: Windows，.venv 中的 Python 3.12.14；示例配置和聚焦测试使用仓内 .pytest_tmp，没有读取现有 output/outputs。
+  tests:
+    - .venv\Scripts\python.exe -m pytest tests/test_config_validation.py tests/test_configuration_services.py tests/test_parse_integration.py -q：81 passed。
+    - .venv\Scripts\python.exe scripts/verify_delivery.py：760 passed，2 skipped；Ruff、compileall 和仓库配置检查通过。
+    - 覆盖率 line 90.70%、branch 78.09%、architecture_core 90.71%，达到既有门槛。
+  lan_scenario: 文档使用仓内合成模板说明产品改名及 Module1/Module2 配置迁移；未使用真实 LAN 配置或日志，真实 corpus 和 2GB 包验收未执行。
+  contract_tests:
+    - 现有配置与解析聚焦测试通过，覆盖字段校验、产品引用加载、产品选择及解析查询闭环。
+    - 文档两段 YAML 可解析，产品模板与当前 configs/products/default.yaml 完全一致；explain-config 返回 galaxy，执行顺序为 module1、module2，module2 依赖为 module1。
+  security_tests:
+    - 完整交付检查中的既有安全回归通过；未修改运行时代码、安全校验或治理门禁。
+  smoke_tests:
+    - 将文档 YAML 抽取到 .pytest_tmp 下的独立目录，check-config、doctor --product galaxy、explain-config --product galaxy --json 均通过。
+  delivery_checks:
+    - 迁移指南和使用说明中 12 个本地链接有效，git diff --check 通过；指南未残留 xxx2。
+    - rule_preflight.py --changed、change_gate.py --changed 及使用本记录的 --enforce 检查通过。
+  limitations:
+    - 文档结构模板沿用合成 EXAMPLE、MODULE2、xxx 参数，只确认配置可加载；没有真实 galaxy 配置或日志，未验证实际设备匹配效果。
+    - 首次链接扫描误将 YAML 正则识别为 Markdown 链接；排除代码块后重新检查通过，文档无需修正。
+compatibility:
+  schema_impact: 无新增契约变化；仅记录当前 v2 迁移规则，不修改正式配置、代码、CLI 或产物 schema。
+architecture:
+  adr: docs/adr/0009-config-migration-guide.md
+  approval: 用户明确要求编写迁移文档，随后要求示例款型由 xxx2 改为 galaxy；本次只修改指南、导航及必要治理记录。
+  rollback: 删除本次新增迁移指南、ADR 和变更记录，撤回 usage.md 新增的迁移入口；保留其他修改，不回退运行时代码，不提交、推送或外传。
