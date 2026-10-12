@@ -1,19 +1,5 @@
-"""Application ports implemented by infrastructure and product extensions."""
-
-from backend.ports.artifacts import (
-    ArtifactReaderPort,
-    ArtifactWriterPort,
-    ParseArtifactSessionPort,
-)
-from backend.ports.discovery import DiscoveryPort
-from backend.ports.mechanisms import MechanismPort
+"""解析引擎与产物事务接口。"""
+from backend.ports.artifacts import ParseArtifactSessionPort
 from backend.ports.parsing import ParseEnginePort
 
-__all__ = [
-    "ArtifactReaderPort",
-    "ArtifactWriterPort",
-    "DiscoveryPort",
-    "MechanismPort",
-    "ParseArtifactSessionPort",
-    "ParseEnginePort",
-]
+__all__ = ["ParseArtifactSessionPort", "ParseEnginePort"]

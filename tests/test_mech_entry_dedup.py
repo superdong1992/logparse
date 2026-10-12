@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.models import MechLogEntry
+from backend.extensions.products.current.models import MechLogEntry
 from backend.parsing.mech_entry_dedup import dedupe_mech_entries
 
 

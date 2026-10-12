@@ -13,7 +13,7 @@ GENERIC_ROOTS = (
     ROOT / "backend" / "infrastructure",
 )
 FORBIDDEN_IMPORTS = (
-    "backend.models",
+    "backend.extensions.products.current.models",
     "backend.extensions",
 )
 FORBIDDEN_PRODUCT_TOKENS = re.compile(

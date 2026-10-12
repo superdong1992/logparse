@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from backend.models import BoardRole, MechResult, ParseResult
+from backend.extensions.products.current.models import BoardRole, MechResult, ParseResult
 
 logger = logging.getLogger(__name__)
 

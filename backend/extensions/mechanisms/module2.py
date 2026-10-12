@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from backend.contracts.plugins import MechanismContext, MechanismOutcome
+from backend.contracts.plugins import DiagnosticScanBatch, MechanismContext, MechanismOutcome
 from backend.contracts.runtime import Diagnostic, DiagnosticSeverity
 from backend.extensions.mechanisms.base import MechanismPlugin
 from backend.extensions.products.current.mechanism_input import CurrentMechanismInput
-from backend.models import (
+from backend.extensions.products.current.models import (
     LogEntry,
     MechBoardCycle,
     MechCpuCycle,
@@ -29,7 +29,7 @@ from backend.parsing.mech_entry_dedup import dedupe_mech_entries
 from backend.contracts.scopes import CycleRef
 from backend.extensions.products.current.scopes import product_cycle_ref
 
-logger = logging.getLogger("backend.plugins.mechanisms.module2")
+logger = logging.getLogger(__name__)
 _NON_OVERLAP_EPSILON = timedelta(microseconds=1)
 
 
@@ -109,20 +109,20 @@ class Module2Plugin(MechanismPlugin):
         errors: list[str] = []
         for field in ("module_name", "identifying_keyword", "diag_pattern"):
             if not config.get(field):
-                errors.append(f"mechanism_modules.{module_key}.{field} 不能为空")
+                errors.append(f"mechanisms.{module_key}.config.{field} 不能为空")
 
         pattern = config.get("diag_pattern")
         if pattern:
             try:
                 diag_re = re.compile(pattern)
             except re.error as e:
-                errors.append(f"mechanism_modules.{module_key}.diag_pattern 正则非法: {e}")
+                errors.append(f"mechanisms.{module_key}.config.diag_pattern 正则非法: {e}")
             else:
                 required = {"Slot", "CPU_Id", "ProcessName", "Context"}
                 missing = required - set(diag_re.groupindex)
                 if missing:
                     errors.append(
-                        f"mechanism_modules.{module_key}.diag_pattern 缺少命名组: {sorted(missing)}"
+                        f"mechanisms.{module_key}.config.diag_pattern 缺少命名组: {sorted(missing)}"
                     )
 
         return errors
@@ -184,7 +184,7 @@ class Module2Plugin(MechanismPlugin):
         )
         if upstream is None:
             msg = (
-                f"{self.module_key}: depends_on_module={dependency_key!r} result not found"
+                f"{self.module_key}: 依赖 {dependency_key!r} 没有可用结果"
             )
             logger.warning("[%s] 依赖未找到: %s", self.module_key, msg)
             return MechanismOutcome(
@@ -199,7 +199,7 @@ class Module2Plugin(MechanismPlugin):
             )
 
         t0 = time.perf_counter()
-        entries = self._scan_diagnostic_entries(inputs)
+        entries = self._scan_diagnostic_entries(inputs, context.scan_batch)
         diag_file_count = sum(
             len(slot.diagnostic_logs) for slot in inputs.diagnostic_slots
         )
@@ -238,27 +238,6 @@ class Module2Plugin(MechanismPlugin):
         )
         return MechanismOutcome(result=mech_result)
 
-    def parse(self, result) -> MechResult | None:
-        """Compatibility helper for focused LAN tests and pre-v1 callers."""
-
-        depends_on = self._dependency_key()
-        dependency_results = {
-            mech.module_key: mech
-            for mech in result.mech_results
-            if depends_on and mech.module_key == depends_on
-        }
-        outcome = self.execute(
-            MechanismContext(
-                extension_input=CurrentMechanismInput.from_collections(
-                    result.diagnostic_slots,
-                    result.private_slots,
-                ),
-                dependency_results=dependency_results,
-            )
-        )
-        result.errors.extend(item.message for item in outcome.diagnostics)
-        return outcome.result
-
     def _dependency_key(self) -> str:
         if len(self.descriptor.dependencies) == 1:
             return self.descriptor.dependencies[0]
@@ -275,10 +254,10 @@ class Module2Plugin(MechanismPlugin):
     def _scan_diagnostic_entries(
         self,
         inputs: CurrentMechanismInput,
+        scan_batch: DiagnosticScanBatch | None,
     ) -> list[MechLogEntry]:
-        precomputed_diag_entries = getattr(self, "_precomputed_diagnostic_entries", None)
-        if precomputed_diag_entries is not None:
-            return list(precomputed_diag_entries)
+        if scan_batch is not None:
+            return list(scan_batch.entries_by_module.get(self.module_key, ()))
 
         diag_re = re.compile(self.config["diag_pattern"])
         keyword = str(self.config["identifying_keyword"])

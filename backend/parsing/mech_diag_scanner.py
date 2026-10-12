@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime
 
-from backend.models import LogEntry, MechLogEntry
+from backend.extensions.products.current.models import LogEntry, MechLogEntry
 from backend.parsing.file_iter import iter_log_entry_lines
 from backend.parsing.process_name_resolver import ProcessNameResolver
 from backend.parsing.timestamp_extractor import TimestampExtractor

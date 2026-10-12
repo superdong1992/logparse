@@ -1,4 +1,5 @@
 """Tests for cli.py."""
+
 from __future__ import annotations
 
 import json
@@ -13,7 +14,7 @@ import yaml
 from cli import cli
 from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.utils import safe_log_filename, safe_path_segment
-from backend.models import (
+from backend.extensions.products.current.models import (
     MechResult,
     MechSlotOutput,
     ParseResult,
@@ -49,7 +50,7 @@ def _patch_parse_application(monkeypatch, cli_module, pipeline_class) -> None:
 
         return SimpleNamespace(
             service=Service(),
-            engine=SimpleNamespace(pipeline=pipeline),
+            engine=pipeline,
         )
 
     monkeypatch.setattr(cli_module, "build_parse_application", _build)
@@ -58,23 +59,11 @@ def _patch_parse_application(monkeypatch, cli_module, pipeline_class) -> None:
 def _module1_v3_test_config() -> dict:
     return {
         "module_name": "EXAMPLE",
-        "diag_pattern": (
-            r"Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?"
-            r"CPU-Id=(?P<CPU_Id>[^;,)]*).*?"
-            r"ProcessName=(?P<ProcessName>[^;,)]+).*?"
-            r"Context=(?P<Context>.+?)\)$"
-        ),
+        "diag_pattern": "Service=(?P<Service>[^;]+).*?Slot=(?P<Slot>[^;,)]+).*?CPU-Id=(?P<CPU_Id>[^;,)]*).*?ProcessName=(?P<ProcessName>[^;,)]+).*?Context=(?P<Context>.+?)\\)$",
         "active_master_keyword": "",
-        "journal": {
-            "line_pattern": "",
-            "line_pattern2": "",
-            "identifying_keyword": "EXAMPLE",
-        },
-        "sequence_pattern": r"No\[(\d+)\]",
-        "lifecycle_split": {
-            "reliable_processes": ["dhcp"],
-            "multi_instance_processes": [],
-        },
+        "journal": {"line_pattern": "", "line_pattern2": "", "identifying_keyword": "EXAMPLE"},
+        "sequence_pattern": "No\\[(\\d+)\\]",
+        "lifecycle_split": {"reliable_processes": ["dhcp"], "multi_instance_processes": []},
     }
 
 
@@ -86,10 +75,11 @@ def _timestamp_extractor() -> TimestampExtractor:
 
 def _valid_parse_config(extra: dict | None = None) -> dict:
     cfg = {
+        "schema_version": 2,
         "products": {
             "default": {
                 "discovery": {
-                    "plugin": "backend.plugins.default.scanner.ScannerPlugin",
+                    "plugin": "backend.extensions.products.current.scanner.ScannerPlugin",
                     "config": {
                         "diagnostic_dir": "diag",
                         "private_dir": "varlog",
@@ -97,13 +87,13 @@ def _valid_parse_config(extra: dict | None = None) -> dict:
                         "diag_file_patterns": ["diag.zip"],
                     },
                 },
-                "log_parser": {
-                    "plugin": "backend.plugins.default.parser.ParserPlugin",
-                    "config": {
-                        "timestamp_regex": r"(\d{4}-\d{2}-\d{2})([+-]\d{2}:\d{2})?",
-                    },
+                "parser": {
+                    "plugin": "backend.extensions.products.current.parser.ParserPlugin",
+                    "config": {"timestamp_regex": "(\\d{4}-\\d{2}-\\d{2})([+-]\\d{2}:\\d{2})?"},
                 },
-            },
+                "mechanisms": {},
+                "archive": {"recursive_extraction": True, "compressed_extensions": [".zip", ".gz"]},
+            }
         },
     }
     if extra:
@@ -111,17 +101,21 @@ def _valid_parse_config(extra: dict | None = None) -> dict:
     return cfg
 
 
-def test_test_pattern_reads_nested_mechanism_config(sample_config, tmp_path):
+def test_test_pattern_reads_nested_mechanism_config(sample_mechanisms, sample_config, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
+                "schema_version": 2,
                 "products": {
                     "default": {
-                        "log_parser": {
-                            "config": sample_config,
+                        "parser": {"config": sample_config},
+                        "mechanisms": sample_mechanisms,
+                        "archive": {
+                            "recursive_extraction": True,
+                            "compressed_extensions": [".zip", ".gz"],
                         },
-                    },
+                    }
                 },
             },
             allow_unicode=True,
@@ -159,15 +153,13 @@ def test_parse_profile_passes_profile_and_prints_summary(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
-            _valid_parse_config({
-                "pipeline": {"debug_expand_gz": False},
-            }),
+            _valid_parse_config({"pipeline": {"debug_expand_gz": False}}),
             allow_unicode=True,
         ),
         encoding="utf-8",
     )
     seen = {}
-    cli_module = importlib.import_module("cli")
+    cli_module = importlib.import_module("backend.presentation.cli.parse")
 
     class FakePerformance:
         def summary_lines(self):
@@ -224,31 +216,6 @@ def test_explain_config_json_reports_execution_plan(tmp_path):
     assert "default" in payload["products"]
 
 
-def test_migrate_config_writes_schema_v2(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    target = tmp_path / "config-v2.yaml"
-    config_path.write_text(
-        yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
-        encoding="utf-8",
-    )
-
-    result = CliRunner().invoke(
-        cli,
-        [
-            "migrate-config",
-            "-c",
-            str(config_path),
-            "-o",
-            str(target),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    migrated = yaml.safe_load(target.read_text(encoding="utf-8"))
-    assert migrated["schema_version"] == 2
-    assert "parser" in migrated["products"]["default"]
-
-
 def test_doctor_json_is_structured(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -286,14 +253,9 @@ def test_scaffold_extension_creates_green_zone_product_files(tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    assert (
-        tmp_path
-        / "backend/extensions/products/demo_product/adapter.py"
-    ).is_file()
+    assert (tmp_path / "backend/extensions/products/demo_product/adapter.py").is_file()
     assert (tmp_path / "configs/products/demo_product.yaml").is_file()
-    assert (
-        tmp_path / "tests/extensions/products/test_demo_product_adapter.py"
-    ).is_file()
+    assert (tmp_path / "tests/extensions/products/test_demo_product_adapter.py").is_file()
 
 
 def test_scaffold_extension_creates_native_mechanism_contract(tmp_path):
@@ -311,38 +273,12 @@ def test_scaffold_extension_creates_native_mechanism_contract(tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    implementation = (
-        tmp_path / "backend/extensions/mechanisms/demo_mechanism.py"
-    ).read_text(encoding="utf-8")
+    implementation = (tmp_path / "backend/extensions/mechanisms/demo_mechanism.py").read_text(
+        encoding="utf-8"
+    )
     assert "def execute(self, context: MechanismContext)" in implementation
     assert "def parse(self, result)" not in implementation
     assert "return MechanismOutcome()" in implementation
-
-
-def test_migrate_config_preserves_v2_product_include_boundary(tmp_path):
-    product_dir = tmp_path / "configs" / "products"
-    product_dir.mkdir(parents=True)
-    (product_dir / "demo.yaml").write_text(
-        "archive: {}\ndiscovery: {}\nparser: {}\nmechanisms: {}\n",
-        encoding="utf-8",
-    )
-    source = tmp_path / "config.yaml"
-    source.write_text(
-        "schema_version: 2\npipeline: {}\nproducts:\n  demo:\n"
-        "    $include: configs/products/demo.yaml\n",
-        encoding="utf-8",
-    )
-
-    result = CliRunner().invoke(
-        cli,
-        ["migrate-config", "-c", str(source)],
-    )
-
-    assert result.exit_code == 0, result.output
-    migrated = yaml.safe_load(result.output)
-    assert migrated["products"]["demo"] == {
-        "$include": "configs/products/demo.yaml"
-    }
 
 
 def _write_target_log_result(tmp_path, *, with_log=True):
@@ -351,6 +287,7 @@ def _write_target_log_result(tmp_path, *, with_log=True):
     (task_dir / "result.json").write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "mech_results": [
                     {
                         "module_key": "module1",
@@ -370,15 +307,15 @@ def _write_target_log_result(tmp_path, *, with_log=True):
                                                 "total_count": 1,
                                                 "missing_sequences": [],
                                                 "missing_count": 0,
-                                            },
+                                            }
                                         ],
                                         "cpu_cycles": [],
-                                    },
+                                    }
                                 ],
-                            },
+                            }
                         ],
-                    },
-                ],
+                    }
+                ]
             },
             ensure_ascii=False,
         ),
@@ -386,11 +323,16 @@ def _write_target_log_result(tmp_path, *, with_log=True):
     )
     if with_log:
         log_dir = (
-            task_dir / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+            task_dir
+            / "mech_modules"
+            / safe_path_segment("EXAMPLE")
+            / "slot_1"
             / safe_path_segment("cycle")
         )
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / safe_log_filename("SERVICE", "123")).write_text("matched log\n", encoding="utf-8")
+        (log_dir / safe_log_filename("SERVICE", "123")).write_text(
+            "matched log\n", encoding="utf-8"
+        )
 
 
 def test_mech_target_logs_outputs_json_without_cycle_argument(tmp_path):
@@ -495,7 +437,11 @@ def test_mech_target_logs_explain_includes_selection_diagnostics(tmp_path):
 
 def _write_mech_log_file(tmp_path, process_name, pid, content):
     log_dir = (
-        tmp_path / "task" / "mech_modules" / safe_path_segment("EXAMPLE") / "slot_1"
+        tmp_path
+        / "task"
+        / "mech_modules"
+        / safe_path_segment("EXAMPLE")
+        / "slot_1"
         / safe_path_segment("cycle")
     )
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -590,10 +536,11 @@ def test_parse_validates_config_before_running_pipeline(tmp_path, monkeypatch):
     config_path.write_text(
         yaml.safe_dump(
             {
+                "schema_version": 2,
                 "products": {
                     "default": {
                         "discovery": {
-                            "plugin": "backend.plugins.default.scanner.ScannerPlugin",
+                            "plugin": "backend.extensions.products.current.scanner.ScannerPlugin",
                             "config": {
                                 "diagnostic_dir": "diag",
                                 "private_dir": "varlog",
@@ -601,33 +548,37 @@ def test_parse_validates_config_before_running_pipeline(tmp_path, monkeypatch):
                                 "diag_file_patterns": ["diag.zip"],
                             },
                         },
-                        "log_parser": {
-                            "plugin": "backend.plugins.default.parser.ParserPlugin",
+                        "parser": {
+                            "plugin": "backend.extensions.products.current.parser.ParserPlugin",
                             "config": {
-                                "timestamp_regex": r"(\d{4}-\d{2}-\d{2})([+-]\d{2}:\d{2})?",
-                                "mechanism_modules": {
-                                    "module1": {
-                                        "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
-                                        "enabled": True,
-                                            "config": {
-                                                "module_name": "EXAMPLE",
-                                                "lifecycle_split": {
-                                                    "reliable_processes": ["anchor"],
-                                                    "multi_instance_processes": ["anchor"],
-                                                },
-                                        },
-                                    },
-                                },
+                                "timestamp_regex": "(\\d{4}-\\d{2}-\\d{2})([+-]\\d{2}:\\d{2})?"
                             },
                         },
-                    },
+                        "mechanisms": {
+                            "module1": {
+                                "plugin": "backend.extensions.mechanisms.module1.Module1Plugin",
+                                "enabled": True,
+                                "config": {
+                                    "module_name": "EXAMPLE",
+                                    "lifecycle_split": {
+                                        "reliable_processes": ["anchor"],
+                                        "multi_instance_processes": ["anchor"],
+                                    },
+                                },
+                            }
+                        },
+                        "archive": {
+                            "recursive_extraction": True,
+                            "compressed_extensions": [".zip", ".gz"],
+                        },
+                    }
                 },
             },
             allow_unicode=True,
         ),
         encoding="utf-8",
     )
-    cli_module = importlib.import_module("cli")
+    cli_module = importlib.import_module("backend.presentation.cli.parse")
 
     class FakePipeline:
         def __init__(self, _config):
@@ -661,7 +612,7 @@ def test_parse_lifecycle_dfx_decisions_prints_v3_chinese_report(tmp_path, monkey
         yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
         encoding="utf-8",
     )
-    cli_module = importlib.import_module("cli")
+    cli_module = importlib.import_module("backend.presentation.cli.parse")
 
     class FakePipeline:
         def __init__(self, _config):
@@ -718,11 +669,8 @@ def test_parse_lifecycle_dfx_decisions_prints_v3_chinese_report(tmp_path, monkey
                                                     "count": 1,
                                                 }
                                             ],
-                                            "reason_zh": (
-                                                "所有白名单进程 PID 数均不超过 1，没有白名单进程 PID 冲突，"
-                                                "判断为同一生命周期内日志分段打印。"
-                                            ),
-                                        },
+                                            "reason_zh": "所有白名单进程 PID 数均不超过 1，没有白名单进程 PID 冲突，判断为同一生命周期内日志分段打印。",
+                                        }
                                     ],
                                     "lifecycles": [
                                         {
@@ -733,7 +681,7 @@ def test_parse_lifecycle_dfx_decisions_prints_v3_chinese_report(tmp_path, monkey
                                             "start_time": "2026-01-03T00:00:00+08:00",
                                             "end_time": "2026-01-03T00:02:00+08:00",
                                             "lifecycle_reliable": True,
-                                        },
+                                        }
                                     ],
                                     "journal_evidence": [],
                                     "issues": [],
@@ -779,7 +727,7 @@ def test_parse_verbose_does_not_print_v3_lifecycle_dfx_without_lifecycle_dfx(tmp
         yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
         encoding="utf-8",
     )
-    cli_module = importlib.import_module("cli")
+    cli_module = importlib.import_module("backend.presentation.cli.parse")
 
     class FakePipeline:
         def __init__(self, _config):
@@ -858,7 +806,7 @@ def test_parse_lifecycle_dfx_full_labels_no_wrap_evidence_sources(tmp_path, monk
         yaml.safe_dump(_valid_parse_config(), allow_unicode=True),
         encoding="utf-8",
     )
-    cli_module = importlib.import_module("cli")
+    cli_module = importlib.import_module("backend.presentation.cli.parse")
 
     evidence = {
         "support_type": "boundary_support",
@@ -923,7 +871,7 @@ def test_parse_lifecycle_dfx_full_labels_no_wrap_evidence_sources(tmp_path, monk
                                             "reliable_pid_counts": [],
                                             "journal_evidence": [evidence],
                                             "reason_zh": "No 回绕只作为阻断合并的证据。",
-                                        },
+                                        }
                                     ],
                                     "lifecycles": [],
                                     "journal_evidence": [evidence],
@@ -957,17 +905,21 @@ def test_parse_lifecycle_dfx_full_labels_no_wrap_evidence_sources(tmp_path, monk
     assert "journal 回绕证据" not in result.output
 
 
-def test_test_pattern_journal_without_sequence(sample_config, tmp_path):
+def test_test_pattern_journal_without_sequence(sample_mechanisms, sample_config, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
+                "schema_version": 2,
                 "products": {
                     "default": {
-                        "log_parser": {
-                            "config": sample_config,
+                        "parser": {"config": sample_config},
+                        "mechanisms": sample_mechanisms,
+                        "archive": {
+                            "recursive_extraction": True,
+                            "compressed_extensions": [".zip", ".gz"],
                         },
-                    },
+                    }
                 },
             },
             allow_unicode=True,
@@ -998,17 +950,23 @@ def test_test_pattern_journal_without_sequence(sample_config, tmp_path):
     assert "EXAMPLE without sequence" in result.output
 
 
-def test_test_pattern_journal_with_malformed_sequence_does_not_fallback(sample_config, tmp_path):
+def test_test_pattern_journal_with_malformed_sequence_does_not_fallback(
+    sample_mechanisms, sample_config, tmp_path
+):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
+                "schema_version": 2,
                 "products": {
                     "default": {
-                        "log_parser": {
-                            "config": sample_config,
+                        "parser": {"config": sample_config},
+                        "mechanisms": sample_mechanisms,
+                        "archive": {
+                            "recursive_extraction": True,
+                            "compressed_extensions": [".zip", ".gz"],
                         },
-                    },
+                    }
                 },
             },
             allow_unicode=True,
@@ -1035,17 +993,21 @@ def test_test_pattern_journal_with_malformed_sequence_does_not_fallback(sample_c
     assert "不匹配 journal.line_pattern 及 line_pattern2" in result.output
 
 
-def test_test_pattern_journal_with_sequence(sample_config, tmp_path):
+def test_test_pattern_journal_with_sequence(sample_mechanisms, sample_config, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
+                "schema_version": 2,
                 "products": {
                     "default": {
-                        "log_parser": {
-                            "config": sample_config,
+                        "parser": {"config": sample_config},
+                        "mechanisms": sample_mechanisms,
+                        "archive": {
+                            "recursive_extraction": True,
+                            "compressed_extensions": [".zip", ".gz"],
                         },
-                    },
+                    }
                 },
             },
             allow_unicode=True,
@@ -1075,20 +1037,26 @@ def test_test_pattern_journal_with_sequence(sample_config, tmp_path):
     assert "EXAMPLE with sequence" in result.output
 
 
-def test_test_pattern_journal_line_pattern2_required_substrings_pass(sample_config, tmp_path):
-    sample_config["mechanism_modules"]["module1"]["config"]["journal"][
-        "line_pattern2_required_substrings"
-    ] = ["MODULE1"]
+def test_test_pattern_journal_line_pattern2_required_substrings_pass(
+    sample_mechanisms, sample_config, tmp_path
+):
+    sample_mechanisms["module1"]["config"]["journal"]["line_pattern2_required_substrings"] = [
+        "MODULE1"
+    ]
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
+                "schema_version": 2,
                 "products": {
                     "default": {
-                        "log_parser": {
-                            "config": sample_config,
+                        "parser": {"config": sample_config},
+                        "mechanisms": sample_mechanisms,
+                        "archive": {
+                            "recursive_extraction": True,
+                            "compressed_extensions": [".zip", ".gz"],
                         },
-                    },
+                    }
                 },
             },
             allow_unicode=True,
@@ -1116,20 +1084,26 @@ def test_test_pattern_journal_line_pattern2_required_substrings_pass(sample_conf
     assert "MODULE1" in result.output
 
 
-def test_test_pattern_journal_line_pattern2_required_substrings_fail(sample_config, tmp_path):
-    sample_config["mechanism_modules"]["module1"]["config"]["journal"][
-        "line_pattern2_required_substrings"
-    ] = ["MODULE1"]
+def test_test_pattern_journal_line_pattern2_required_substrings_fail(
+    sample_mechanisms, sample_config, tmp_path
+):
+    sample_mechanisms["module1"]["config"]["journal"]["line_pattern2_required_substrings"] = [
+        "MODULE1"
+    ]
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
+                "schema_version": 2,
                 "products": {
                     "default": {
-                        "log_parser": {
-                            "config": sample_config,
+                        "parser": {"config": sample_config},
+                        "mechanisms": sample_mechanisms,
+                        "archive": {
+                            "recursive_extraction": True,
+                            "compressed_extensions": [".zip", ".gz"],
                         },
-                    },
+                    }
                 },
             },
             allow_unicode=True,
@@ -1162,6 +1136,7 @@ def test_mech_lifecycles_show_boundaries_dispatches_lifecycle_split_v3(tmp_path)
     (task_dir / "result.json").write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "mech_results": [
                     {
                         "module_name": "EXAMPLE",
@@ -1209,7 +1184,7 @@ def test_mech_lifecycles_show_boundaries_dispatches_lifecycle_split_v3(tmp_path)
                                                 }
                                             ],
                                             "reason_zh": "合并后白名单进程出现多个 PID：anchor PID=10,11。保留候选切分。",
-                                        },
+                                        }
                                     ],
                                     "lifecycles": [
                                         {
@@ -1234,16 +1209,11 @@ def test_mech_lifecycles_show_boundaries_dispatches_lifecycle_split_v3(tmp_path)
                                     "journal_evidence": [],
                                     "issues": [],
                                 },
-                                "board_cycles": [
-                                    {
-                                        "dir_name": "c1",
-                                        "processes": [],
-                                    },
-                                ],
-                            },
+                                "board_cycles": [{"dir_name": "c1", "processes": []}],
+                            }
                         ],
-                    },
-                ],
+                    }
+                ]
             },
             ensure_ascii=False,
         ),
@@ -1268,7 +1238,10 @@ def test_mech_lifecycles_show_boundaries_dispatches_lifecycle_split_v3(tmp_path)
     )
 
     assert result.exit_code == 0, result.output
-    assert "lifecycle_split_v3: reliable=true candidates=2 merged=0 kept_splits=1 lifecycles=2" in result.output
+    assert (
+        "lifecycle_split_v3: reliable=true candidates=2 merged=0 kept_splits=1 lifecycles=2"
+        in result.output
+    )
     assert "[候选切分]" in result.output
     assert "[聚合检查]" in result.output
     assert "候选边界 #1：board slot_1 #1 -> #2" in result.output
@@ -1284,21 +1257,22 @@ def test_mech_lifecycles_v3_compact_prints_invalid_evidence_chinese_reason(tmp_p
     (task_dir / "result.json").write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "mech_results": [
                     {
                         "module_name": "EXAMPLE",
                         "slots": [
                             {
-                                    "slot_id": "1",
+                                "slot_id": "1",
+                                "lifecycle_reliable": False,
+                                "lifecycle_split_result": {
+                                    "algorithm": "interval_v3",
                                     "lifecycle_reliable": False,
-                                    "lifecycle_split_result": {
-                                        "algorithm": "interval_v3",
-                                        "lifecycle_reliable": False,
-                                        "candidate_segments": [],
-                                        "merge_decisions": [],
-                                        "lifecycles": [],
-                                        "journal_evidence": [],
-                                        "issues": [
+                                    "candidate_segments": [],
+                                    "merge_decisions": [],
+                                    "lifecycles": [],
+                                    "journal_evidence": [],
+                                    "issues": [
                                         {
                                             "type": "invalid_lifecycle_evidence",
                                             "severity": "error",
@@ -1309,14 +1283,14 @@ def test_mech_lifecycles_v3_compact_prints_invalid_evidence_chinese_reason(tmp_p
                                             "source": "diagnostic",
                                             "source_file": "slot_1/diag.log",
                                             "raw_excerpt": "anchor without pid",
-                                        },
+                                        }
                                     ],
                                 },
                                 "board_cycles": [],
-                            },
+                            }
                         ],
-                    },
-                ],
+                    }
+                ]
             },
             ensure_ascii=False,
         ),
@@ -1359,18 +1333,14 @@ def test_mech_lifecycles_show_boundaries_reports_legacy_result_unsupported(tmp_p
                                     {
                                         "dir_name": "cycle_1",
                                         "processes": [
-                                            {
-                                                "process_name": "svc",
-                                                "pid": "100",
-                                                "total_count": 1,
-                                            },
+                                            {"process_name": "svc", "pid": "100", "total_count": 1}
                                         ],
-                                    },
+                                    }
                                 ],
-                            },
+                            }
                         ],
-                    },
-                ],
+                    }
+                ]
             },
             ensure_ascii=False,
         ),
@@ -1392,8 +1362,24 @@ def test_mech_lifecycles_show_boundaries_reports_legacy_result_unsupported(tmp_p
         ],
     )
 
-    assert result.exit_code == 0, result.output
-    assert "lifecycle_reliable: true" in result.output
-    assert ("boundary_" + "issues") not in result.output
-    assert "cycle_1" in result.output
-    assert "svc-100: 1" in result.output
+    assert result.exit_code != 0
+    assert "schema_version" in result.output
+    assert "svc-100: 1" not in result.output
+
+
+def test_removed_migration_command_is_not_available():
+    result = CliRunner().invoke(cli, ["migrate-config"])
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
+def test_check_config_rejects_v1_configuration(tmp_path):
+    config = _valid_parse_config()
+    config["schema_version"] = 1
+    path = tmp_path / "v1.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["check-config", "-c", str(path)])
+
+    assert result.exit_code != 0
+    assert "schema_version: 2" in result.output

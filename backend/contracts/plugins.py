@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from backend.contracts.runtime import Diagnostic
 PLUGIN_API_VERSION = 1
@@ -41,22 +40,6 @@ class MechanismDescriptor:
 
 
 @dataclass(frozen=True, slots=True)
-class DiscoveryContext:
-    workspace: Path
-    product: str
-    config: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class DiscoveryResult:
-    # Product extensions own the concrete scope/source payload.  Core code may
-    # route it but must not inspect product topology fields.
-    discovered_scopes: tuple[Any, ...] = ()
-    private_sources: tuple[Any, ...] = ()
-    diagnostics: tuple[Diagnostic, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class DiagnosticScanBatch:
     timestamps_by_source: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
     entries_by_module: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
@@ -67,18 +50,7 @@ class DiagnosticScanBatch:
 
 @dataclass(frozen=True, slots=True)
 class MechanismContext:
-    # Bounded product-owned input. Native plugins never receive the complete
-    # mutable ParseResult used by the legacy bridge.
-    extension_input: Any = None
-    dependency_results: Mapping[str, Any] = field(default_factory=dict)
-    scan_batch: DiagnosticScanBatch | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyMechanismContext:
-    """Temporary compatibility context for pre-v1 mutating plugins."""
-
-    parse_state: Any
+    # Product-owned input exposes only the sources required by mechanisms.
     extension_input: Any = None
     dependency_results: Mapping[str, Any] = field(default_factory=dict)
     scan_batch: DiagnosticScanBatch | None = None
@@ -89,3 +61,4 @@ class MechanismOutcome:
     result: Any | None = None
     role_signals: Mapping[str, str] = field(default_factory=dict)
     diagnostics: tuple[Diagnostic, ...] = ()
+    status: Literal["success", "partial", "empty", "failed", "skipped"] = "success"

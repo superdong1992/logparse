@@ -3,17 +3,26 @@ from __future__ import annotations
 import logging
 import re
 
-from backend.models import (
-    BoardRole,
+from backend.extensions.products.current.models import (
     JournalLogFile,
     LogEntry,
-    MechResult,
     ParseResult,
     PrivateSlotInfo,
     SlotInfo,
 )
 from backend.parsing.timestamp_extractor import TimestampExtractor
-from backend.plugins.mechanisms.module1 import Module1Plugin
+from backend.contracts.plugins import MechanismContext
+from backend.extensions.products.current.mechanism_input import CurrentMechanismInput
+from backend.extensions.mechanisms.module1 import Module1Plugin
+
+
+def _context(state):
+    return MechanismContext(
+        extension_input=CurrentMechanismInput.from_collections(
+            state.diagnostic_slots, state.private_slots,
+        ),
+        dependency_results={item.module_key: item for item in state.mech_results},
+    )
 
 
 def _module1_config() -> dict:
@@ -62,13 +71,15 @@ def test_module1_plugin_parses_diag_entries(tmp_path):
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert mech.module_name == "EXAMPLE"
     assert mech.module_key == "module1"
     assert mech.diag_entry_count == 1
     assert mech.active_master_slots == ["1"]
+    assert outcome.role_signals == {"1": "active"}
     assert mech.slots[0].board_cycles[0].processes[0].process_name == "SERVICE"
 
 
@@ -88,7 +99,8 @@ def test_module1_empty_cpu_id_is_board_level(tmp_path):
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     proc = mech.slots[0].board_cycles[0].processes[0]
@@ -112,8 +124,8 @@ def test_module1_plugin_emits_perf_logs_with_elapsed(tmp_path, caplog):
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module1"):
-        plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module1"):
+        plugin.execute(_context(result))
 
     assert "LOGPARSE_PERF module1.diag_scan module=module1 elapsed=" in caplog.text
     assert "LOGPARSE_PERF module1.journal_scan module=module1 elapsed=" in caplog.text
@@ -152,7 +164,8 @@ def test_module1_plugin_parses_journal_entries_without_no(tmp_path):
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert mech.journal_entry_count == 1
@@ -188,7 +201,8 @@ def test_module1_plugin_filters_line_pattern2_by_required_substrings(tmp_path):
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert mech.journal_entry_count == 1
@@ -217,7 +231,8 @@ def test_module1_plugin_empty_line_pattern2_required_substrings_preserves_behavi
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert mech.journal_entry_count == 1
@@ -239,7 +254,8 @@ def test_module1_plugin_parses_diag_entries_without_no(tmp_path):
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     cycle = mech.slots[0].board_cycles[0]
@@ -248,6 +264,7 @@ def test_module1_plugin_parses_diag_entries_without_no(tmp_path):
     assert proc.logs[0].sequence == 0
     assert proc.missing_sequences == []
     assert mech.active_master_slots == ["1"]
+    assert outcome.role_signals == {"1": "active"}
 
 
 def test_module1_plugin_defaults_to_lifecycle_split_v3(tmp_path):
@@ -275,7 +292,8 @@ def test_module1_plugin_defaults_to_lifecycle_split_v3(tmp_path):
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     slot_output = mech.slots[0]
@@ -310,7 +328,8 @@ def test_module1_plugin_v3_treats_cpu_id_zero_as_board_scope(tmp_path):
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     split_result = mech.slots[0].lifecycle_split_result
@@ -368,7 +387,8 @@ def test_module1_plugin_v3_ignores_no_pid_no_sequence_journal_for_reliable_proce
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     slot_output = mech.slots[0]
@@ -411,7 +431,8 @@ def test_module1_plugin_auto_parses_journal_entries_without_no_from_sequence_con
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert mech.journal_entry_count == 1
@@ -422,10 +443,36 @@ def test_module1_plugin_auto_parses_journal_entries_without_no_from_sequence_con
     assert proc.logs[0].context == "EXAMPLE old version without sequence"
 
 
-def test_module1_plugin_applies_roles(sample_parse_result):
-    plugin = Module1Plugin(_module1_config(), module_key="module1", ts_extractor=None)
-    mech = MechResult(module_name="EXAMPLE", active_master_slots=["1"])
+def test_journal_read_error_marks_full_parse_partial_and_keeps_evidence(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
 
-    plugin.apply_roles(sample_parse_result, mech)
+    from backend.application.configuration import load_config_file
+    from backend.contracts.runtime import ParseRequest
+    from backend.parsing import mech_journal_scanner
+    from backend.presentation.cli.composition import build_parse_application
 
-    assert sample_parse_result.diagnostic_slots[0].role == BoardRole.ACTIVE
+    original_read = mech_journal_scanner.iter_text_file_lines
+
+    def interrupted_read(path, *args, **kwargs):
+        reader = iter(original_read(path, *args, **kwargs))
+        yield next(reader)
+        raise PermissionError("journal read interrupted")
+
+    monkeypatch.setattr(mech_journal_scanner, "iter_text_file_lines", interrupted_read)
+    root = Path(__file__).resolve().parents[1]
+    application = build_parse_application(load_config_file(root / "config.yaml"))
+
+    run = application.service.run(ParseRequest(
+        source=root / "tests/mock_data/diagnostic_information_20260103.zip",
+        output_root=tmp_path,
+    ))
+
+    assert run.status == "partial"
+    assert any(item.code == "LP_JOURNAL_READ_FAILED" for item in run.diagnostics)
+    module1 = next(item for item in run.result.mech_results if item.module_key == "module1")
+    assert module1.diag_entry_count > 0
+    task_dir = tmp_path / run.result.task_id
+    manifest = json.loads((task_dir / "parse_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "partial"
+    assert list((task_dir / "mech_modules").rglob("*.log"))

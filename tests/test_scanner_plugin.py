@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.plugins.default.scanner import ScannerPlugin
+from backend.extensions.products.current.scanner import ScannerPlugin
 
 
 @pytest.fixture
@@ -203,3 +203,79 @@ class TestScannerPlugin:
         assert private_slots[0].slot_id == "1"
         assert private_slots[0].cpu_id == "2"
         assert [log.name for log in private_slots[0].journal_logs] == ["journal.log"]
+
+    def test_loose_content_dedup_keeps_corrupt_gzip_and_other_files(self, tmp_path):
+        root = tmp_path / "logs"
+        root.mkdir()
+        (root / "bad.log.gz").write_bytes(b"not a gzip file")
+        (root / "good.log").write_text("valid log\n", encoding="utf-8")
+        scanner = _scanner_with_loose(["*.log", "*.log.gz"])
+
+        slots, _private = scanner.discover(tmp_path)
+
+        assert [entry.name for entry in slots[0].diagnostic_logs] == [
+            "bad.log.gz", "good.log",
+        ]
+        assert len(scanner.last_diagnostics) == 1
+        diagnostic = scanner.last_diagnostics[0]
+        assert diagnostic.code == "LP_DIAGNOSTIC_READ_FAILED"
+        assert diagnostic.details == {"source": "logs/bad.log.gz", "reason": "BadGzipFile"}
+
+    def test_failed_content_hash_does_not_dedup_a_matching_prefix(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "logs"
+        root.mkdir()
+        (root / "broken.log").write_text("same prefix\n", encoding="utf-8")
+        (root / "good.log").write_text("same prefix\n", encoding="utf-8")
+        scanner = _scanner_with_loose(["*.log"])
+
+        def interrupted(entry):
+            yield "same prefix"
+            if entry.name == "broken.log":
+                raise OSError("private raw content")
+
+        monkeypatch.setattr(
+            "backend.extensions.products.current.scanner.iter_log_entry_lines",
+            interrupted,
+        )
+        slots, _private = scanner.discover(tmp_path)
+
+        assert [entry.name for entry in slots[0].diagnostic_logs] == [
+            "broken.log", "good.log",
+        ]
+        assert scanner.last_diagnostics[0].details["reason"] == "OSError"
+        assert "private raw content" not in scanner.last_diagnostics[0].message
+
+    def test_discovery_hash_failure_does_not_duplicate_an_already_registered_file(
+        self, tmp_path,
+    ):
+        diag = tmp_path / "diag" / "slot_1"
+        diag.mkdir(parents=True)
+        (diag / "bad.log.gz").write_bytes(b"not a gzip file")
+        scanner = _scanner_with_loose(["*.log.gz"])
+        scanner.config["diag_file_patterns"] = ["*.log.gz"]
+        scanner._compile_patterns()
+
+        slots, _private = scanner.discover(tmp_path)
+
+        assert [slot.slot_id for slot in slots] == ["1"]
+        assert [entry.name for entry in slots[0].diagnostic_logs] == ["bad.log.gz"]
+        assert len(scanner.last_diagnostics) == 1
+
+    def test_missing_fingerprint_input_is_reported_and_next_discovery_resets_errors(
+        self, tmp_path,
+    ):
+        from backend.extensions.products.current.models import LogEntry
+
+        scanner = _scanner_with_loose(["*.log"])
+        fingerprint = scanner._diagnostic_fingerprint(
+            LogEntry(path=str(tmp_path / "missing.log"), name="missing.log")
+        )
+
+        assert fingerprint is None
+        assert scanner.last_diagnostics[0].details["reason"] == "FileNotFoundError"
+
+        scanner.discover(tmp_path)
+
+        assert scanner.last_diagnostics == ()

@@ -6,32 +6,9 @@ application layer depends only on these interfaces.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from backend.contracts.runtime import ArtifactRecord, Diagnostic, StageResult
-
-
-@runtime_checkable
-class ArtifactWriterPort(Protocol):
-    def write_json(
-        self,
-        name: str,
-        payload: Mapping[str, Any],
-        *,
-        schema_version: int | None = None,
-    ) -> ArtifactRecord:
-        ...
-
-
-@runtime_checkable
-class ArtifactReaderPort(Protocol):
-    @property
-    def root(self) -> Path:
-        ...
-
-    def read_json(self, name: str) -> Mapping[str, Any]:
-        ...
 
 
 @runtime_checkable

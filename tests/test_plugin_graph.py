@@ -37,11 +37,12 @@ def test_resolve_order_preserves_config_order_for_independent_modules():
     assert resolve_mechanism_order(modules) == ("z", "a", "m")
 
 
-def test_legacy_depends_on_module_is_understood():
+def test_dependency_list_is_read_from_mechanism_entry():
     modules = {
         "module2": {
             "plugin": "example.Plugin",
-            "config": {"depends_on_module": "module1"},
+            "depends_on": ["module1"],
+            "config": {},
         },
         "module1": _entry(),
     }

@@ -8,7 +8,7 @@ from backend.extensions.products.current.evidence_layout import (
     CurrentProductEvidenceLayout,
 )
 from backend.infrastructure.artifact_repository import ArtifactRepository
-from backend.models import MechResult
+from backend.extensions.products.current.models import MechResult
 
 
 class MechOutputWriter:

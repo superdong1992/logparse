@@ -14,9 +14,6 @@ from backend.contracts.runtime import (
     StageResult,
     StageStatus,
 )
-from backend.extensions.products.current.engine import CurrentProductParseEngine
-from backend.extensions.products.current.models import ParseResult
-from backend.extensions.products.current.pipeline import PipelineStageError
 
 
 class _Session:
@@ -133,43 +130,3 @@ def test_parse_service_records_artifact_failure(tmp_path: Path) -> None:
 
     assert session.finalized["status"] == "failed"
     assert session.finalized["diagnostics"][-1].code == "LP_ARTIFACT_WRITE_FAILED"
-
-
-def test_current_product_engine_maps_fatal_stage_to_structured_error(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    engine = CurrentProductParseEngine({})
-    engine.pipeline.stage_records = [
-        {"name": "pipeline.discovery", "success": False, "metrics": {}}
-    ]
-
-    def fail(*args, **kwargs):
-        raise PipelineStageError("pipeline.discovery", "unknown layout")
-
-    monkeypatch.setattr(engine.pipeline, "run", fail)
-
-    with pytest.raises(ParseEngineError) as caught:
-        engine.execute(ParseRequest(tmp_path / "input.zip", tmp_path / "output"))
-
-    assert caught.value.diagnostics[0].code == "LP_DISCOVERY_FAILED"
-    assert caught.value.stages[0].status == StageStatus.FAILED
-
-
-def test_current_product_engine_keeps_isolated_mechanism_error_partial(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    engine = CurrentProductParseEngine({})
-    result = ParseResult(errors=["[module1] parse 异常: broken rule"])
-    engine.pipeline.stage_records = [
-        {"name": "pipeline.parse", "success": True, "metrics": {}}
-    ]
-    monkeypatch.setattr(engine.pipeline, "run", lambda *args, **kwargs: result)
-
-    outcome = engine.execute(
-        ParseRequest(tmp_path / "input.zip", tmp_path / "output")
-    )
-
-    assert outcome.status == "partial"
-    assert outcome.diagnostics[0].code == "LP_MECHANISM_FAILED"

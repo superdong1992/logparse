@@ -12,7 +12,7 @@ from typing import Any
 
 from backend.contracts.artifacts import ARTIFACT_CONTRACT_VERSION
 from backend.infrastructure.artifact_repository import ArtifactRepository
-from backend.models import ParseResult, PrivateSlotInfo, SlotInfo
+from backend.extensions.products.current.models import ParseResult, PrivateSlotInfo, SlotInfo
 
 METADATA_SCHEMA_VERSION = 2
 

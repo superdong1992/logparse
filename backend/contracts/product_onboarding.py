@@ -34,10 +34,6 @@ class OnboardingInputError(OnboardingError):
     """Invalid CLI input, sample metadata, or candidate document."""
 
 
-class OnboardingTechnicalError(OnboardingError):
-    """Internal or isolated-execution failure safe to expose to callers."""
-
-
 @dataclass(frozen=True, slots=True)
 class SamplingLimits:
     max_files: int = 64

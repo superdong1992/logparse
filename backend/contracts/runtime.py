@@ -34,10 +34,10 @@ class Diagnostic:
 class ParseRuntimeOptions:
     """Execution controls that are independent from product semantics."""
 
-    extraction_workers: int | str = "auto"
-    diagnostic_scan_workers: int | str = "auto"
-    debug_expand_gz: bool = False
-    keep_workspace: bool = False
+    extraction_workers: int | str | None = None
+    diagnostic_scan_workers: int | str | None = None
+    debug_expand_gz: bool | None = None
+    keep_workspace: bool | None = None
     profile: bool = False
     verbose: bool = False
 
@@ -112,7 +112,11 @@ class ParseEngineError(RuntimeError):
         *,
         stages: tuple[StageResult, ...] = (),
         diagnostics: tuple[Diagnostic, ...] = (),
+        workspace: Path | None = None,
+        preserve_existing_output: bool = False,
     ) -> None:
         self.stages = stages
         self.diagnostics = diagnostics
+        self.workspace = workspace
+        self.preserve_existing_output = preserve_existing_output
         super().__init__(message)

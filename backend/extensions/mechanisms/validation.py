@@ -19,7 +19,7 @@ def validate_mechanism_module_config(
     errors: list[str] = []
     module_name = cfg.get("module_name")
     if not module_name:
-        errors.append(f"mechanism_modules.{module_key}.module_name 不能为空")
+        errors.append(f"mechanisms.{module_key}.config.module_name 不能为空")
 
     diag_pattern = cfg.get("diag_pattern")
     if diag_pattern:
@@ -27,14 +27,14 @@ def validate_mechanism_module_config(
             diag_re = re.compile(diag_pattern)
         except re.error as exc:
             errors.append(
-                f"mechanism_modules.{module_key}.diag_pattern 正则非法: {exc}"
+                f"mechanisms.{module_key}.config.diag_pattern 正则非法: {exc}"
             )
         else:
             required = {"Slot", "CPU_Id", "ProcessName", "Context"}
             missing = required - set(diag_re.groupindex)
             if missing:
                 errors.append(
-                    f"mechanism_modules.{module_key}.diag_pattern "
+                    f"mechanisms.{module_key}.config.diag_pattern "
                     f"缺少命名组: {sorted(missing)}"
                 )
 
@@ -43,14 +43,14 @@ def validate_mechanism_module_config(
     if required_substrings is not None:
         if not isinstance(required_substrings, list):
             errors.append(
-                f"mechanism_modules.{module_key}.journal."
+                f"mechanisms.{module_key}.config.journal."
                 "line_pattern2_required_substrings 必须是字符串列表"
             )
         else:
             for idx, value in enumerate(required_substrings):
                 if not isinstance(value, str) or not value:
                     errors.append(
-                        f"mechanism_modules.{module_key}.journal."
+                        f"mechanisms.{module_key}.config.journal."
                         f"line_pattern2_required_substrings[{idx}] 必须是非空字符串"
                     )
 
@@ -62,12 +62,12 @@ def validate_mechanism_module_config(
             compiled = re.compile(pattern)
         except re.error as exc:
             errors.append(
-                f"mechanism_modules.{module_key}.journal.{field} 正则非法: {exc}"
+                f"mechanisms.{module_key}.config.journal.{field} 正则非法: {exc}"
             )
             continue
         if compiled.groups not in (3, 4):
             errors.append(
-                f"mechanism_modules.{module_key}.journal.{field} 需要 3 或 4 个捕获组: "
+                f"mechanisms.{module_key}.config.journal.{field} 需要 3 或 4 个捕获组: "
                 "3组=process_name, pid, context；"
                 "4组=process_name, pid, sequence, context"
             )
@@ -75,7 +75,7 @@ def validate_mechanism_module_config(
             pattern, cfg.get("sequence_pattern")
         ):
             errors.append(
-                f"mechanism_modules.{module_key}.journal.{field} "
+                f"mechanisms.{module_key}.config.journal.{field} "
                 "包含序号格式时需要 4 个捕获组: "
                 "process_name, pid, sequence, context"
             )
@@ -86,7 +86,7 @@ def validate_mechanism_module_config(
             re.compile(seq_pattern)
         except re.error as exc:
             errors.append(
-                f"mechanism_modules.{module_key}.sequence_pattern 正则非法: {exc}"
+                f"mechanisms.{module_key}.config.sequence_pattern 正则非法: {exc}"
             )
 
     for legacy_field in (
@@ -96,7 +96,7 @@ def validate_mechanism_module_config(
     ):
         if legacy_field in cfg:
             errors.append(
-                f"mechanism_modules.{module_key}.{legacy_field} is no longer supported; "
+                f"mechanisms.{module_key}.config.{legacy_field} is no longer supported; "
                 "use lifecycle_split V3 fields"
             )
 
@@ -107,7 +107,7 @@ def validate_mechanism_module_config(
 def _validate_lifecycle_split_config(module_key: str, raw: Any) -> list[str]:
     if raw is None:
         return []
-    path = f"mechanism_modules.{module_key}.lifecycle_split"
+    path = f"mechanisms.{module_key}.config.lifecycle_split"
     if not isinstance(raw, dict):
         return [f"{path} must be an object"]
 

@@ -23,8 +23,9 @@ ResultSerializer = Callable[[Any], Mapping[str, Any]]
 
 
 class ParseServiceError(RuntimeError):
-    def __init__(self, message: str, *, task_id: str):
+    def __init__(self, message: str, *, task_id: str, manifest_written: bool = True):
         self.task_id = task_id
+        self.manifest_written = manifest_written
         super().__init__(message)
 
 
@@ -49,11 +50,17 @@ class ParseService:
             outcome = self._engine.execute(request)
         except Exception as exc:
             if isinstance(exc, ParseEngineError):
+                if exc.preserve_existing_output:
+                    raise ParseServiceError(
+                        str(exc), task_id=task_id, manifest_written=False
+                    ) from exc
                 diagnostics = exc.diagnostics
                 stages = exc.stages
+                workspace = exc.workspace
             else:
                 diagnostics = ()
                 stages = ()
+                workspace = None
             if not diagnostics:
                 diagnostics = (
                     Diagnostic(
@@ -77,7 +84,7 @@ class ParseService:
                 stages=stages,
                 counters={},
                 diagnostics=diagnostics,
-                workspace=None,
+                workspace=str(workspace) if workspace is not None else None,
             )
             raise ParseServiceError(str(exc), task_id=task_id) from exc
 

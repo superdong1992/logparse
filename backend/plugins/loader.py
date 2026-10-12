@@ -36,10 +36,9 @@ def instantiate_plugin(
 
     示例:
         instantiate_plugin(
-            "backend.plugins.default.scanner.ScannerPlugin",
+            "backend.extensions.products.current.scanner.ScannerPlugin",
             DirectoryDiscoveryPlugin,
             {"diagnostic_dir": "diag"},
-            decompressor=some_decompressor,
         )
     """
     cls = load_plugin_class(class_path, base_class)

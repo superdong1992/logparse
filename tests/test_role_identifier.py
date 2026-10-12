@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from backend.models import (
+from backend.extensions.products.current.models import (
     ActivePeriod, BoardRole, LogEntry, MechResult, ParseResult, SlotInfo,
 )
 from backend.parsing.role_identifier import RoleIdentifier

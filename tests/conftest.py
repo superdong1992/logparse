@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from datetime import datetime, timezone, timedelta
 
-from backend.models import (
+from backend.extensions.products.current.models import (
     LogEntry,
     MechLogEntry,
     ParseResult,
@@ -14,13 +14,17 @@ from backend.models import (
 
 @pytest.fixture
 def sample_config() -> dict:
-    """Minimal parser config matching config.yaml structure."""
     return {
         "timestamp_regex": r"(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?",
-        "active_period_gap_threshold": 300,
-        "mechanism_modules": {
+        "active_period_gap_seconds": 300,
+    }
+
+
+@pytest.fixture
+def sample_mechanisms() -> dict:
+    return {
             "module1": {
-                "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+                "plugin": "backend.extensions.mechanisms.module1.Module1Plugin",
                 "enabled": True,
                 "config": {
                     "module_name": "EXAMPLE",
@@ -39,8 +43,7 @@ def sample_config() -> dict:
                     "sequence_pattern": r"No\[(\d+)\]",
                 },
             }
-        },
-    }
+        }
 
 
 @pytest.fixture

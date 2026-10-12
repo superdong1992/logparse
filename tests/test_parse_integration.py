@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from backend.application.configuration import load_config_file
 from backend.contracts.runtime import ParseRequest, ParseRuntimeOptions
-from backend.dfx import check_task_artifacts
+from backend.extensions.products.current.dfx import check_task_artifacts
 from backend.presentation.cli.composition import build_parse_application
 from cli import cli
 
@@ -57,6 +57,22 @@ def test_parse_service_artifact_query_and_dfx_closed_loop(
     serialized = json.dumps(result_payload, ensure_ascii=False).lower()
     for forbidden in ('"raw"', '"context"', '"logs"', '"extracted_root"'):
         assert forbidden not in serialized
+
+    module, process, pid = (
+        ("module1", "SERVICE", "12345")
+        if product == "default"
+        else ("ctrl", "svc_master", "100")
+    )
+    target = CliRunner().invoke(cli, [
+        "mech-target-logs", run.result.task_id, "-o", str(tmp_path),
+        "--problem-time", "2026-01-03T00:01:30", "--module", module,
+        "--slot", "1", "--process-name", process, "--pid", pid, "--explain",
+    ])
+    assert target.exit_code == 0, target.output
+    selected = json.loads(target.output)["target_logs"][0]
+    assert selected["match_status"] == "exact"
+    assert selected["error_code"] == "LP_TARGET_OK"
+    assert Path(selected["log_path"]).is_file()
 
     dfx = CliRunner().invoke(cli, ["dfx-output", str(task_dir)])
     assert dfx.exit_code == 0, dfx.output

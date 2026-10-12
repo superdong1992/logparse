@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Iterable
 
-from backend.models import MechLogEntry
+from backend.extensions.products.current.models import MechLogEntry
 
 
 def dedupe_mech_entries(entries: Iterable[MechLogEntry]) -> list[MechLogEntry]:

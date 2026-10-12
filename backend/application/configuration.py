@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
 from backend.application.plugin_graph import ordered_mechanism_specs
-from backend.config_migration import migrate_config, normalize_config_for_runtime
 from backend.config_validation import validate_config
 
 
@@ -80,21 +80,6 @@ def _resolve_product_includes(
     return result
 
 
-def render_migrated_config(raw: Mapping[str, Any]) -> str:
-    """Render a deterministic v2 YAML document for ``migrate-config``."""
-
-    migrated = migrate_config(raw).config
-    errors = validate_config(migrated)
-    if errors:
-        raise ConfigurationError(errors)
-    return yaml.safe_dump(
-        migrated,
-        allow_unicode=True,
-        sort_keys=False,
-        default_flow_style=False,
-    )
-
-
 def explain_config(
     raw: Mapping[str, Any],
     *,
@@ -105,11 +90,7 @@ def explain_config(
     source_errors = validate_config(dict(raw))
     if source_errors:
         raise ConfigurationError(source_errors)
-    migration = migrate_config(raw)
-    effective = migration.config
-    effective_errors = validate_config(effective)
-    if effective_errors:
-        raise ConfigurationError(effective_errors)
+    effective = deepcopy(dict(raw))
 
     products = effective.get("products", {})
     if not isinstance(products, Mapping):
@@ -137,21 +118,14 @@ def explain_config(
         "schema_version": effective["schema_version"],
         "pipeline": effective.get("pipeline", {}),
         "products": explained_products,
-        "migration_notices": [
-            {
-                "path": notice.path,
-                "action": notice.action,
-                "message": notice.message,
-            }
-            for notice in migration.notices
-        ],
+
     }
 
 
 def runtime_config(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate and project config for the current compatibility Pipeline."""
+    """Validate schema v2 without changing product ownership or field names."""
 
     errors = validate_config(dict(raw))
     if errors:
         raise ConfigurationError(errors)
-    return normalize_config_for_runtime(raw)
+    return deepcopy(dict(raw))

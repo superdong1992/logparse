@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from backend.config_migration import normalize_config_for_runtime
 from backend.contracts.product_onboarding import (
     CandidateDocument,
     RegexEvaluation,
@@ -20,7 +19,7 @@ from backend.extensions.products.current.scanner import ScannerPlugin
 from backend.extensions.products.onboarding.current_module1 import (
     CurrentModule1OnboardingAdapter,
 )
-from backend.models import ParseResult
+from backend.extensions.products.current.models import ParseResult
 from backend.presentation.cli.composition import build_product_onboarding_application
 
 
@@ -359,9 +358,7 @@ def test_built_fragment_runs_through_plain_and_gzip_runtime(
         build_product_onboarding_application().build_draft([log_path], candidate_path).to_dict()
     )
     fragment = report["draft_product_config"]
-    root = {"schema_version": 2, "pipeline": {}, "products": {"new": fragment}}
-    runtime = normalize_config_for_runtime(root)
-    product = runtime["products"]["new"]
+    product = fragment
     outer_zip = tmp_path / "samples.zip"
     with zipfile.ZipFile(outer_zip, "w") as archive:
         archive.write(log_path, arcname=log_path.name)
@@ -370,11 +367,11 @@ def test_built_fragment_runs_through_plain_and_gzip_runtime(
     decompressor.extract_all(
         outer_zip,
         extracted,
-        recursive=runtime["pipeline"]["recursive_extraction"],
+        recursive=product["archive"]["recursive_extraction"],
     )
-    scanner = ScannerPlugin(product["discovery"]["config"], decompressor)
+    scanner = ScannerPlugin(product["discovery"]["config"])
     diagnostic_slots, private_slots = scanner.discover(extracted)
-    parser = ParserPlugin(product["log_parser"]["config"])
+    parser = ParserPlugin(product["parser"]["config"], mechanisms=product["mechanisms"])
     result = ParseResult(
         task_id="onboarding-runtime",
         package_name=outer_zip.name,

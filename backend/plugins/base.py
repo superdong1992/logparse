@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 class DirectoryDiscoveryPlugin(ABC):
-    """Compatibility interface for product-specific workspace discovery.
+    """产品工作区发现接口。
 
     约定：
       - 输入: extracted_root (Path) — 外层压缩包已完整解压后的根目录
@@ -16,9 +16,8 @@ class DirectoryDiscoveryPlugin(ABC):
       - 不负责：解压归档包；归档解压由 Decompressor 的统一解压阶段完成
     """
 
-    def __init__(self, config: dict[str, Any], decompressor: Any = None):
+    def __init__(self, config: dict[str, Any]):
         self.config = config
-        self.decompressor = decompressor
 
     @classmethod
     def validate_config(cls, product_name: str, config: dict[str, Any]) -> list[str]:
@@ -33,10 +32,15 @@ class DirectoryDiscoveryPlugin(ABC):
 
 
 class LogParserPlugin(ABC):
-    """Compatibility interface for a product-owned parser adapter."""
+    """产品解析接口。"""
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: dict[str, Any], *, mechanisms: Mapping[str, Any],
+                 runtime_options: Mapping[str, Any] | None = None,
+                 performance_recorder: Any = None):
         self.config = config
+        self.mechanisms = mechanisms
+        self.runtime_options = runtime_options or {}
+        self.performance_recorder = performance_recorder
 
     @abstractmethod
     def parse(self, state: Any) -> Any:

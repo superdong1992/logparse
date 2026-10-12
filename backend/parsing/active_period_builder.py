@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from backend.models import ActivePeriod, SlotInfo
+from backend.extensions.products.current.models import ActivePeriod, SlotInfo
 
 
 class ActivePeriodBuilder:

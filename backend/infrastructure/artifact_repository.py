@@ -105,7 +105,7 @@ class ArtifactRepository:
         return self._file_record(target)
 
     def verify_manifest(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
-        """Verify declared artifact paths, sizes and hashes without log reads."""
+        """Verify paths, sizes and full content hashes, including evidence logs."""
         declared = manifest.get("artifacts")
         if not isinstance(declared, Mapping):
             return {
@@ -174,6 +174,15 @@ class ArtifactRepository:
                         "code": "unsafe_artifact",
                         "path": relative_path,
                         "message": str(exc),
+                    }
+                )
+                continue
+            except OSError:
+                issues.append(
+                    {
+                        "artifact": str(name),
+                        "code": "unreadable_artifact",
+                        "path": relative_path,
                     }
                 )
                 continue

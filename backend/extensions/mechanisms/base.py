@@ -20,7 +20,6 @@ class MechanismPlugin(ABC):
     plugin_api_version = PLUGIN_API_VERSION
     plugin_capabilities: frozenset[PluginCapability] = frozenset()
     config_schema: str | None = None
-    requires_legacy_parse_state = False
 
     def __init__(
         self,
@@ -32,10 +31,7 @@ class MechanismPlugin(ABC):
         self.config = config
         self.module_key = module_key
         self.ts_extractor = ts_extractor
-        if dependencies is None:
-            legacy_dependency = config.get("depends_on_module")
-            dependencies = () if not legacy_dependency else (str(legacy_dependency),)
-        self.dependencies = tuple(dict.fromkeys(str(item) for item in dependencies))
+        self.dependencies = tuple(dict.fromkeys(str(item) for item in (dependencies or ())))
 
     @property
     def module_name(self) -> str:
@@ -62,16 +58,5 @@ class MechanismPlugin(ABC):
 
     def build_diagnostic_line_scanner(self):
         return None
-
-    def set_precomputed_diagnostic_entries(
-        self,
-        entries,
-        file_count: int = 0,
-        line_count: int = 0,
-    ) -> None:
-        self._precomputed_diagnostic_entries = list(entries)
-        self._precomputed_diagnostic_file_count = file_count
-        self._precomputed_diagnostic_line_count = line_count
-
 
 __all__ = ["MechanismPlugin"]

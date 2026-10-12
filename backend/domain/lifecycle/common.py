@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.models import MechLogEntry, MechProcessLifecycle
+from backend.extensions.products.current.models import MechLogEntry, MechProcessLifecycle
 
 
 class LifecycleSplitConfig(BaseModel):

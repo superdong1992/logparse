@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from backend.models import (
+from backend.extensions.products.current.models import (
     ActivePeriod,
     BoardRole,
     JournalLogFile,
@@ -21,32 +21,33 @@ from backend.models import (
     SlotInfo,
 )
 from backend.performance import PerformanceRecorder
-from backend.plugins.default.parser import ParserPlugin
-from backend.plugins.mechanisms.base import MechanismModulePlugin
-from backend.parsing.lifecycle_common import _build_process_lifecycles, _format_cycle_dir
+from backend.extensions.products.current.parser import ParserPlugin
+from backend.extensions.mechanisms.base import MechanismPlugin
+from backend.contracts.plugins import MechanismOutcome
+from backend.domain.lifecycle.common import _build_process_lifecycles, _format_cycle_dir
 from backend.parsing.role_identifier import RoleIdentifier
 
 
-class ExplodingDiagnosticScannerPlugin(MechanismModulePlugin):
+class ExplodingDiagnosticScannerPlugin(MechanismPlugin):
     def build_diagnostic_line_scanner(self):
         def _scanner(line, log_entry, slot_id):
             raise RuntimeError("scanner boom")
 
         return _scanner
 
-    def parse(self, result):
-        return None
+    def execute(self, context):
+        return MechanismOutcome()
 
 
-class ExplodingDiagnosticScannerBuilderPlugin(MechanismModulePlugin):
+class ExplodingDiagnosticScannerBuilderPlugin(MechanismPlugin):
     def build_diagnostic_line_scanner(self):
         raise RuntimeError("builder boom")
 
-    def parse(self, result):
-        return None
+    def execute(self, context):
+        return MechanismOutcome()
 
 
-class RecoveringDiagnosticScannerPlugin(MechanismModulePlugin):
+class RecoveringDiagnosticScannerPlugin(MechanismPlugin):
     def build_diagnostic_line_scanner(self):
         def _scanner(line, log_entry, slot_id):
             if "boom" in line:
@@ -67,9 +68,9 @@ class RecoveringDiagnosticScannerPlugin(MechanismModulePlugin):
 
         return _scanner
 
-    def parse(self, result):
-        entries = list(getattr(self, "_precomputed_diagnostic_entries", []))
-        return MechResult(
+    def execute(self, context):
+        entries = list(context.scan_batch.entries_by_module.get(self.module_key, ()))
+        return MechanismOutcome(result=MechResult(
             module_name="RECOVER",
             module_key=self.module_key,
             diag_entry_count=len(entries),
@@ -91,12 +92,12 @@ class RecoveringDiagnosticScannerPlugin(MechanismModulePlugin):
                     ],
                 )
             ],
-        )
+        ))
 
 
 @pytest.fixture
-def plugin(sample_config):
-    return ParserPlugin(sample_config)
+def plugin(sample_config, sample_mechanisms):
+    return ParserPlugin(sample_config, mechanisms=sample_mechanisms)
 
 
 class TestExtractContentTimestamps:
@@ -119,8 +120,8 @@ class TestExtractContentTimestamps:
 
 
 class TestNestedMechanismConfig:
-    def test_nested_sample_config_does_not_report_missing_module_name(self, sample_config):
-        result = ParserPlugin(sample_config).parse(ParseResult())
+    def test_nested_sample_config_does_not_report_missing_module_name(self, sample_config, sample_mechanisms):
+        result = ParserPlugin(sample_config, mechanisms=sample_mechanisms).parse(ParseResult())
 
         assert not any("module_name" in error for error in result.errors)
 
@@ -242,19 +243,19 @@ class TestRoleIdentification:
 
 
 class TestMechanismPluginOrchestration:
-    def test_parser_loads_mechanism_plugin(self, sample_config, sample_parse_result):
-        plugin = ParserPlugin(sample_config)
+    def test_parser_loads_mechanism_plugin(self, sample_config, sample_mechanisms, sample_parse_result):
+        plugin = ParserPlugin(sample_config, mechanisms=sample_mechanisms)
 
         result = plugin.parse(sample_parse_result)
 
         assert result is sample_parse_result
 
     def test_parser_emits_perf_logs_with_elapsed(
-        self, sample_config, sample_parse_result, caplog,
+        self, sample_config, sample_mechanisms, sample_parse_result, caplog,
     ):
-        plugin = ParserPlugin(sample_config)
+        plugin = ParserPlugin(sample_config, mechanisms=sample_mechanisms)
 
-        with caplog.at_level(logging.INFO, logger="backend.plugins.default.parser"):
+        with caplog.at_level(logging.INFO, logger="backend.extensions.products.current.parser"):
             plugin.parse(sample_parse_result)
 
         assert "LOGPARSE_PERF parser.timestamps elapsed=" in caplog.text
@@ -265,7 +266,7 @@ class TestMechanismPluginOrchestration:
     def test_parser_no_longer_exposes_module_specific_parse_method(self, plugin):
         assert not hasattr(plugin, "_parse_one_mech")
 
-    def test_parser_records_shared_diagnostic_scan_metrics(self, sample_config, tmp_path):
+    def test_parser_records_shared_diagnostic_scan_metrics(self, sample_config, sample_mechanisms, tmp_path, monkeypatch):
         log_path = tmp_path / "diag.log"
         log_path.write_text(
             "\n".join(
@@ -284,21 +285,21 @@ class TestMechanismPluginOrchestration:
             encoding="utf-8",
         )
         config = dict(sample_config)
-        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
-        config["mechanism_modules"]["module2"] = {
-            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+        mechanisms = dict(sample_mechanisms)
+        mechanisms["module2"] = {
+            "plugin": "backend.extensions.mechanisms.module2.Module2Plugin",
             "enabled": True,
+            "depends_on": ["module1"],
             "config": {
                 "module_name": "MODULE2",
                 "identifying_keyword": "MODULE2",
-                "depends_on_module": "module1",
                 "diag_pattern": (
                     r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>[^,]*),"
                     r"ProcessName=(?P<ProcessName>[^,]+),Context=\"(?P<Context>.*?)\""
                 ),
             },
         }
-        plugin = ParserPlugin(config)
+        plugin = ParserPlugin(config, mechanisms=mechanisms)
         plugin.performance_recorder = PerformanceRecorder(enabled=True)
         result = ParseResult(
             diagnostic_slots=[
@@ -313,7 +314,21 @@ class TestMechanismPluginOrchestration:
             ]
         )
 
+        from pathlib import Path
+        reads = []
+        original_open = Path.open
+
+        def count_reads(path, *args, **kwargs):
+            if path == log_path:
+                reads.append(path)
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", count_reads)
         plugin.parse(result)
+        assert reads == [log_path]
+        assert {item.module_key: item.diag_entry_count for item in result.mech_results} == {
+            "module1": 1, "module2": 1,
+        }
         perf = plugin.performance_recorder.to_dict()
         shared = next(stage for stage in perf["stages"] if stage["name"] == "diagnostic_scan.shared")
 
@@ -324,7 +339,7 @@ class TestMechanismPluginOrchestration:
         assert shared["metrics"]["module2_entries"] == 1
 
     def test_parser_dedupes_duplicate_module1_diagnostic_entries(
-        self, sample_config, tmp_path,
+        self, sample_config, sample_mechanisms, tmp_path,
     ):
         duplicate_line = (
             "2026-01-03T00:01:00 EXAMPLE Service=EXAMPLE; Slot=1; "
@@ -348,7 +363,7 @@ class TestMechanismPluginOrchestration:
             ]
         )
 
-        ParserPlugin(sample_config).parse(result)
+        ParserPlugin(sample_config, mechanisms=sample_mechanisms).parse(result)
 
         module1 = next(mech for mech in result.mech_results if mech.module_key == "module1")
         assert module1.diag_entry_count == 1
@@ -357,7 +372,7 @@ class TestMechanismPluginOrchestration:
         assert [log.source_file for log in proc.logs] == ["slot_1/diag-a.log"]
 
     def test_parser_dedupes_duplicate_module2_diagnostic_entries(
-        self, sample_config, tmp_path,
+        self, sample_config, sample_mechanisms, tmp_path,
     ):
         module1_line = (
             "2026-01-03T00:00:00 EXAMPLE Service=EXAMPLE; Slot=1; "
@@ -372,14 +387,14 @@ class TestMechanismPluginOrchestration:
         log_a.write_text(f"{module1_line}\n{module2_line}\n", encoding="utf-8")
         log_b.write_text(f"{module2_line}\n", encoding="utf-8")
         config = dict(sample_config)
-        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
-        config["mechanism_modules"]["module2"] = {
-            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+        mechanisms = dict(sample_mechanisms)
+        mechanisms["module2"] = {
+            "plugin": "backend.extensions.mechanisms.module2.Module2Plugin",
             "enabled": True,
+            "depends_on": ["module1"],
             "config": {
                 "module_name": "MODULE2",
                 "identifying_keyword": "MODULE2",
-                "depends_on_module": "module1",
                 "diag_pattern": (
                     r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>[^,]*),"
                     r"ProcessName=(?P<ProcessName>[^,]+),Context=\"(?P<Context>.*?)\""
@@ -400,7 +415,7 @@ class TestMechanismPluginOrchestration:
             ]
         )
 
-        ParserPlugin(config).parse(result)
+        ParserPlugin(config, mechanisms=mechanisms).parse(result)
 
         module2 = next(mech for mech in result.mech_results if mech.module_key == "module2")
         assert module2.diag_entry_count == 1
@@ -409,7 +424,7 @@ class TestMechanismPluginOrchestration:
         assert [log.source_file for log in proc.logs] == ["slot_1/diag-a.log"]
 
     def test_parser_dedupes_duplicate_module1_journal_entries(
-        self, sample_config, tmp_path,
+        self, sample_config, sample_mechanisms, tmp_path,
     ):
         duplicate_line = (
             "2026-01-03T00:01:00 host SERVICE-12345: No[1] EXAMPLE journal"
@@ -429,7 +444,7 @@ class TestMechanismPluginOrchestration:
         )
         result = ParseResult(private_slots=[private_slot])
 
-        ParserPlugin(sample_config).parse(result)
+        ParserPlugin(sample_config, mechanisms=sample_mechanisms).parse(result)
 
         module1 = next(mech for mech in result.mech_results if mech.module_key == "module1")
         assert module1.journal_entry_count == 1
@@ -437,7 +452,7 @@ class TestMechanismPluginOrchestration:
         assert proc.total_count == 1
         assert [log.source_file for log in proc.logs] == ["slot_1/journal-a.log"]
 
-    def test_shared_scan_isolates_module_scanner_errors(self, sample_config, tmp_path):
+    def test_shared_scan_isolates_module_scanner_errors(self, sample_config, sample_mechanisms, tmp_path):
         log_path = tmp_path / "diag.log"
         log_path.write_text(
             (
@@ -447,8 +462,8 @@ class TestMechanismPluginOrchestration:
             encoding="utf-8",
         )
         config = dict(sample_config)
-        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
-        config["mechanism_modules"]["bad_module"] = {
+        mechanisms = dict(sample_mechanisms)
+        mechanisms["bad_module"] = {
             "plugin": "tests.test_parser_plugin.ExplodingDiagnosticScannerPlugin",
             "enabled": True,
             "config": {},
@@ -466,13 +481,13 @@ class TestMechanismPluginOrchestration:
             ]
         )
 
-        ParserPlugin(config).parse(result)
+        ParserPlugin(config, mechanisms=mechanisms).parse(result)
 
         assert result.diagnostic_slots[0].diagnostic_logs[0].content_timestamps
         assert any(mech.module_key == "module1" for mech in result.mech_results)
-        assert any("bad_module" in error and "shared diagnostic scan" in error for error in result.errors)
+        assert any("bad_module" in error and "诊断日志扫描失败" in error for error in result.errors)
 
-    def test_shared_scan_continues_module_after_scanner_line_error(self, sample_config, tmp_path):
+    def test_shared_scan_continues_module_after_scanner_line_error(self, sample_config, sample_mechanisms, tmp_path):
         log_path = tmp_path / "diag.log"
         log_path.write_text(
             (
@@ -482,8 +497,8 @@ class TestMechanismPluginOrchestration:
             encoding="utf-8",
         )
         config = dict(sample_config)
-        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
-        config["mechanism_modules"]["recover"] = {
+        mechanisms = dict(sample_mechanisms)
+        mechanisms["recover"] = {
             "plugin": "tests.test_parser_plugin.RecoveringDiagnosticScannerPlugin",
             "enabled": True,
             "config": {},
@@ -501,13 +516,13 @@ class TestMechanismPluginOrchestration:
             ]
         )
 
-        ParserPlugin(config).parse(result)
+        ParserPlugin(config, mechanisms=mechanisms).parse(result)
 
         recover = next(mech for mech in result.mech_results if mech.module_key == "recover")
         assert recover.diag_entry_count == 1
-        assert any("recover" in error and "shared diagnostic scan" in error for error in result.errors)
+        assert any("recover" in error and "诊断日志扫描失败" in error for error in result.errors)
 
-    def test_shared_scan_preserves_sorted_content_timestamps(self, sample_config, tmp_path):
+    def test_shared_scan_preserves_sorted_content_timestamps(self, sample_config, sample_mechanisms, tmp_path):
         log_path = tmp_path / "diag.log"
         log_path.write_text(
             (
@@ -529,7 +544,7 @@ class TestMechanismPluginOrchestration:
             ]
         )
 
-        ParserPlugin(sample_config).parse(result)
+        ParserPlugin(sample_config, mechanisms=sample_mechanisms).parse(result)
 
         timestamps = result.diagnostic_slots[0].diagnostic_logs[0].content_timestamps
         assert [ts.isoformat() for ts in timestamps] == [
@@ -537,7 +552,7 @@ class TestMechanismPluginOrchestration:
             "2026-01-03T00:02:00",
         ]
 
-    def test_shared_scan_isolates_module_scanner_builder_errors(self, sample_config, tmp_path):
+    def test_shared_scan_isolates_module_scanner_builder_errors(self, sample_config, sample_mechanisms, tmp_path):
         log_path = tmp_path / "diag.log"
         log_path.write_text(
             (
@@ -547,8 +562,8 @@ class TestMechanismPluginOrchestration:
             encoding="utf-8",
         )
         config = dict(sample_config)
-        config["mechanism_modules"] = dict(sample_config["mechanism_modules"])
-        config["mechanism_modules"]["bad_builder"] = {
+        mechanisms = dict(sample_mechanisms)
+        mechanisms["bad_builder"] = {
             "plugin": "tests.test_parser_plugin.ExplodingDiagnosticScannerBuilderPlugin",
             "enabled": True,
             "config": {},
@@ -566,11 +581,11 @@ class TestMechanismPluginOrchestration:
             ]
         )
 
-        ParserPlugin(config).parse(result)
+        ParserPlugin(config, mechanisms=mechanisms).parse(result)
 
         assert result.diagnostic_slots[0].diagnostic_logs[0].content_timestamps
         assert any(mech.module_key == "module1" for mech in result.mech_results)
-        assert any("bad_builder" in error and "shared diagnostic scanner setup" in error for error in result.errors)
+        assert any("bad_builder" in error and "诊断日志扫描器初始化失败" in error for error in result.errors)
 
 
 class TestFmtDir:
@@ -584,3 +599,52 @@ class TestFmtDir:
 
     def test_none(self):
         assert _format_cycle_dir(None, None) == "unknown"
+
+
+def test_shared_empty_batch_does_not_rescan_or_reuse_previous_run(
+    sample_config, sample_mechanisms, tmp_path, monkeypatch,
+):
+    from pathlib import Path
+
+    log_path = tmp_path / "diag.log"
+    log_path.write_text(
+        "2026-01-03T00:01:00 EXAMPLE Service=EXAMPLE; Slot=1; "
+        "CPU-Id=0; ProcessName=SERVICE-12345; Context=No[1] MASTER_ACTIVE)\n",
+        encoding="utf-8",
+    )
+    parser = ParserPlugin(sample_config, mechanisms=sample_mechanisms)
+
+    def state():
+        return ParseResult(diagnostic_slots=[SlotInfo(
+            slot_id="1", name="slot_1", path=str(tmp_path),
+            diagnostic_logs=[LogEntry(path=str(log_path), name=log_path.name)],
+        )])
+
+    assert parser.parse(state()).mech_results[0].diag_entry_count == 1
+    log_path.write_text("2026-01-03T00:01:00 unrelated log\n", encoding="utf-8")
+    original_open = Path.open
+    reads = []
+
+    def count_reads(path, *args, **kwargs):
+        if path == log_path:
+            reads.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", count_reads)
+    result = parser.parse(state())
+
+    assert reads == [log_path]
+    assert parser.last_scan_batch.entries_by_module == {"module1": ()}
+    assert result.mech_results == []
+    assert result.errors == []
+
+
+def test_parser_preserves_structured_read_diagnostics(sample_config, sample_mechanisms, tmp_path):
+    parser = ParserPlugin(sample_config, mechanisms=sample_mechanisms)
+    result = parser.parse(ParseResult(diagnostic_slots=[SlotInfo(
+        slot_id="1", name="slot_1", path=str(tmp_path),
+        diagnostic_logs=[LogEntry(path=str(tmp_path / "missing.log"), name="missing.log")],
+    )]))
+
+    assert [item.code for item in parser.last_mechanism_diagnostics] == ["LP_DIAGNOSTIC_READ_FAILED"]
+    assert len(result.errors) == 1

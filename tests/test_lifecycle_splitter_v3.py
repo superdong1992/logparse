@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from backend.models import MechLogEntry
-from backend.parsing.lifecycle_common import LifecycleSplitConfig
-from backend.parsing.lifecycle_splitter_v3 import LifecycleSplitterV3
+from backend.extensions.products.current.models import MechLogEntry
+from backend.domain.lifecycle.common import LifecycleSplitConfig
+from backend.domain.lifecycle.splitter_v3 import LifecycleSplitterV3
 
 
 def _ts(seconds: int) -> datetime:
@@ -411,7 +411,7 @@ def test_build_board_cycles_logs_lifecycle_process_group_counts(caplog):
         _entry("cpuworker", "10", 80, cpu_id="1"),
     ])
 
-    caplog.set_level(logging.INFO, logger="backend.parsing.lifecycle_splitter_v3")
+    caplog.set_level(logging.INFO, logger="backend.domain.lifecycle.splitter_v3")
     splitter.build_board_cycles(result)
 
     assert "最终切分结果: 1 个周期" in caplog.text

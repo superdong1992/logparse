@@ -13,12 +13,9 @@ from backend.contracts.artifacts import (
 from backend.contracts.diagnostics import DiagnosticRecord
 from backend.contracts.plugins import (
     DiagnosticScanBatch,
-    DiscoveryContext,
-    DiscoveryResult,
     MechanismContext,
     MechanismDescriptor,
     MechanismOutcome,
-    LegacyMechanismContext,
     PluginCapability,
 )
 from backend.contracts.runtime import (
@@ -44,14 +41,11 @@ __all__ = [
     "DiagnosticRecord",
     "DiagnosticScanBatch",
     "DiagnosticSeverity",
-    "DiscoveryContext",
-    "DiscoveryResult",
     "ManifestStageRecord",
     "ManifestStageStatus",
     "MechanismContext",
     "MechanismDescriptor",
     "MechanismOutcome",
-    "LegacyMechanismContext",
     "ParseEngineOutcome",
     "ParseManifest",
     "ParseStatus",

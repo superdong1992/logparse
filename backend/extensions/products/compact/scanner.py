@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from backend.models import JournalLogFile, LogEntry, PrivateSlotInfo, SlotInfo
+from backend.extensions.products.current.models import JournalLogFile, LogEntry, PrivateSlotInfo, SlotInfo
 from backend.extensions.products.config_validation import validate_discovery_config
 from backend.plugins.base import DirectoryDiscoveryPlugin
 from backend.utils import (
@@ -39,8 +39,8 @@ class CompactScannerPlugin(DirectoryDiscoveryPlugin):
     def validate_config(cls, product_name: str, config: dict[str, Any]) -> list[str]:
         return validate_discovery_config(product_name, config)
 
-    def __init__(self, config: dict[str, Any], decompressor: Any = None):
-        super().__init__(config, decompressor)
+    def __init__(self, config: dict[str, Any]):
+        super().__init__(config)
         self._compile_patterns()
 
     def _compile_patterns(self) -> None:

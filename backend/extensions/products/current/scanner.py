@@ -5,10 +5,17 @@ from __future__ import annotations
 import logging
 import re
 import hashlib
+import zlib
 from pathlib import Path
 from typing import Any
 
-from backend.models import JournalLogFile, LogEntry, PrivateSlotInfo, SlotInfo
+from backend.contracts.runtime import Diagnostic
+from backend.extensions.products.current.models import (
+    JournalLogFile,
+    LogEntry,
+    PrivateSlotInfo,
+    SlotInfo,
+)
 from backend.parsing.file_iter import iter_log_entry_lines
 from backend.plugins.base import DirectoryDiscoveryPlugin
 from backend.extensions.products.config_validation import validate_discovery_config
@@ -40,9 +47,10 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
     def validate_config(cls, product_name: str, config: dict[str, Any]) -> list[str]:
         return validate_discovery_config(product_name, config)
 
-    def __init__(self, config: dict[str, Any], decompressor: Any = None):
-        super().__init__(config, decompressor)
+    def __init__(self, config: dict[str, Any]):
+        super().__init__(config)
         self._compile_patterns()
+        self.last_diagnostics: tuple[Diagnostic, ...] = ()
 
     def _compile_patterns(self) -> None:
         self._slot_pattern = glob_to_regex(
@@ -82,6 +90,7 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
     def discover(
         self, extracted_root: Path,
     ) -> tuple[list[SlotInfo], list[PrivateSlotInfo]]:
+        self.last_diagnostics = ()
         diag_slots = self._scan_diag(extracted_root)
         self._merge_loose_diagnostic_logs(extracted_root, diag_slots)
         return (
@@ -148,6 +157,9 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
             return
 
         seen = self._diagnostic_fingerprints(slots)
+        registered_paths = {
+            Path(entry.path) for slot in slots for entry in slot.diagnostic_logs
+        }
         loose_slot = SlotInfo(
             slot_id="loose",
             name="slot_loose",
@@ -158,8 +170,12 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
                 continue
             if not self._match_any(path.name, self._loose_diag_file_patterns):
                 continue
+            if path in registered_paths:
+                continue
             entry = self._build_diag_log_entry(path)
-            fingerprint = self._diagnostic_fingerprint(entry)
+            fingerprint = self._diagnostic_fingerprint(
+                entry, source=path.relative_to(extracted_root).as_posix(),
+            )
             if fingerprint and fingerprint in seen:
                 continue
             if fingerprint:
@@ -173,7 +189,9 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
         fingerprints: set[str] = set()
         for slot in slots:
             for entry in slot.diagnostic_logs:
-                fingerprint = self._diagnostic_fingerprint(entry)
+                fingerprint = self._diagnostic_fingerprint(
+                    entry, source=f"{slot.name}/{entry.name}",
+                )
                 if fingerprint:
                     fingerprints.add(fingerprint)
         return fingerprints
@@ -192,8 +210,23 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
             dump_time=dump_time,
         )
 
+    def _diagnostic_fingerprint(self, entry: LogEntry, *, source: str | None = None) -> str | None:
+        try:
+            return self._read_diagnostic_fingerprint(entry)
+        except (OSError, EOFError, zlib.error) as exc:
+            source = source or entry.name
+            diagnostic = Diagnostic(
+                code="LP_DIAGNOSTIC_READ_FAILED",
+                message=f"诊断日志读取失败，已保留该文件并跳过内容去重：{source}。",
+                stage="pipeline.discovery",
+                details={"source": source, "reason": type(exc).__name__},
+            )
+            self.last_diagnostics = (*self.last_diagnostics, diagnostic)
+            logger.warning("%s", diagnostic.message)
+            return None
+
     @staticmethod
-    def _diagnostic_fingerprint(entry: LogEntry) -> str:
+    def _read_diagnostic_fingerprint(entry: LogEntry) -> str:
         digest = hashlib.md5()
         saw_content = False
         if (
@@ -209,8 +242,6 @@ class ScannerPlugin(DirectoryDiscoveryPlugin):
                 return digest.hexdigest()
 
         path = Path(entry.path)
-        if not path.is_file():
-            return ""
         with path.open("rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 digest.update(chunk)

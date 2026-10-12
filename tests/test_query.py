@@ -1,12 +1,15 @@
-"""Tests for backend/query.py."""
+"""Tests for current-product artifact queries."""
 from __future__ import annotations
 
 import json
 
 import pytest
+from click.testing import CliRunner
 
-from backend.query import QueryArtifactSchemaError, ResultQueryService
+from backend.extensions.products.current.query import ResultQueryService
+from backend.infrastructure.artifact_reader import ArtifactReadError, ArtifactSchemaError
 from backend.utils import safe_log_filename, safe_path_segment
+from cli import cli
 
 
 @pytest.fixture
@@ -14,11 +17,64 @@ def svc(tmp_path):
     return ResultQueryService(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("field_path", "value"),
+    [
+        (("board_cycles",), "PRIVATE RAW LOG"),
+        (("board_cycles", 0), 7),
+        (("board_cycles", 0, "processes"), ["PRIVATE RAW LOG"]),
+        (("board_cycles", 0, "processes", 0, "total_count"), "PRIVATE RAW LOG"),
+        (("board_cycles", 0, "cpu_cycles"), [7]),
+        (("lifecycle_split_result",), 7),
+        (("lifecycle_split_result", "candidate_segments"), [7]),
+        (("lifecycle_split_result", "merge_decisions"), [
+            {"reliable_pid_counts": [7]},
+        ]),
+        (("lifecycle_split_result", "lifecycles"), [
+            {"candidate_indices": ["PRIVATE RAW LOG"]},
+        ]),
+        (("lifecycle_split_result", "issues"), [{"observed_pids": 7}]),
+    ],
+)
+def test_nested_result_shape_fails_before_cli_traversal(svc, tmp_path, field_path, value):
+    slot = {
+        "slot_id": "1",
+        "board_cycles": [_board_cycle("cycle", None, None, [_proc("SERVICE", "123")])],
+        "lifecycle_split_result": {"algorithm": "interval_v3"},
+    }
+    parent = slot
+    for key in field_path[:-1]:
+        parent = parent[key]
+    parent[field_path[-1]] = value
+    _write_result(tmp_path, "task", [{"module_name": "EXAMPLE", "slots": [slot]}])
+
+    with pytest.raises(ArtifactReadError) as caught:
+        svc.read_result("task")
+    assert caught.value.reason == "invalid_shape"
+    assert "PRIVATE RAW LOG" not in str(caught.value)
+    result = CliRunner().invoke(cli, [
+        "mech-lifecycles", "task", "-o", str(tmp_path), "-s", "1",
+        "--show-boundaries", "--lifecycle-dfx", "full",
+    ])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "字段结构或类型无效" in result.output
+    assert "PRIVATE RAW LOG" not in result.output
+
+
+def test_missing_fields_required_by_cli_are_invalid_shape(svc, tmp_path):
+    _write_result(tmp_path, "task", [{"slots": [{"slot_id": "1"}]}])
+    with pytest.raises(ArtifactReadError) as caught:
+        svc.mech_slots("task")
+    assert caught.value.reason == "invalid_shape"
+
+
 class TestFirstModuleName:
     def test_returns_first_module_name(self, svc, tmp_path):
         task_dir = tmp_path / "task1"
         task_dir.mkdir()
         (task_dir / "result.json").write_text(json.dumps({
+            "schema_version": 2,
             "mech_results": [
                 {"module_name": "EXAMPLE"},
                 {"module_name": "OTHER"},
@@ -30,6 +86,7 @@ class TestFirstModuleName:
         task_dir = tmp_path / "task2"
         task_dir.mkdir()
         (task_dir / "result.json").write_text(json.dumps({
+            "schema_version": 2,
             "mech_results": []
         }), encoding="utf-8")
         assert svc.first_module_name("task2") is None
@@ -43,6 +100,7 @@ class TestMechLogPath:
         task_dir = tmp_path / "task1"
         task_dir.mkdir()
         (task_dir / "result.json").write_text(json.dumps({
+            "schema_version": 2,
             "mech_results": [{"module_name": "EXAMPLE"}]
         }), encoding="utf-8")
         path = svc.mech_log_path("task1", "1", "cycle1", "PROC", pid="123")
@@ -142,6 +200,7 @@ def _write_result(tmp_path, task_id, mech_results):
     task_dir = tmp_path / task_id
     task_dir.mkdir(exist_ok=True)
     (task_dir / "result.json").write_text(json.dumps({
+        "schema_version": 2,
         "mech_results": mech_results,
     }, ensure_ascii=False), encoding="utf-8")
 
@@ -234,8 +293,53 @@ class TestMechModules:
             encoding="utf-8",
         )
 
-        with pytest.raises(QueryArtifactSchemaError, match="expected 2"):
+        with pytest.raises(ArtifactSchemaError, match="期望版本为 2"):
             svc.read_result("task")
+
+    @pytest.mark.parametrize(
+        ("text", "reason", "code"),
+        [
+            ("{broken", "invalid_json", "LP_RESULT_INVALID"),
+            ("[]", "invalid_root", "LP_RESULT_INVALID"),
+            ('{"mech_results": []}', "missing_schema", "LP_SCHEMA_UNSUPPORTED"),
+            ('{"schema_version": 99}', "unsupported_schema", "LP_SCHEMA_UNSUPPORTED"),
+        ],
+    )
+    def test_invalid_result_returns_deterministic_target_error(
+        self, svc, tmp_path, text, reason, code,
+    ):
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        (task_dir / "result.json").write_text(text, encoding="utf-8")
+
+        with pytest.raises(ArtifactReadError) as caught:
+            svc.read_result("task")
+        assert caught.value.reason == reason
+
+        payload = svc.resolve_target_logs(
+            "task", problem_time="2026-01-03T00:05:00", module="module1",
+            slot="1", process_name="SERVICE", explain=True,
+        )
+
+        assert payload["target_logs"][0]["error_code"] == code
+        assert payload["target_logs"][0]["match_status"] == "missing"
+        assert "log_path" not in payload["target_logs"][0]
+        assert payload["selection_diagnostics"]["error_code"] == code
+
+    def test_unreadable_result_returns_deterministic_target_error(
+        self, svc, monkeypatch,
+    ):
+        def deny_read(*_args, **_kwargs):
+            raise PermissionError("private details")
+
+        monkeypatch.setattr("pathlib.Path.read_text", deny_read)
+        payload = svc.resolve_target_logs(
+            "task", problem_time="2026-01-03T00:05:00", module="module1",
+            slot="1", process_name="SERVICE", explain=True,
+        )
+
+        assert payload["target_logs"][0]["error_code"] == "LP_RESULT_INVALID"
+        assert "private details" not in json.dumps(payload)
 
 
 class TestMechSlotsMultiModule:
@@ -267,10 +371,10 @@ class TestMechLifecyclesMultiModule:
     def test_returns_all_matching_modules(self, svc, tmp_path):
         _write_result(tmp_path, "task", [
             {"module_name": "EXAMPLE", "slots": [
-                {"slot_id": "1", "board_cycles": [{"dir_name": "c1"}]},
+                {"slot_id": "1", "board_cycles": [_board_cycle("c1", None, None)]},
             ]},
             {"module_name": "OTHER", "slots": [
-                {"slot_id": "1", "board_cycles": [{"dir_name": "c2"}]},
+                {"slot_id": "1", "board_cycles": [_board_cycle("c2", None, None)]},
             ]},
         ])
         groups = svc.mech_lifecycles("task", slot_id="1")
@@ -280,10 +384,10 @@ class TestMechLifecyclesMultiModule:
     def test_can_filter_by_module(self, svc, tmp_path):
         _write_result(tmp_path, "task", [
             {"module_name": "EXAMPLE", "slots": [
-                {"slot_id": "1", "board_cycles": [{"dir_name": "c1"}]},
+                {"slot_id": "1", "board_cycles": [_board_cycle("c1", None, None)]},
             ]},
             {"module_name": "OTHER", "slots": [
-                {"slot_id": "1", "board_cycles": [{"dir_name": "c2"}]},
+                {"slot_id": "1", "board_cycles": [_board_cycle("c2", None, None)]},
             ]},
         ])
         groups = svc.mech_lifecycles("task", slot_id="1", module_name="EXAMPLE")
@@ -307,7 +411,7 @@ class TestMechLifecyclesMultiModule:
                             "issues": [],
                             "lifecycle_reliable": False,
                         },
-                        "board_cycles": [{"dir_name": "c1"}],
+                        "board_cycles": [_board_cycle("c1", None, None)],
                     },
                 ],
             },
@@ -342,7 +446,7 @@ class TestMechLifecyclesMultiModule:
                             "issues": [],
                             "lifecycle_reliable": True,
                         },
-                        "board_cycles": [{"dir_name": "c1"}],
+                        "board_cycles": [_board_cycle("c1", None, None)],
                     },
                 ],
             },

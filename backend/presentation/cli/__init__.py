@@ -1,2 +1,1 @@
 """CLI presentation helpers."""
-

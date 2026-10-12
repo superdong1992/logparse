@@ -4,7 +4,7 @@ from pathlib import Path
 
 from backend.extensions.products.current.scopes import product_cycle_ref
 from backend.extensions.mechanisms.module2 import Module2Plugin
-from backend.models import (
+from backend.extensions.products.current.models import (
     MechBoardCycle,
     MechLogEntry,
     MechResult,

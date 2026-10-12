@@ -15,15 +15,20 @@ from backend.contracts.artifacts import (
 )
 from backend.infrastructure.artifact_layout import ArtifactLayout
 from backend.infrastructure.artifact_repository import ArtifactRepository
-from backend.metadata import MetadataGenerator
-from backend.models import (
+from backend.infrastructure.artifact_reader import (
+    ArtifactReadError,
+    ArtifactSchemaError,
+    read_json_artifact,
+)
+from backend.extensions.products.current.metadata import MetadataGenerator
+from backend.extensions.products.current.models import (
     LogEntry,
     MechResult,
     MechSlotOutput,
     ParseResult,
     SlotInfo,
 )
-from backend.result_serializer import result_to_dict
+from backend.extensions.products.current.result_serializer import result_to_dict
 
 
 def test_artifact_layout_rejects_task_path_escape(tmp_path: Path) -> None:
@@ -136,7 +141,7 @@ def test_metadata_is_scan_only_and_uses_logical_paths(tmp_path: Path) -> None:
     assert "extracted_path" not in payload
 
 
-def test_result_is_query_only_and_full_mode_is_removed() -> None:
+def test_result_is_query_only() -> None:
     result = ParseResult(
         task_id="task",
         package_name="package.zip",
@@ -150,8 +155,6 @@ def test_result_is_query_only_and_full_mode_is_removed() -> None:
     assert "diagnostic_slots" not in data
     assert "private_slots" not in data
     assert "extracted_root" not in data
-    with pytest.raises(ValueError, match="compact mode only"):
-        result_to_dict(result, "full")
 
 
 def test_result_recursively_drops_raw_context_and_payload_fields() -> None:
@@ -181,3 +184,90 @@ def test_result_recursively_drops_raw_context_and_payload_fields() -> None:
     assert "secret context" not in payload
     assert "secret payload" not in payload
     assert "safe structured reason" in payload
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        (b"{broken", "invalid_json"),
+        (b"\xff", "invalid_json"),
+        (b"[]", "invalid_root"),
+        (b"null", "invalid_root"),
+        (b"{}", "missing_schema"),
+        (b'{"schema_version": null}', "unsupported_schema"),
+        (b'{"schema_version": true}', "unsupported_schema"),
+        (b'{"schema_version": 2.0}', "unsupported_schema"),
+        (b'{"schema_version": "2"}', "unsupported_schema"),
+        (b'{"schema_version": 99}', "unsupported_schema"),
+    ],
+)
+def test_artifact_reader_reports_invalid_artifact_categories(
+    tmp_path: Path, content: bytes, reason: str,
+) -> None:
+    path = tmp_path / "result.json"
+    path.write_bytes(content)
+
+    with pytest.raises(ArtifactReadError) as caught:
+        read_json_artifact(path, expected_schema=2)
+
+    assert caught.value.artifact == "result.json"
+    assert caught.value.reason == reason
+    assert isinstance(caught.value, ArtifactSchemaError) == (
+        reason in {"missing_schema", "unsupported_schema"}
+    )
+
+
+def test_artifact_reader_distinguishes_missing_from_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "result.json"
+    with pytest.raises(ArtifactReadError) as missing:
+        read_json_artifact(path, expected_schema=2)
+    assert missing.value.reason == "missing"
+
+    def deny_read(*_args, **_kwargs):
+        raise PermissionError("private path and content must stay out of diagnostics")
+
+    monkeypatch.setattr(Path, "read_text", deny_read)
+    with pytest.raises(ArtifactReadError) as unreadable:
+        read_json_artifact(path, expected_schema=2)
+    assert unreadable.value.reason == "unreadable"
+    assert "private path" not in str(unreadable.value)
+
+
+def test_artifact_reader_accepts_current_object_schema(tmp_path: Path) -> None:
+    path = tmp_path / "result.json"
+    payload = {"schema_version": 2, "mech_results": []}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert read_json_artifact(path, expected_schema=2) == payload
+
+
+def test_manifest_verification_reports_unreadable_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = ArtifactRepository(ArtifactLayout(tmp_path, "task"))
+    evidence = repository.ensure_mech_modules() / "process.log"
+    evidence.write_text("evidence\n", encoding="utf-8")
+    manifest = {
+        "artifacts": {
+            name: record.to_dict()
+            for name, record in repository.collect_parse_artifacts().items()
+        }
+    }
+    original_open = Path.open
+
+    def deny_evidence(path, *args, **kwargs):
+        if path == evidence:
+            raise PermissionError("private details")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_evidence)
+    integrity = repository.verify_manifest(manifest)
+
+    assert integrity["ok"] is False
+    assert integrity["issues"] == [{
+        "artifact": "mech_modules",
+        "code": "unreadable_artifact",
+        "path": "mech_modules",
+    }]

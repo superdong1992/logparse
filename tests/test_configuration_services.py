@@ -3,14 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
 from backend.application.configuration import (
     ConfigurationError,
     explain_config,
     load_config_file,
     load_raw_config_file,
-    render_migrated_config,
     runtime_config,
 )
 from backend.application.doctor import run_doctor
@@ -31,25 +29,16 @@ def test_explain_config_reports_stable_dependency_order():
         "module1",
         "module2",
     ]
-    assert explanation["products"]["default"]["dependencies"]["module2"] == [
-        "module1"
-    ]
+    assert explanation["products"]["default"]["dependencies"]["module2"] == ["module1"]
 
 
-def test_render_migrated_config_is_valid_v2_yaml():
-    rendered = render_migrated_config(_shipped_config())
-    result = yaml.safe_load(rendered)
-
-    assert result["schema_version"] == 2
-    assert "parser" in result["products"]["default"]
-    assert "log_parser" not in result["products"]["default"]
-
-
-def test_runtime_config_keeps_current_pipeline_shape():
+def test_runtime_config_preserves_v2_without_mutating_source():
     runtime = runtime_config(_shipped_config())
 
-    assert "log_parser" in runtime["products"]["default"]
-    assert "mechanism_modules" in runtime["products"]["default"]["log_parser"]["config"]
+    assert "parser" in runtime["products"]["default"]
+    assert "mechanisms" in runtime["products"]["default"]
+    assert "mechanism_modules" not in runtime["products"]["default"]["parser"]["config"]
+    assert runtime == _shipped_config()
 
 
 def test_load_config_file_rejects_non_object(tmp_path):
@@ -69,8 +58,7 @@ def test_load_config_file_resolves_relative_product_include(tmp_path):
     )
     path = tmp_path / "config.yaml"
     path.write_text(
-        "schema_version: 2\nproducts:\n  demo:\n"
-        "    $include: configs/products/demo.yaml\n",
+        "schema_version: 2\nproducts:\n  demo:\n    $include: configs/products/demo.yaml\n",
         encoding="utf-8",
     )
 
@@ -86,8 +74,7 @@ def test_load_config_file_resolves_relative_product_include(tmp_path):
 def test_load_config_file_rejects_unsafe_product_include(tmp_path, include):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "schema_version: 2\nproducts:\n  demo:\n"
-        f"    $include: {include}\n",
+        f"schema_version: 2\nproducts:\n  demo:\n    $include: {include}\n",
         encoding="utf-8",
     )
 
@@ -111,8 +98,7 @@ def test_load_config_file_rejects_mixed_include_fields(tmp_path):
 def test_load_config_file_rejects_missing_include(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "schema_version: 2\nproducts:\n  demo:\n"
-        "    $include: configs/products/missing.yaml\n",
+        "schema_version: 2\nproducts:\n  demo:\n    $include: configs/products/missing.yaml\n",
         encoding="utf-8",
     )
 
@@ -127,8 +113,7 @@ def test_load_config_file_rejects_invalid_included_document(tmp_path, content):
     (product_dir / "demo.yaml").write_text(content, encoding="utf-8")
     path = tmp_path / "config.yaml"
     path.write_text(
-        "schema_version: 2\nproducts:\n  demo:\n"
-        "    $include: configs/products/demo.yaml\n",
+        "schema_version: 2\nproducts:\n  demo:\n    $include: configs/products/demo.yaml\n",
         encoding="utf-8",
     )
 

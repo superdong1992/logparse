@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.models import (
+from backend.extensions.products.current.models import (
     MechBoardCycle,
     MechCpuCycle,
     MechLogEntry,
@@ -31,7 +31,7 @@ from backend.domain.lifecycle.common import (
 
 
 SILENT_GAP_SECONDS = 30
-logger = logging.getLogger("backend.parsing.lifecycle_splitter_v3")
+logger = logging.getLogger("backend.domain.lifecycle.splitter_v3")
 
 
 class LifecycleV3CandidateSegment(BaseModel):

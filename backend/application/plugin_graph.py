@@ -37,14 +37,7 @@ class PluginGraphError(ValueError):
 
 
 def _dependencies_for_entry(module_key: str, entry: Mapping[str, Any]) -> tuple[str, ...]:
-    raw = entry.get("depends_on")
-    if raw is None:
-        config = entry.get("config", {})
-        if isinstance(config, Mapping):
-            legacy = config.get("depends_on_module")
-            raw = [] if legacy in (None, "") else [legacy]
-        else:
-            raw = []
+    raw = entry.get("depends_on", [])
 
     if not isinstance(raw, (list, tuple)):
         raise PluginGraphError(

@@ -14,20 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _minimal_valid_config() -> dict:
-    return {
-        "products": {
-            "default": {
-                "discovery": {
-                    "plugin": "backend.plugins.default.scanner.ScannerPlugin",
-                    "config": {},
-                },
-                "log_parser": {
-                    "plugin": "backend.plugins.default.parser.ParserPlugin",
-                    "config": {"timestamp_regex": r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"},
-                },
-            },
-        },
-    }
+    return _minimal_v2_config()
 
 
 class TestValidatePipelineConfig:
@@ -373,144 +360,125 @@ class TestValidateMechanismModuleConfig:
 
 # ── 使用实际插件路径的 fixture ──────────────────────
 
-_DEFAULT_DISCOVERY = "backend.plugins.default.scanner.ScannerPlugin"
-_DEFAULT_PARSER = "backend.plugins.default.parser.ParserPlugin"
-_COMPACT_DISCOVERY = "backend.plugins.compact.scanner.CompactScannerPlugin"
+_DEFAULT_DISCOVERY = "backend.extensions.products.current.scanner.ScannerPlugin"
+_DEFAULT_PARSER = "backend.extensions.products.current.parser.ParserPlugin"
+_COMPACT_DISCOVERY = "backend.extensions.products.compact.scanner.CompactScannerPlugin"
 
 
 def _valid_product_config():
-    """最小合法产品配置。"""
-    return {
-        "discovery": {
-            "plugin": _DEFAULT_DISCOVERY,
-            "config": {
-                "diagnostic_dir": "diag",
-                "private_dir": "varlog",
-                "slot_dir_pattern": "slot_*",
-                "diag_file_patterns": ["diag.zip"],
-            },
-        },
-        "log_parser": {
-            "plugin": _DEFAULT_PARSER,
-            "config": {
-                "timestamp_regex": r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})([+-]\d{2}:\d{2})?",
-                "mechanism_modules": {
-                    "module1": {
-                        "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
-                        "enabled": True,
-                        "config": {
-                            "module_name": "EXAMPLE",
-                            "journal": {
-                                "line_pattern": r"(\S+)\s+No\[(\d+)\]\s+(\S+)\s+(.*)",
-                            },
-                        },
-                    },
-                },
-            },
-        },
+    cfg = _minimal_v2_config()["products"]["default"]
+    cfg["discovery"]["config"] = {
+        "diagnostic_dir": "diag",
+        "private_dir": "varlog",
+        "slot_dir_pattern": "slot_*",
+        "diag_file_patterns": ["diag.zip"],
     }
+    cfg["mechanisms"]["module1"]["config"]["journal"] = {
+        "line_pattern": r"(\S+)\s+No\[(\d+)\]\s+(\S+)\s+(.*)",
+    }
+    return cfg
 
 
 class TestValidateConfig:
     def test_valid_config_passes(self):
-        errors = validate_config({"products": {"default": _valid_product_config()}})
+        errors = validate_config({"schema_version": 2, "products": {"default": _valid_product_config()}})
         assert errors == []
 
     def test_missing_products(self):
-        errors = validate_config({})
+        errors = validate_config({"schema_version": 2})
         assert errors
         assert any("products" in e for e in errors)
 
     def test_empty_products(self):
-        errors = validate_config({"products": {}})
+        errors = validate_config({"schema_version": 2, "products": {}})
         assert errors
 
     def test_missing_discovery(self):
         cfg = _valid_product_config()
         del cfg["discovery"]
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("discovery" in e for e in errors)
 
-    def test_missing_log_parser(self):
+    def test_missing_parser(self):
         cfg = _valid_product_config()
-        del cfg["log_parser"]
-        errors = validate_config({"products": {"default": cfg}})
-        assert any("log_parser" in e for e in errors)
+        del cfg["parser"]
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
+        assert any("parser" in e for e in errors)
 
     def test_discovery_plugin_empty(self):
         cfg = _valid_product_config()
         cfg["discovery"]["plugin"] = ""
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("plugin" in e for e in errors)
 
     def test_unknown_plugin(self):
         cfg = _valid_product_config()
         cfg["discovery"]["plugin"] = "nonexistent.module.BadClass"
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("无法导入模块" in e for e in errors)
 
     def test_plugin_class_missing(self):
         cfg = _valid_product_config()
-        cfg["log_parser"]["plugin"] = "backend.plugins.default.parser.NonexistentClass"
-        errors = validate_config({"products": {"default": cfg}})
+        cfg["parser"]["plugin"] = "backend.extensions.products.current.parser.NonexistentClass"
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("缺少类" in e for e in errors)
 
     def test_missing_timestamp_regex(self):
         cfg = _valid_product_config()
-        del cfg["log_parser"]["config"]["timestamp_regex"]
-        errors = validate_config({"products": {"default": cfg}})
+        del cfg["parser"]["config"]["timestamp_regex"]
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("timestamp_regex" in e for e in errors)
 
     def test_invalid_timestamp_regex(self):
         cfg = _valid_product_config()
-        cfg["log_parser"]["config"]["timestamp_regex"] = "((bad"
-        errors = validate_config({"products": {"default": cfg}})
-        assert any("timestamp_regex" in e and "正则" in e for e in errors)
+        cfg["parser"]["config"]["timestamp_regex"] = "((bad"
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
+        assert any("timestamp_regex" in e and "regex" in e for e in errors)
 
     def test_journal_pattern_insufficient_groups(self):
         cfg = _valid_product_config()
-        cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]["journal"] = {
+        cfg["mechanisms"]["module1"]["config"]["journal"] = {
             "line_pattern": r"(a) (b)",
         }
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("捕获组" in e for e in errors)
 
     def test_diag_pattern_missing_named_groups(self):
         cfg = _valid_product_config()
-        mod = cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["config"]
+        mod = cfg["mechanisms"]["module1"]["config"]
         mod["diag_pattern"] = r"Slot=(?P<Slot>\d+)"
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("缺少命名组" in e for e in errors)
 
     def test_mechanism_module_requires_plugin(self):
         cfg = _valid_product_config()
-        del cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["plugin"]
+        del cfg["mechanisms"]["module1"]["plugin"]
 
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
 
-        assert any("mechanism_modules.module1.plugin" in e for e in errors)
+        assert any("mechanisms.module1.plugin" in e for e in errors)
 
     def test_mechanism_module_plugin_must_be_loadable(self):
         cfg = _valid_product_config()
-        cfg["log_parser"]["config"]["mechanism_modules"]["module1"]["plugin"] = "bad.module.Plugin"
+        cfg["mechanisms"]["module1"]["plugin"] = "bad.module.Plugin"
 
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
 
         assert any("bad.module.Plugin" in e for e in errors)
 
     def test_mechanism_module_nested_config_is_validated(self):
         cfg = _valid_product_config()
-        mod = cfg["log_parser"]["config"]["mechanism_modules"]["module1"]
+        mod = cfg["mechanisms"]["module1"]
         mod["config"]["diag_pattern"] = r"Slot=(?P<Slot>\d+)"
 
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
 
         assert any("CPU_Id" in e and "ProcessName" in e for e in errors)
 
     def test_valid_glob_pattern_passes(self):
         cfg = _valid_product_config()
         cfg["discovery"]["config"]["diag_file_patterns"] = ["diag_*.zip"]
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert not any("glob" in e for e in errors)
 
     def test_valid_loose_diagnostics_config_passes(self):
@@ -520,7 +488,7 @@ class TestValidateConfig:
             "file_patterns": ["diag_*.log", "diaglog_*.zip"],
         }
 
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
 
         assert not any("loose_diagnostics" in e for e in errors)
 
@@ -531,7 +499,7 @@ class TestValidateConfig:
             "file_patterns": ["diag_*.log"],
         }
 
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
 
         assert any("loose_diagnostics.enabled" in e for e in errors)
 
@@ -542,13 +510,13 @@ class TestValidateConfig:
             "file_patterns": [None],
         }
 
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
 
         assert any("loose_diagnostics.file_patterns" in e for e in errors)
 
     def test_product_config_not_dict(self):
-        errors = validate_config({"products": {"default": "not a dict"}})
-        assert any("必须是对象" in e for e in errors)
+        errors = validate_config({"schema_version": 2, "products": {"default": "not a dict"}})
+        assert any("must be an object" in e for e in errors)
 
 
 class TestPluginSubclassValidation:
@@ -575,7 +543,7 @@ class TestPluginSubclassValidation:
 
         cfg = _valid_product_config()
         cfg["discovery"]["plugin"] = "fake_scanner.FakeScanner"
-        errors = validate_config({"products": {"default": cfg}})
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("DirectoryDiscoveryPlugin" in e for e in errors)
 
     def test_plugin_not_subclass_of_parser_base(self, monkeypatch):
@@ -602,13 +570,13 @@ class TestPluginSubclassValidation:
         monkeypatch.setattr(il, "import_module", fake_import)
 
         cfg = _valid_product_config()
-        cfg["log_parser"]["plugin"] = "fake_parser.FakeParser"
-        errors = validate_config({"products": {"default": cfg}})
+        cfg["parser"]["plugin"] = "fake_parser.FakeParser"
+        errors = validate_config({"schema_version": 2, "products": {"default": cfg}})
         assert any("LogParserPlugin" in e for e in errors)
 
     def test_valid_plugins_pass_subclass_check(self):
         """使用实际插件类时应通过子类校验。"""
-        errors = validate_config({"products": {"default": _valid_product_config()}})
+        errors = validate_config({"schema_version": 2, "products": {"default": _valid_product_config()}})
         assert not any("子类" in e for e in errors)
 
 
@@ -643,12 +611,6 @@ class TestShippedConfigFiles:
             for module in modules:
                 assert legacy_lifecycle_fields.isdisjoint(module["config"])
 
-    def test_lifecycle_v2_config_is_archived_not_current_entry(self):
-        archived_name = "config.lifecycle-" + "v2.yaml"
-        assert not (ROOT / archived_name).exists()
-        assert (ROOT / "docs" / "archive" / "lifecycle-v2" / archived_name).exists()
-
-
 def _minimal_v2_config() -> dict:
     return {
         "schema_version": 2,
@@ -677,7 +639,7 @@ def _minimal_v2_config() -> dict:
                 },
                 "mechanisms": {
                     "module1": {
-                        "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+                        "plugin": "backend.extensions.mechanisms.module1.Module1Plugin",
                         "enabled": True,
                         "depends_on": [],
                         "config": {"module_name": "EXAMPLE"},
@@ -697,7 +659,7 @@ class TestValidateConfigV2:
         mechanisms = cfg["products"]["default"]["mechanisms"]
         module1 = mechanisms.pop("module1")
         mechanisms["module2"] = {
-            "plugin": "backend.plugins.mechanisms.module2.Module2Plugin",
+            "plugin": "backend.extensions.mechanisms.module2.Module2Plugin",
             "enabled": True,
             "depends_on": ["module1"],
             "config": {
@@ -728,7 +690,7 @@ class TestValidateConfigV2:
         mechanisms = cfg["products"]["default"]["mechanisms"]
         mechanisms["module1"]["enabled"] = False
         mechanisms["consumer"] = {
-            "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+            "plugin": "backend.extensions.mechanisms.module1.Module1Plugin",
             "enabled": True,
             "depends_on": ["module1"],
             "config": {"module_name": "CONSUMER"},
@@ -743,7 +705,7 @@ class TestValidateConfigV2:
         mechanisms = cfg["products"]["default"]["mechanisms"]
         mechanisms["module1"]["depends_on"] = ["module2"]
         mechanisms["module2"] = {
-            "plugin": "backend.plugins.mechanisms.module1.Module1Plugin",
+            "plugin": "backend.extensions.mechanisms.module1.Module1Plugin",
             "depends_on": ["module1"],
             "config": {"module_name": "MODULE2"},
         }

@@ -23,23 +23,17 @@ DEFAULT_COMPRESSED_EXTENSIONS = [".gz", ".zip", ".tar.gz", ".tgz", ".tar"]
 
 
 class Decompressor:
-    """多层递归解压引擎。
-
-    可传入 config_loader（向后兼容）或 compressed_extensions 列表。
-    """
+    """按所选产品的扩展名配置解压多层归档。"""
 
     def __init__(
         self,
-        config_loader=None,
+        *,
         compressed_extensions: Iterable[str] | None = None,
     ):
         if compressed_extensions is not None:
             self._compressed_extensions = list(compressed_extensions)
-        elif config_loader is not None:
-            self._compressed_extensions = config_loader.get_config().compressed_extensions
         else:
-            self._compressed_extensions = DEFAULT_COMPRESSED_EXTENSIONS
-        self.config = config_loader
+            self._compressed_extensions = list(DEFAULT_COMPRESSED_EXTENSIONS)
 
     def is_compressed(self, name: str) -> bool:
         """检查文件名是否属于已知压缩格式。"""

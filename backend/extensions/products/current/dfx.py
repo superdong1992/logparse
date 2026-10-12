@@ -12,11 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from backend.contracts.diagnostics import DiagnosticRecord
+from backend.extensions.products.current.artifact_validation import read_current_artifact
 from backend.extensions.products.current.evidence_layout import (
     CurrentProductEvidenceLayout,
 )
 from backend.extensions.products.current.query import ResultQueryService
 from backend.infrastructure.artifact_layout import ArtifactLayout
+from backend.infrastructure.artifact_reader import (
+    ArtifactReadError,
+    ArtifactSchemaError,
+)
 from backend.infrastructure.artifact_repository import ArtifactRepository
 from backend.performance import summarize_performance_data
 
@@ -35,11 +40,11 @@ DfxIssue = DiagnosticRecord
 
 
 def check_task_artifacts(output_task_dir: Path) -> dict[str, Any]:
-    """Inspect one task without writing or reading raw log bodies.
+    """Inspect one task without writing or including raw log bodies in reports.
 
     This is the backend for ``artifact-check --json``.  Generic manifest and
-    JSON checks use ``ArtifactRepository``; the final index projection retains
-    the current product's compatibility layout until the LAN adapter owns it.
+    JSON checks use the artifact infrastructure. Integrity checks read complete
+    file contents to verify hashes, including mechanism evidence.
     """
     layout = ArtifactLayout.from_task_dir(Path(output_task_dir))
     repository = ArtifactRepository(layout)
@@ -51,15 +56,14 @@ def check_task_artifacts(output_task_dir: Path) -> dict[str, Any]:
         expected_schema=1,
     )
     checks["manifest"] = manifest_check
-    if not manifest_check["exists"]:
-        issues.append(DfxIssue("LP_MANIFEST_MISSING", "parse_manifest.json 不存在。"))
-    elif not manifest_check["valid"]:
-        issues.append(
-            DfxIssue(
-                "LP_MANIFEST_INVALID", "parse_manifest.json 无效或 schema 不受支持。"
-            )
-        )
-    elif manifest is not None:
+    _append_required_json_issue(
+        issues,
+        manifest_check,
+        missing_code="LP_MANIFEST_MISSING",
+        invalid_code="LP_MANIFEST_INVALID",
+        name="parse_manifest.json",
+    )
+    if manifest is not None:
         integrity = repository.verify_manifest(manifest)
         checks["manifest"]["integrity"] = integrity
         if not integrity["ok"]:
@@ -209,28 +213,28 @@ def build_dfx_output(
     }
 
     issues: list[DfxIssue] = []
-    manifest = _read_json(layout.parse_manifest)
-    metadata = _read_json(layout.metadata)
-    result = _read_json(layout.result)
+    manifest_check, manifest = _inspect_json_artifact(
+        layout.parse_manifest, expected_schema=1,
+    )
+    metadata_check, metadata = _inspect_json_artifact(
+        layout.metadata, expected_schema=2,
+    )
+    result_check, result = _inspect_json_artifact(
+        layout.result, expected_schema=2,
+    )
 
     if manifest is None:
-        # Older task outputs remain diagnosable during the handoff period.
         report["manifest"] = {
-            "available": False,
-            "compatibility": "legacy_output_without_manifest",
-        }
-    elif manifest.get("schema_version") != 1:
-        report["manifest"] = {
-            "available": True,
+            "available": manifest_check["exists"],
             "valid": False,
-            "schema_version": manifest.get("schema_version"),
+            "reason": manifest_check["reason"],
         }
-        issues.append(
-            DfxIssue(
-                "LP_MANIFEST_INVALID",
-                "parse_manifest.json schema 不受支持，产物完整性无法确认。",
-                severity="warning",
-            )
+        _append_required_json_issue(
+            issues,
+            manifest_check,
+            missing_code="LP_MANIFEST_MISSING",
+            invalid_code="LP_MANIFEST_INVALID",
+            name="parse_manifest.json",
         )
     else:
         report["manifest"] = _manifest_summary(manifest)
@@ -246,10 +250,17 @@ def build_dfx_output(
             )
 
     if metadata is None:
-        issues.append(
-            DfxIssue(
-                "LP_METADATA_MISSING", "metadata.json 不存在，无法确认扫描覆盖范围。"
-            )
+        report["metadata"] = {
+            "available": metadata_check["exists"],
+            "valid": False,
+            "reason": metadata_check["reason"],
+        }
+        _append_required_json_issue(
+            issues,
+            metadata_check,
+            missing_code="LP_METADATA_MISSING",
+            invalid_code="LP_METADATA_INVALID",
+            name="metadata.json",
         )
     else:
         errors = metadata.get("errors") or []
@@ -261,8 +272,17 @@ def build_dfx_output(
         }
 
     if result is None:
-        issues.append(
-            DfxIssue("LP_RESULT_MISSING", "result.json 不存在，解析输出不可用于定位。")
+        report["result"] = {
+            "available": result_check["exists"],
+            "valid": False,
+            "reason": result_check["reason"],
+        }
+        _append_required_json_issue(
+            issues,
+            result_check,
+            missing_code="LP_RESULT_MISSING",
+            invalid_code="LP_RESULT_INVALID",
+            name="result.json",
         )
     else:
         mech_results = result.get("mech_results") or []
@@ -290,16 +310,23 @@ def build_dfx_output(
             )
 
     if layout.performance.exists():
-        performance = _read_json(layout.performance)
+        performance_check, performance = _inspect_json_artifact(
+            layout.performance, expected_schema=1,
+        )
         if performance is None:
             issues.append(
                 DfxIssue(
                     "LP_PERFORMANCE_INVALID",
-                    "performance.json 无法读取或不是合法 JSON。",
+                    performance_check["message"],
                     severity="warning",
+                    detail={"reason": performance_check["reason"]},
                 )
             )
-            report["performance"] = {"available": True, "valid": False}
+            report["performance"] = {
+                "available": True,
+                "valid": False,
+                "reason": performance_check["reason"],
+            }
         else:
             try:
                 report["performance"] = summarize_performance_data(performance)
@@ -396,37 +423,30 @@ def build_dfx_output(
     return report
 
 
-def _read_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def _inspect_json_artifact(
     path: Path,
     *,
     expected_schema: int,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    if not path.exists():
-        return {"exists": False, "valid": False}, None
-    payload = _read_json(path)
-    if payload is None:
-        return {"exists": True, "valid": False, "reason": "invalid_json"}, None
-    schema_version = payload.get("schema_version")
-    valid = schema_version == expected_schema
-    check: dict[str, Any] = {
+    try:
+        payload = read_current_artifact(path, expected_schema=expected_schema)
+    except ArtifactReadError as exc:
+        check: dict[str, Any] = {
+            "exists": exc.reason != "missing",
+            "valid": False,
+            "reason": exc.reason,
+            "message": str(exc),
+        }
+        if isinstance(exc, ArtifactSchemaError):
+            check["schema_version"] = exc.actual if type(exc.actual) is int else None
+            check["expected_schema_version"] = exc.expected
+        return check, None
+    return {
         "exists": True,
-        "valid": valid,
-        "schema_version": schema_version,
+        "valid": True,
+        "schema_version": payload["schema_version"],
         "expected_schema_version": expected_schema,
-    }
-    if not valid:
-        check["reason"] = "unsupported_schema"
-    return check, payload
+    }, payload
 
 
 def _append_required_json_issue(
@@ -440,7 +460,13 @@ def _append_required_json_issue(
     if not check["exists"]:
         issues.append(DfxIssue(missing_code, f"{name} 不存在。"))
     elif not check["valid"]:
-        issues.append(DfxIssue(invalid_code, f"{name} 无效或 schema 不受支持。"))
+        issues.append(
+            DfxIssue(
+                invalid_code,
+                check["message"],
+                detail={"reason": check["reason"]},
+            )
+        )
 
 
 def _file_status(layout: ArtifactLayout) -> dict[str, Any]:
@@ -1035,6 +1061,8 @@ def _summary_for_issue(issue: DfxIssue) -> str:
 def _primary_issue(issues: list[DfxIssue]) -> DfxIssue:
     priority = {
         "LP_RESULT_MISSING": 10,
+        "LP_RESULT_INVALID": 11,
+        "LP_SCHEMA_UNSUPPORTED": 12,
         "LP_ARTIFACT_INTEGRITY_FAILED": 15,
         "LP_MODULE_MISSING": 20,
         "LP_SLOT_MISSING": 30,
@@ -1043,8 +1071,10 @@ def _primary_issue(issues: list[DfxIssue]) -> DfxIssue:
         "LP_TARGET_MISSING": 60,
         "LP_V3_MISSING": 70,
         "LP_METADATA_MISSING": 80,
+        "LP_METADATA_INVALID": 81,
         "LP_DEEP_WINDOW_EMPTY": 90,
         "LP_TARGET_TIME_MISSING": 100,
+        "LP_MANIFEST_MISSING": 190,
         "LP_MANIFEST_INVALID": 200,
         "LP_PERFORMANCE_INVALID": 210,
         "LP_PERFORMANCE_STAGE_ERROR": 220,

@@ -5,11 +5,11 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
-from backend.models import (
+from backend.extensions.products.current.models import (
     MechBoardCycle, MechCpuCycle, MechLogEntry, MechProcessLifecycle,
     MechResult, MechSlotOutput,
 )
-from backend.parsing.output_writer import MechOutputWriter
+from backend.extensions.products.current.artifacts import MechOutputWriter
 from backend.utils import safe_log_filename, safe_path_segment
 
 

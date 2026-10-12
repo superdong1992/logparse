@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from backend.models import (
+from backend.extensions.products.current.models import (
     LogEntry,
     MechBoardCycle,
     MechCpuCycle,
@@ -16,10 +16,21 @@ from backend.models import (
     SlotInfo,
 )
 from backend.parsing.timestamp_extractor import TimestampExtractor
-from backend.parsing.output_writer import MechOutputWriter
-from backend.plugins.mechanisms import module2 as module2_impl
-from backend.plugins.mechanisms.module2 import Module2Plugin
+from backend.contracts.plugins import MechanismContext
+from backend.extensions.products.current.mechanism_input import CurrentMechanismInput
+from backend.extensions.products.current.artifacts import MechOutputWriter
+from backend.extensions.mechanisms import module2 as module2_impl
+from backend.extensions.mechanisms.module2 import Module2Plugin
 from backend.utils import safe_log_filename, safe_path_segment
+
+
+def _context(state):
+    return MechanismContext(
+        extension_input=CurrentMechanismInput.from_collections(
+            state.diagnostic_slots, state.private_slots,
+        ),
+        dependency_results={item.module_key: item for item in state.mech_results},
+    )
 
 
 def _ts(hour: int, minute: int = 0) -> datetime:
@@ -36,7 +47,6 @@ def _module2_config() -> dict:
     return {
         "module_name": "MODULE2",
         "identifying_keyword": "xxx",
-        "depends_on_module": "module1",
         "diag_pattern": (
             r"Slot=(?P<Slot>[\d/]+),CPU-Id=(?P<CPU_Id>[^,]*),"
             r"ProcessName=(?P<ProcessName>[^,]+),Context=\"(?P<Context>.*?)\""
@@ -350,10 +360,12 @@ def test_module2_scans_diag_logs_and_parses_bracket_pid(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert mech.module_name == "MODULE2"
@@ -388,11 +400,12 @@ def test_module2_emits_perf_logs_with_elapsed(tmp_path, caplog):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        plugin.execute(_context(result))
 
     assert "LOGPARSE_PERF module2.find_dependency module=module2 elapsed=" in caplog.text
     assert "LOGPARSE_PERF module2.diag_scan module=module2 elapsed=" in caplog.text
@@ -421,10 +434,12 @@ def test_module2_logs_outside_module1_cycle_go_to_unknown(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     cycle = mech.slots[0].board_cycles[0]
@@ -453,10 +468,12 @@ def test_module2_board_entry_before_module1_window_uses_pid_match_and_expands_st
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     cycle = mech.slots[0].board_cycles[0]
@@ -482,10 +499,12 @@ def test_module2_board_entry_after_module1_window_uses_pid_match_and_expands_end
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     cycle = mech.slots[0].board_cycles[0]
@@ -511,10 +530,12 @@ def test_module2_cpu_entry_matches_nested_cpu_cycle_before_board_cycle(tmp_path)
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     board_cycle = mech.slots[0].board_cycles[0]
@@ -543,10 +564,12 @@ def test_module2_cpu_entry_after_module1_cpu_window_uses_pid_match_and_expands_c
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     board_cycle = mech.slots[0].board_cycles[0]
@@ -575,10 +598,12 @@ def test_module2_reused_pid_uses_timestamp_to_choose_matching_cycle(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     cycle = mech.slots[0].board_cycles[0]
@@ -602,11 +627,13 @@ def test_module2_timestamp_inside_cycle_overrides_pid_from_other_cycle(tmp_path,
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.DEBUG, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.DEBUG, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == [
@@ -635,10 +662,12 @@ def test_module2_pid_fallback_does_not_cross_adjacent_module1_cycle(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == ["unknown"]
@@ -665,10 +694,12 @@ def test_module2_gap_pid_fallback_uses_nearest_adjacent_cycle_and_avoids_overlap
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == ["unknown"]
@@ -699,10 +730,12 @@ def test_module2_cpu_timestamp_inside_cycle_overrides_pid_from_other_cpu_cycle(t
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     board_cycle = mech.slots[0].board_cycles[0]
@@ -728,10 +761,12 @@ def test_module2_entry_without_timestamp_stays_unknown_even_when_pid_matches(tmp
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     cycle = mech.slots[0].board_cycles[0]
@@ -752,13 +787,15 @@ def test_module2_missing_dependency_records_error(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is None
-    assert any("depends_on_module='module1' result not found" in e for e in result.errors)
+    assert [item.code for item in outcome.diagnostics] == ["LP_MECHANISM_DEPENDENCY_MISSING"]
 
 
 def test_module2_output_uses_existing_mech_layout(tmp_path):
@@ -777,10 +814,12 @@ def test_module2_output_uses_existing_mech_layout(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
     assert mech is not None
     mech_dir = MechOutputWriter().write(mech, tmp_path / "output")
 
@@ -812,10 +851,12 @@ def test_module2_unknown_output_uses_existing_mech_layout(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
     assert mech is not None
     mech_dir = MechOutputWriter().write(mech, tmp_path / "output")
 
@@ -843,10 +884,12 @@ def test_module2_empty_cpu_id_is_board_level(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     proc = mech.slots[0].board_cycles[0].processes[0]
@@ -870,11 +913,13 @@ def test_module2_logs_unknown_reason_when_no_board_cycle_contains_timestamp(tmp_
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     assert "归属到unknown" in caplog.text
@@ -907,11 +952,13 @@ def test_module2_logs_unknown_reason_when_upstream_slot_missing(tmp_path, caplog
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     assert "reason=no_upstream_slot" in caplog.text
@@ -934,11 +981,13 @@ def test_module2_logs_unknown_reason_when_timestamp_missing(tmp_path, caplog):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     assert "reason=missing_timestamp" in caplog.text
@@ -963,11 +1012,13 @@ def test_module2_does_not_log_unknown_reason_for_successful_lifecycle_match(tmp_
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     assert "归属到unknown" not in caplog.text
@@ -991,10 +1042,12 @@ def test_module2_merges_unknown_entries_into_unique_same_process_lifecycle(tmp_p
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert [cycle.dir_name for cycle in mech.slots[0].board_cycles] == [
@@ -1117,11 +1170,13 @@ def test_module2_does_not_log_unknown_reason_after_successful_unknown_merge(tmp_
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     assert "归属到unknown" not in caplog.text
@@ -1147,11 +1202,13 @@ def test_module2_resolves_same_process_unknown_to_nearest_later_lifecycle(tmp_pa
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
@@ -1190,11 +1247,13 @@ def test_module2_resolves_same_process_unknown_to_nearest_earlier_lifecycle(tmp_
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
@@ -1253,11 +1312,13 @@ def test_module2_logs_unknown_reason_when_unknown_merge_target_ties(tmp_path, ca
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     assert "reason=no_unique_known_process_target" in caplog.text
@@ -1286,11 +1347,13 @@ def test_module2_merges_top_level_unknown_into_unique_projected_board_cycle(tmp_
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     cycles = mech.slots[0].board_cycles
@@ -1326,11 +1389,13 @@ def test_module2_resolves_projected_unknown_to_nearest_admissible_target(tmp_pat
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is not None
     cycles = {cycle.dir_name: cycle for cycle in mech.slots[0].board_cycles}
@@ -1366,10 +1431,12 @@ def test_module2_maps_slash_slot_to_module1_slot(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     assert mech.slots[0].slot_id == "2"
@@ -1398,11 +1465,13 @@ def test_module2_logs_when_no_diagnostic_entries_found(tmp_path, caplog):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.INFO, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.INFO, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is None
     assert "未扫描到诊断日志条目" in caplog.text
@@ -1422,11 +1491,13 @@ def test_module2_logs_when_dependency_not_found(tmp_path, caplog):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    with caplog.at_level(logging.WARNING, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.WARNING, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is None
     assert "依赖未找到" in caplog.text
@@ -1436,12 +1507,14 @@ def test_module2_logs_when_config_invalid(caplog):
     plugin = Module2Plugin(
         {},
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
     result = ParseResult()
 
-    with caplog.at_level(logging.WARNING, logger="backend.plugins.mechanisms.module2"):
-        mech = plugin.parse(result)
+    with caplog.at_level(logging.WARNING, logger="backend.extensions.mechanisms.module2"):
+        outcome = plugin.execute(_context(result))
+        mech = outcome.result
 
     assert mech is None
     assert "配置校验失败" in caplog.text
@@ -1463,10 +1536,12 @@ def test_module2_normalizes_naive_timestamps_to_match_aware_cycles(tmp_path):
     plugin = Module2Plugin(
         _module2_config(),
         module_key="module2",
+        dependencies=("module1",),
         ts_extractor=_timestamp_extractor(),
     )
 
-    mech = plugin.parse(result)
+    outcome = plugin.execute(_context(result))
+    mech = outcome.result
 
     assert mech is not None
     cycle = mech.slots[0].board_cycles[0]

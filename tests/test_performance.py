@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from backend.models import MechLogEntry
+from backend.extensions.products.current.models import MechLogEntry
 from backend.performance import (
     PerformanceRecorder,
     resolve_worker_count,

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from backend.contracts.artifacts import ARTIFACT_CONTRACT_VERSION
-from backend.models import (
+from backend.extensions.products.current.models import (
     MechBoardCycle,
     MechCpuCycle,
     MechProcessLifecycle,
@@ -28,14 +28,8 @@ _PROHIBITED_RESULT_KEYS = {
 }
 
 
-def result_to_dict(result: ParseResult, mode: str = "compact") -> dict[str, Any]:
-    """Serialize a ParseResult into the only supported result contract.
-
-    The `mode` argument remains in the façade while callers migrate, but full
-    raw serialization has intentionally been removed.
-    """
-    if (mode or "compact").lower() != "compact":
-        raise ValueError("result.json supports compact mode only")
+def result_to_dict(result: ParseResult) -> dict[str, Any]:
+    """生成不含原始日志正文的紧凑查询索引。"""
     return compact_result_dict(result)
 
 

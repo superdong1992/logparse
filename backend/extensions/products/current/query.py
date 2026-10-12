@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 
 from backend.domain.correlation.target_selection import select_interval_candidate
+from backend.extensions.products.current.artifact_validation import read_current_artifact
 from backend.extensions.products.current.evidence_layout import (
     CurrentProductEvidenceLayout,
+)
+from backend.infrastructure.artifact_reader import (
+    ArtifactReadError,
+    ArtifactSchemaError,
 )
 
 
@@ -18,16 +22,6 @@ RESULT_SCHEMA_VERSION = 2
 METADATA_SCHEMA_VERSION = 2
 
 
-class QueryArtifactSchemaError(ValueError):
-    def __init__(self, artifact: str, actual: object, expected: int) -> None:
-        self.artifact = artifact
-        self.actual = actual
-        self.expected = expected
-        super().__init__(
-            f"unsupported {artifact} schema_version: {actual}; expected {expected}"
-        )
-
-
 class ResultQueryService:
     """从 output 目录中读取解析结果并提供查询方法。"""
 
@@ -35,15 +29,12 @@ class ResultQueryService:
         self._output_dir = output_dir
 
     def _read_json(self, path: Path, *, expected_schema: int) -> dict | None:
-        if not path.exists():
-            return None
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        actual_schema = payload.get("schema_version")
-        # Schema-less files are accepted only as a legacy compatibility input;
-        # every newly written formal artifact carries an explicit version.
-        if actual_schema is not None and actual_schema != expected_schema:
-            raise QueryArtifactSchemaError(path.name, actual_schema, expected_schema)
-        return payload
+        try:
+            return read_current_artifact(path, expected_schema=expected_schema)
+        except ArtifactReadError as exc:
+            if exc.reason == "missing":
+                return None
+            raise
 
     def read_metadata(self, task_id: str) -> dict | None:
         return self._read_json(
@@ -191,16 +182,21 @@ class ResultQueryService:
 
         try:
             modules = self.mech_modules(task_id)
-        except QueryArtifactSchemaError as exc:
+        except ArtifactReadError as exc:
+            error_code = (
+                "LP_SCHEMA_UNSUPPORTED"
+                if isinstance(exc, ArtifactSchemaError)
+                else "LP_RESULT_INVALID"
+            )
             return _target_payload(
                 _missing_target(
                     anchor,
                     str(exc),
-                    error_code="LP_SCHEMA_UNSUPPORTED",
+                    error_code=error_code,
                 ),
                 diagnostics,
                 explain,
-                error_code="LP_SCHEMA_UNSUPPORTED",
+                error_code=error_code,
                 reason=str(exc),
             )
         if not modules:

@@ -6,22 +6,19 @@ import gzip
 from pathlib import Path
 from typing import Iterable
 
-from backend.models import LogEntry
+from backend.extensions.products.current.models import LogEntry
 
 
 def iter_text_file_lines(path: Path, encoding: str = "utf-8") -> Iterable[str]:
     """逐行迭代文本文件，支持 .gz 压缩文件。"""
-    try:
-        if path.suffix == ".gz":
-            with gzip.open(path, "rt", encoding=encoding, errors="replace") as f:
-                for line in f:
-                    yield line.rstrip("\n")
-        else:
-            with path.open("r", encoding=encoding, errors="ignore") as f:
-                for line in f:
-                    yield line.rstrip("\n")
-    except OSError:
-        return
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding=encoding, errors="replace") as f:
+            for line in f:
+                yield line.rstrip("\n")
+    else:
+        with path.open("r", encoding=encoding, errors="ignore") as f:
+            for line in f:
+                yield line.rstrip("\n")
 
 
 def iter_log_entry_lines(log_entry: LogEntry) -> Iterable[str]:
@@ -35,5 +32,4 @@ def iter_log_entry_lines(log_entry: LogEntry) -> Iterable[str]:
             return
 
     file_path = Path(log_entry.path)
-    if file_path.is_file():
-        yield from iter_text_file_lines(file_path)
+    yield from iter_text_file_lines(file_path)

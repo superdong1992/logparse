@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+import zlib
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from backend.models import MechLogEntry, PrivateSlotInfo
+from backend.contracts.runtime import Diagnostic
+from backend.extensions.products.current.models import MechLogEntry, PrivateSlotInfo
 from backend.parsing.file_iter import iter_text_file_lines
 from backend.parsing.mech_journal_pattern import (
     JournalPatternMatcher,
@@ -44,50 +46,64 @@ class MechJournalScanner:
         self._mod_upper = module_name_upper
         self._ts_extractor = ts_extractor
 
-    def scan(self, ps: PrivateSlotInfo, tzinfo: Any) -> list[MechLogEntry]:
+    def scan(
+        self,
+        ps: PrivateSlotInfo,
+        tzinfo: Any,
+        *,
+        diagnostic_sink: Callable[[Diagnostic], None] | None = None,
+    ) -> list[MechLogEntry]:
         entries: list[MechLogEntry] = []
 
         for jl in ps.journal_logs:
             jl_path = Path(jl.path)
-            if not jl_path.is_file():
-                continue
+            src_file = f"{ps.dir_name}/{jl.name}"
+            try:
+                for line in iter_text_file_lines(jl_path):
+                    if self._mod_upper not in line:
+                        continue
+                    if self._journal_keyword not in line.lower():
+                        continue
 
-            for line in iter_text_file_lines(jl_path):
-                if self._mod_upper not in line:
-                    continue
-                if self._journal_keyword not in line.lower():
-                    continue
+                    match = self._matcher.match(line)
+                    if not match:
+                        continue
+                    if not passes_line_pattern2_required_substrings(
+                        match.pattern_name,
+                        line,
+                        self._line_pattern2_required_substrings,
+                    ):
+                        continue
 
-                match = self._matcher.match(line)
-                if not match:
-                    continue
-                if not passes_line_pattern2_required_substrings(
-                    match.pattern_name,
-                    line,
-                    self._line_pattern2_required_substrings,
-                ):
-                    continue
+                    raw_name = match.raw_name
+                    raw_pid = match.raw_pid
+                    seq = match.sequence
+                    context = match.context
 
-                raw_name = match.raw_name
-                raw_pid = match.raw_pid
-                seq = match.sequence
-                context = match.context
+                    proc_name, pid = self._resolver.resolve_journal_process_name(raw_name, raw_pid)
+                    is_active = bool(self._master_keyword and self._master_keyword.search(context))
+                    ts = self._extract_first_ts(line)
+                    if ts and ts.tzinfo is None and tzinfo is not None:
+                        ts = ts.replace(tzinfo=tzinfo)
 
-                proc_name, pid = self._resolver.resolve_journal_process_name(raw_name, raw_pid)
-                is_active = bool(self._master_keyword and self._master_keyword.search(context))
-                ts = self._extract_first_ts(line)
-                if ts and ts.tzinfo is None and tzinfo is not None:
-                    ts = ts.replace(tzinfo=tzinfo)
-
-                src_file = f"{ps.dir_name}/{jl.name}"
-                entries.append(MechLogEntry(
-                    timestamp=ts, source="journal",
-                    source_file=src_file,
-                    slot=ps.slot_id, cpu_id=ps.cpu_id if ps.cpu_id not in (None, "", "0") else "",
-                    process_name=proc_name, pid=pid,
-                    context=context, sequence=seq,
-                    is_active_signal=is_active, raw=line.strip()[:500],
-                ))
+                    entries.append(MechLogEntry(
+                        timestamp=ts, source="journal",
+                        source_file=src_file,
+                        slot=ps.slot_id, cpu_id=ps.cpu_id if ps.cpu_id not in (None, "", "0") else "",
+                        process_name=proc_name, pid=pid,
+                        context=context, sequence=seq,
+                        is_active_signal=is_active, raw=line.strip()[:500],
+                    ))
+            except (OSError, EOFError, zlib.error) as exc:
+                diagnostic = Diagnostic(
+                    code="LP_JOURNAL_READ_FAILED",
+                    message=f"Journal 日志读取失败，已保留读取到的条目：{src_file}。",
+                    stage="journal_scan",
+                    details={"source": src_file, "reason": type(exc).__name__},
+                )
+                logger.warning("%s", diagnostic.message)
+                if diagnostic_sink is not None:
+                    diagnostic_sink(diagnostic)
 
         return entries
 

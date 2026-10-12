@@ -7,11 +7,11 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from backend.application.mechanism_execution import MechanismExecutionService
 from backend.extensions.products.current.mechanism_input import CurrentMechanismInput
-from backend.models import (
+from backend.extensions.products.current.models import (
     BoardRole,
     LogEntry,
     MechResult,
@@ -21,13 +21,12 @@ from backend.performance import resolve_worker_count
 from backend.parsing.active_period_builder import ActivePeriodBuilder
 from backend.parsing.file_iter import iter_log_entry_lines
 from backend.parsing.mech_entry_dedup import dedupe_mech_entries
-from backend.parsing.output_writer import MechOutputWriter
+from backend.extensions.products.current.artifacts import MechOutputWriter
 from backend.parsing.role_identifier import RoleIdentifier
 from backend.parsing.timestamp_extractor import TimestampExtractor
 from backend.plugins.base import LogParserPlugin
 
-# 保持旧 logger 名称，避免迁移期间破坏现有运维过滤器。
-logger = logging.getLogger("backend.plugins.default.parser")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -58,8 +57,23 @@ class CurrentDiagnosticSource:
 class ParserPlugin(LogParserPlugin):
     """标准日志解析：时间戳→ActivePeriod→编排机制模块插件→兜底主控判定。"""
 
-    def __init__(self, config: dict[str, Any]):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: dict[str, Any],
+        *,
+        mechanisms: Mapping[str, Any],
+        runtime_options: Mapping[str, Any] | None = None,
+        performance_recorder: Any = None,
+    ):
+        super().__init__(
+            config,
+            mechanisms=mechanisms,
+            runtime_options=runtime_options,
+            performance_recorder=performance_recorder,
+        )
+        self._mech_modules = mechanisms
+        self._runtime_options = dict(runtime_options or {})
+        self.performance_recorder = performance_recorder
         self._compile_patterns()
         self._ts_extractor = TimestampExtractor(self._ts_regex)
         self._active_period_builder = ActivePeriodBuilder(self._gap_threshold)
@@ -70,13 +84,12 @@ class ParserPlugin(LogParserPlugin):
             self.config.get("timestamp_regex",
                            r"(\d{4}-\d{1,2}-\d{1,2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2}:\d{2})?")
         )
-        self._gap_threshold = int(self.config.get("active_period_gap_threshold", 300))
-        self._mech_modules = self.config.get("mechanism_modules", {})
+        self._gap_threshold = int(self.config.get("active_period_gap_seconds", 300))
 
     # ── parse() ───────────────────────────────────────────
 
     def parse(self, result: ParseResult) -> ParseResult:
-        pipeline_cfg = self.config.get("_pipeline", {})
+        pipeline_cfg = self._runtime_options
         worker_count = int(
             pipeline_cfg.get(
                 "diagnostic_scan_workers_resolved",
@@ -144,8 +157,6 @@ class ParserPlugin(LogParserPlugin):
                     signal = outcome.role_signals.get(slot.slot_id)
                     if signal in {item.value for item in BoardRole}:
                         slot.role = BoardRole(signal)
-            elif getattr(mechanism, "requires_legacy_parse_state", False):
-                mechanism.apply_roles(result, mech)
             logger.info(
                 "[%s] 诊断:%d journal:%d scopes:%d",
                 mech.module_name or mechanism.module_key,
@@ -155,7 +166,6 @@ class ParserPlugin(LogParserPlugin):
             )
 
         execution_outcomes = runtime.execute(
-            result,
             CurrentMechanismInput.from_collections(
                 result.diagnostic_slots,
                 result.private_slots,
@@ -165,10 +175,11 @@ class ParserPlugin(LogParserPlugin):
             error_sink=result.errors.append,
             outcome_sink=_accept_outcome,
         )
-        self.last_mechanism_diagnostics = tuple(
-            diagnostic
-            for _mechanism, outcome in execution_outcomes
-            for diagnostic in outcome.diagnostics
+        self.last_mechanism_outcomes = execution_outcomes
+        self.last_mechanism_diagnostics = (
+            *scan_batch.diagnostics,
+            *(diagnostic for _mechanism, outcome in execution_outcomes
+              for diagnostic in outcome.diagnostics),
         )
 
         t0 = time.perf_counter()

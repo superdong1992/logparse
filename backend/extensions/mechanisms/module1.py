@@ -8,21 +8,20 @@ import time
 from collections import defaultdict
 from typing import Any
 
-from backend.contracts.plugins import MechanismContext, MechanismOutcome
+from backend.contracts.plugins import DiagnosticScanBatch, MechanismContext, MechanismOutcome
 from backend.contracts.runtime import Diagnostic, DiagnosticSeverity
 from backend.extensions.mechanisms.validation import validate_mechanism_module_config
 from backend.extensions.mechanisms.base import MechanismPlugin
 from backend.extensions.products.current.mechanism_input import CurrentMechanismInput
-from backend.models import MechLogEntry, MechResult, MechSlotOutput, ParseResult
-from backend.parsing.lifecycle_common import LifecycleSplitConfig
-from backend.parsing.lifecycle_splitter_v3 import LifecycleSplitterV3
+from backend.extensions.products.current.models import MechLogEntry, MechResult, MechSlotOutput
+from backend.domain.lifecycle.common import LifecycleSplitConfig
+from backend.domain.lifecycle.splitter_v3 import LifecycleSplitterV3
 from backend.parsing.mech_diag_scanner import MechDiagScanner
 from backend.parsing.mech_entry_dedup import dedupe_mech_entries
 from backend.parsing.mech_journal_scanner import MechJournalScanner
 from backend.parsing.process_name_resolver import ProcessNameResolver
-from backend.parsing.role_identifier import RoleIdentifier
 
-logger = logging.getLogger("backend.plugins.mechanisms.module1")
+logger = logging.getLogger(__name__)
 
 
 class Module1Plugin(MechanismPlugin):
@@ -92,34 +91,28 @@ class Module1Plugin(MechanismPlugin):
                 )
             )
 
-        mech_result = self._build_result(inputs, split_config)
+        diagnostics: list[Diagnostic] = []
+        mech_result = self._build_result(inputs, split_config, context.scan_batch, diagnostics)
         if mech_result is None:
-            return MechanismOutcome()
+            return MechanismOutcome(
+                diagnostics=tuple(diagnostics),
+                status="failed" if diagnostics else "empty",
+            )
         return MechanismOutcome(
             result=mech_result,
+            diagnostics=tuple(diagnostics),
+            status="partial" if diagnostics else "success",
             role_signals={
                 slot_id: "active" for slot_id in mech_result.active_master_slots
             },
         )
 
-    def parse(self, result: ParseResult) -> MechResult | None:
-        """Compatibility helper for focused LAN tests and pre-v1 callers."""
-
-        outcome = self.execute(
-            MechanismContext(
-                extension_input=CurrentMechanismInput.from_collections(
-                    result.diagnostic_slots,
-                    result.private_slots,
-                )
-            )
-        )
-        result.errors.extend(item.message for item in outcome.diagnostics)
-        return outcome.result
-
     def _build_result(
         self,
         inputs: CurrentMechanismInput,
         split_config: LifecycleSplitConfig,
+        scan_batch: DiagnosticScanBatch | None,
+        diagnostics: list[Diagnostic],
     ) -> MechResult | None:
         cfg = self.config
 
@@ -150,11 +143,11 @@ class Module1Plugin(MechanismPlugin):
         diag_t0 = time.perf_counter()
         diag_file_count = 0
         diag_entry_count = 0
-        precomputed_diag_entries = getattr(self, "_precomputed_diagnostic_entries", None)
-        if precomputed_diag_entries is not None:
-            diag_file_count = int(getattr(self, "_precomputed_diagnostic_file_count", 0))
-            all_entries.extend(list(precomputed_diag_entries))
-            diag_entry_count = len(precomputed_diag_entries)
+        if scan_batch is not None:
+            shared_entries = scan_batch.entries_by_module.get(self.module_key, ())
+            diag_file_count = scan_batch.file_count
+            all_entries.extend(shared_entries)
+            diag_entry_count = len(shared_entries)
         elif diag_re:
             diag_scanner = MechDiagScanner(
                 diag_re,
@@ -200,7 +193,9 @@ class Module1Plugin(MechanismPlugin):
             )
             for private_slot in inputs.private_slots:
                 journal_file_count += len(private_slot.journal_logs)
-                scanned = journal_scanner.scan(private_slot, diag_tz)
+                scanned = journal_scanner.scan(
+                    private_slot, diag_tz, diagnostic_sink=diagnostics.append,
+                )
                 journal_entry_count += len(scanned)
                 all_entries.extend(scanned)
         logger.info(
@@ -259,6 +254,3 @@ class Module1Plugin(MechanismPlugin):
         mech_result.journal_entry_count = sum(1 for entry in all_entries if entry.source == "journal")
 
         return mech_result
-
-    def apply_roles(self, result: ParseResult, mech_result: MechResult) -> None:
-        RoleIdentifier.apply_mech_roles(mech_result, result)
