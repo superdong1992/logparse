@@ -162,8 +162,8 @@ def changed_paths() -> list[str]:
     """Return tracked and untracked worktree paths without parsing rename text."""
 
     commands = (
-        ["git", "diff", "--name-only", "-z", "--diff-filter=ACMRDTUXB"],
-        ["git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRDTUXB"],
+        ["git", "diff", "--no-renames", "--name-only", "-z", "--diff-filter=ACMRDTUXB"],
+        ["git", "diff", "--cached", "--no-renames", "--name-only", "-z", "--diff-filter=ACMRDTUXB"],
         ["git", "ls-files", "--others", "--exclude-standard", "-z"],
     )
     return _collect_git_paths(commands)
@@ -173,6 +173,7 @@ def commit_range_paths(base: str, head: str) -> list[str]:
     return _collect_git_paths(([
         "git",
         "diff",
+        "--no-renames",
         "--name-only",
         "-z",
         "--diff-filter=ACMRDTUXB",
@@ -368,12 +369,15 @@ def _collect_git_paths(commands: Iterable[list[str]]) -> list[str]:
     paths: list[str] = []
     seen: set[str] = set()
     for command in commands:
-        completed = subprocess.run(
-            command,
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+            )
+        except OSError as error:
+            raise RuntimeError(f"无法运行 Git：{error}") from error
         if completed.returncode != 0:
             stderr = completed.stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(stderr or f"git command failed: {' '.join(command)}")

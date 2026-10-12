@@ -20,6 +20,17 @@ CORE_PREFIXES = (
 )
 
 
+def core_line_percent(files: dict) -> float:
+    summaries = [
+        value["summary"]
+        for name, value in files.items()
+        if name.replace("\\", "/").startswith(CORE_PREFIXES)
+    ]
+    covered = sum(summary["covered_lines"] for summary in summaries)
+    total = sum(summary["num_statements"] for summary in summaries)
+    return 100.0 * covered / total if total else 0.0
+
+
 def main() -> int:
     if sys.version_info < (3, 12):
         print("delivery verification requires Python 3.12+", file=sys.stderr)
@@ -67,18 +78,7 @@ def main() -> int:
     totals = coverage["totals"]
     line_percent = float(totals["percent_statements_covered"])
     branch_percent = float(totals["percent_branches_covered"])
-    core_files = {
-        name: value
-        for name, value in coverage["files"].items()
-        if name.startswith(CORE_PREFIXES)
-    }
-    core_covered = sum(
-        value["summary"]["covered_lines"] for value in core_files.values()
-    )
-    core_total = sum(
-        value["summary"]["num_statements"] for value in core_files.values()
-    )
-    core_percent = 100.0 * core_covered / core_total if core_total else 100.0
+    core_percent = core_line_percent(coverage["files"])
     print(
         f"coverage: line={line_percent:.2f}% branch={branch_percent:.2f}% "
         f"architecture_core={core_percent:.2f}%"

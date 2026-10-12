@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts import rule_preflight
+from scripts import change_gate, rule_preflight
 
 
 def test_rule_preflight_maps_lifecycle_paths_to_cpu0_board_contract():
@@ -17,19 +17,23 @@ def test_rule_preflight_maps_lifecycle_paths_to_cpu0_board_contract():
 
 
 def test_rule_preflight_changed_uses_git_paths(monkeypatch):
+    outputs = iter([
+        b"backend/query.py\0backend/result_serializer.py\0",
+        b"old/path.py\0cli.py\0",
+        "backend/config_validation.py\0新文件 目录/规则.py\0".encode(),
+    ])
+
     class Completed:
-        stdout = "\n".join([
-            " M backend/query.py",
-            "M  backend/result_serializer.py",
-            "?? backend/config_validation.py",
-            "R  old/path.py -> cli.py",
-            "",
-        ])
+        returncode = 0
+        stderr = b""
+
+        def __init__(self):
+            self.stdout = next(outputs)
 
     def fake_run(*_args, **_kwargs):
         return Completed()
 
-    monkeypatch.setattr(rule_preflight.subprocess, "run", fake_run)
+    monkeypatch.setattr(change_gate.subprocess, "run", fake_run)
 
     changed = rule_preflight.changed_paths()
     rules = rule_preflight.select_rules_for_paths(changed)
@@ -38,8 +42,10 @@ def test_rule_preflight_changed_uses_git_paths(monkeypatch):
     assert changed == [
         "backend/query.py",
         "backend/result_serializer.py",
-        "backend/config_validation.py",
+        "old/path.py",
         "cli.py",
+        "backend/config_validation.py",
+        "新文件 目录/规则.py",
     ]
     assert "rules:lifecycle-v3-config" in rendered
     assert "Module1Plugin always uses LifecycleSplitterV3" in rendered
@@ -49,16 +55,30 @@ def test_rule_preflight_changed_uses_git_paths(monkeypatch):
 
 def test_rule_preflight_changed_allows_clean_tree(monkeypatch, capsys):
     class Completed:
-        stdout = ""
+        stdout = b""
+        returncode = 0
+        stderr = b""
 
     def fake_run(*_args, **_kwargs):
         return Completed()
 
-    monkeypatch.setattr(rule_preflight.subprocess, "run", fake_run)
+    monkeypatch.setattr(change_gate.subprocess, "run", fake_run)
 
     assert rule_preflight.main(["--changed"]) == 0
     output = capsys.readouterr().out
     assert "No matching repo-specific rules" in output
+
+
+def test_rule_preflight_does_not_treat_git_failure_as_clean_tree(monkeypatch, capsys):
+    def fail():
+        raise RuntimeError("git failed")
+
+    monkeypatch.setattr(rule_preflight, "changed_paths", fail)
+
+    assert rule_preflight.main(["--changed"]) == 2
+    captured = capsys.readouterr()
+    assert "git failed" in captured.err
+    assert "No matching" not in captured.out
 
 
 def test_rule_preflight_reads_green_product_boundary():

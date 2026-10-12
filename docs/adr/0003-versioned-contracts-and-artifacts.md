@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-11
 
+> 2026-10-12：本文件保留历史决策。当前移交前精简的授权及被替代的兼容约定见 [ADR-0006](0006-pre-handoff-simplification.md)。
+
 ## Context
 
 Implicit plugin order, loosely validated configuration, duplicated artifact

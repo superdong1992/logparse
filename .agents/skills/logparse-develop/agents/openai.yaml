@@ -1,4 +1,4 @@
 interface:
-  display_name: "Develop logparse safely"
-  short_description: "LAN workflow with enforced architecture boundaries"
-  default_prompt: "Use $logparse-develop to implement this logparse change within the LAN governance boundaries."
+  display_name: "logparse 开发与精简"
+  short_description: "按产品、策略和架构风险分区维护 logparse，完成验证与交付记录"
+  default_prompt: "使用 $logparse-develop 完成这次 logparse 修改，并验证行为、风险分区和交付证据。"

@@ -1,202 +1,59 @@
-# logparse LAN Development Contract
+# logparse 开发契约
 
-This file is the mandatory entrypoint for Claude Code and GLM5.1. After the
-handoff, the LAN checkout is the only authoritative source. External copies are
-frozen and receive no code, diff, fixture, configuration, or log synchronization
-from the LAN.
+本文件是仓库分析与开发入口。当前处于移交前精简阶段：所有者确认 LAN 无后续修改，并批准本轮破坏兼容的重构及技能更新。范围与约束见 ADR-0006；正式交接后，LAN 仓库仍是唯一权威来源，外部副本冻结，不接收 LAN 代码、配置、fixture 或日志。
 
-## 1. Mandatory Preflight
+## 开始与交付
 
-Before reading implementation files or editing anything:
+先运行 `.venv/bin/python scripts/rule_preflight.py --paths <planned-paths...>`，阅读全部返回规则。实施前阅读 `docs/lan-development-guide.md`；涉及查询、诊断、CLI、DFX、产物时阅读 `docs/lan-dfx-operating-model.md`。
 
-```bash
-.venv/bin/python scripts/rule_preflight.py --paths <files-you-will-touch...>
-```
-
-Read every returned rule source. Before completion, run:
+使用 `.venv` 中的 Python 3.12；Windows 使用 `.venv\Scripts\python.exe`。交付前运行：
 
 ```bash
-.venv/bin/python scripts/rule_preflight.py --changed
 .venv/bin/python scripts/verify_delivery.py
+.venv/bin/python scripts/rule_preflight.py --changed
 .venv/bin/python scripts/change_gate.py --changed
 .venv/bin/python scripts/change_gate.py --changed --enforce \
   --change-record governance/changes/<change-id>.yaml
 ```
 
-Copy `governance/changes/change-record.template.yaml` for the record. Never edit
-the gate, boundary config, tests, or record dishonestly to bypass a requirement.
+变更记录来自 `governance/changes/change-record.template.yaml`。测试、授权和案例均须如实记录，不能修改校验器或伪造记录绕过要求。不得把 mock 验证写成真实 LAN 验收。
 
-## 2. Modification Zones
+## 风险分区
 
-The exact paths are defined in `governance/architecture-boundaries.toml`.
-Precedence is red, then yellow, then green; an unclassified source path is red.
+精确路径以 `governance/architecture-boundaries.toml` 为准，红优先于黄、黄优先于绿，未知源文件默认红区。
 
-### Green — LAN business extension
+- 绿区承载产品拓扑、格式、进程映射、诊断知识及相关测试；需聚焦测试和具体场景。
+- 黄区承载生命周期及 Module1/Module2 关联，包括 PID/时间 fallback、unknown、midpoint、扩边和 clamp；业务语义变更须有真实案例、最小 fixture、历史 corpus 和 schema 结论。本轮无算法语义变更，按 ADR-0006 使用合成回归并明确真实 corpus 未执行。
+- 红区承载契约、端口、编排、基础设施、CLI、产物与治理；需 Accepted ADR、明确授权、契约/安全/冒烟验证和回滚。用户已有明确授权时直接在该范围内执行。
 
-GLM5.1 may modify these paths for normal product work with focused tests and a
-documented LAN scenario:
+产品目录并不全是绿区：引擎、产物写入器、metadata/result 序列化、查询和 DFX 是明确的红区例外。治理文件有不可降级的硬编码红区保护。
 
-```text
-configs/products/**
-backend/extensions/products/**
-backend/extensions/diagnosis/**
-tests/extensions/**
-.agents/skills/diagnose-*/**
-```
+## 架构
 
-Current-product knowledge belongs here: `slot`, `CPU`, board topology,
-active/standby role, directory layout, filename/glob/regex/keywords, process
-mapping, and diagnosis knowledge. These concepts must not leak into the generic
-architecture.
+处理链路：原始输入 → 安全工作区 → 产品发现与扫描 → 生命周期/关联 → 正式产物 → 确定性查询与限量 DFX → 诊断 skill。
 
-### Yellow — protected business policy
+依赖方向：`presentation -> application -> ports/contracts`，`infrastructure -> ports/contracts`。产品扩展依赖公开契约和应用服务；黄区策略可依赖产品模型。通用契约、应用和基础设施不得导入具体产品实现。
 
-Change only when a real LAN case proves the current policy wrong:
+- `ParseService` 是唯一完整解析入口；根 `cli.py` 仅启动命令层。
+- 运行时直接消费显式 schema v2 配置，不保留 v1 自动迁移、旧 Pipeline 或旧导入 façade。
+- 机制声明 API 版本及依赖，只使用 `execute(MechanismContext) -> MechanismOutcome`。Module2 明确依赖 Module1。
+- 解压器独占提取与路径安全职责；scanner 只检查已准备的工作区，普通 `.gz` 日志默认流式读取。
+- `ArtifactLayout` 统一产物路径，正式 JSON 原子写入。
 
-```text
-backend/domain/lifecycle/**
-backend/domain/correlation/**
-backend/extensions/mechanisms/**
-.agents/skills/logparse-diagnose/**
-```
+完整设计见 `docs/architecture.md`；架构决策保存在 `docs/adr/`。
 
-The change record must include the real case id, minimal fixture, historical
-corpus result, and schema-impact conclusion. This zone owns lifecycle splitting,
-Module1/Module2 correlation, PID/time fallback, unknown assignment, midpoint,
-range expansion, and clamp rules.
+## 业务与产物
 
-Plugin base classes and execution orchestration are red even when a compatibility
-façade sits inside a mechanism or product directory; the TOML's red precedence
-decides. Current-product engine/artifact writers, metadata/result schemas,
-legacy Pipeline, query compatibility contract, and deterministic DFX are
-explicit red exceptions under `backend/extensions/products/current/`; their
-failure semantics, issue-locator behavior, schemas/error codes and DFX budgets
-are not routine product rules. See the TOML for the exact filenames.
+Module1 只使用 `LifecycleSplitterV3`，算法标识为 `interval_v3`。空 CPU id 和 `CPU_Id=0` 是板级值，非零 CPU 才产生嵌套生命周期。Module2 复用 Module1 的板级与 CPU 生命周期，不独立切分。
 
-### Red — frozen architecture
+V3 输出包含 `candidate_segments`、`merge_decisions`、`lifecycles`、`journal_evidence`、`issues` 和 `lifecycle_reliable`，不恢复 V2 行为。
 
-Do not modify by default:
+正式产物为 `parse_manifest.json`、`metadata.json`、`result.json`、`mech_modules/`；性能分析另生成 `performance.json`；DFX 生成 `dfx_report.json`、`dfx_summary.txt`，深度模式有有效窗口时才生成 `dfx_context/`。
 
-```text
-backend/contracts/**
-backend/ports/**
-backend/application/**
-backend/infrastructure/**
-backend/presentation/**
-governance/**
-scripts/change_gate.py
-scripts/rule_preflight.py
-cli.py
-```
+`metadata.json` 表示扫描覆盖，`result.json` 是紧凑查询索引，`mech_modules/` 保存证据。`extracted/` 是临时工作区。索引不得包含原始文本、上下文或逐行 `logs[]`；DFX 摘要只允许单行 `ERROR_CODE: 中文结论`。独立 logparse 不调用模型。
 
-A red change requires an Accepted ADR, explicit human approval, contract,
-security, and smoke validation, plus a rollback plan. Governance controls are
-red themselves and have a non-downgradable fallback in `change_gate.py`.
+## 验证与数据边界
 
-## 3. Architecture Contract
+先运行聚焦测试，再运行完整交付检查。性能对比同时核对扫描文件、行数、机制条目和业务产物，不能把漏扫当成加速。真实日志留在 LAN，真实 corpus 和 2GB 包验收不能由小型样例替代。
 
-The processing direction is:
-
-```text
-raw package
--> product topology and format adapter
--> product-neutral contracts and scopes
--> protected lifecycle/correlation policy
--> artifact repository and deterministic query/DFX
--> bounded diagnosis context for GLM5.1
-```
-
-Dependency direction:
-
-```text
-presentation -> application -> ports/contracts
-infrastructure -> ports/contracts
-green/yellow business code -> public contracts and application services
-yellow lifecycle/correlation policy -> green current-product models
-```
-
-Red contracts/application/infrastructure must not import green or yellow product
-implementations. The red core uses generic source, event, scope, result, and
-diagnostic concepts. Green adapters project the current slot/board/CPU shape;
-yellow domain/mechanism code owns how that topology participates in lifecycle
-and correlation.
-
-Stable boundaries:
-
-- Decompressor alone owns extraction and path-safety enforcement.
-- Scanners inspect a prepared workspace; ordinary `.gz` logs are streamed.
-- Plugins declare API version and dependencies; Module2 depends explicitly on
-  Module1 and never creates an independent lifecycle.
-- Native mechanisms receive bounded `MechanismContext` and return
-  `MechanismOutcome`; only pre-v1 plugins may use the explicit
-  `LegacyMechanismContext` adapter.
-- Artifact paths come from one `ArtifactLayout`; writes are atomic.
-- `metadata.json` is scan coverage, `result.json` is a compact query index, and
-  `mech_modules/` is evidence. Do not merge their responsibilities.
-- Preserve issue-locator entrypoints: `parse`, `mech-target-logs`, `dfx-output`,
-  root `cli.py`, and `.agents/skills/logparse-diagnose/`.
-
-Read `docs/architecture.md` for the full design and ADRs under `docs/adr/` for
-the decisions that may not be silently reversed.
-
-## 4. Lifecycle and Product Rules
-
-Lifecycle splitting remains V3-only:
-
-- `CPU_Id=0` and empty CPU id are board-level current-product values.
-- Only non-zero CPU ids create nested CPU lifecycles.
-- Module1 always uses `LifecycleSplitterV3` / `interval_v3`.
-- Module2 reuses Module1 board and nested CPU lifecycle context.
-- V3 output includes `candidate_segments`, `merge_decisions`, `lifecycles`,
-  `journal_evidence`, `issues`, and `lifecycle_reliable`.
-- Do not restore lifecycle V2 compatibility; archived material is under
-  `docs/archive/lifecycle-v2/`.
-
-These are current-product policies, not generic architecture. Their runtime
-behavior may change only through the yellow-zone evidence workflow.
-
-## 5. Artifact and DFX Rules
-
-The formal task artifacts are:
-
-```text
-parse_manifest.json
-metadata.json
-result.json
-mech_modules/
-performance.json      # only with profile
-dfx_report.json       # only after dfx-output
-dfx_summary.txt       # only after dfx-output
-dfx_context/          # only when deep DFX produces bounded windows
-```
-
-`extracted/` is temporary workspace, not a formal artifact. Never put raw,
-context, or per-line `logs[]` into compact `result.json`. DFX summaries remain a
-single `ERROR_CODE: 中文结论` line without raw log text. Standalone logparse
-must not invoke Claude CLI or GLM5.1; see `docs/lan-dfx-operating-model.md`.
-
-## 6. Testing
-
-Use Python 3.12. On native Windows, replace `.venv/bin/python` with
-`.venv\Scripts\python.exe`:
-
-```bash
-.venv/bin/python cli.py check-config -c config.yaml
-.venv/bin/python cli.py doctor -c config.yaml --json
-.venv/bin/python cli.py explain-config -c config.yaml -p default --json
-.venv/bin/python cli.py migrate-config -c legacy-v1.yaml -o config-v2.yaml
-.venv/bin/python cli.py artifact-check output/<task_id> --json
-.venv/bin/python cli.py scaffold-extension --kind product --name <name>
-.venv/bin/python cli.py scaffold-extension --kind mechanism --name <name>
-.venv/bin/python scripts/verify_delivery.py
-.venv/bin/python -m pytest tests -q --basetemp /tmp/logparse-pytest -p no:cacheprovider
-.venv/bin/python cli.py parse tests/mock_data/diagnostic_information_20260103.zip \
-  -c config.yaml --product default -o output/smoke-default
-.venv/bin/python cli.py parse tests/mock_data_compact/compact_package_20260103.zip \
-  -c config.yaml --product compact -o output/smoke-compact
-```
-
-For a focused change, run the closest tests first, then the full suite required
-by the zone. Real-log policy changes also require LAN corpus comparison. Never
-claim a performance improvement without matching scanned files, lines, and
-mechanism entry counts; omitting input is not an optimization.
+除非用户指定具体任务，不检查 `output/` 或 `outputs/`。不把原始日志写入变更记录或外发材料。未经明确授权，不提交、推送、打 tag 或复制材料到仓库边界外。

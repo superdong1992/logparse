@@ -1,22 +1,10 @@
 ---
 name: logparse-develop
-description: Use when developing, fixing, refactoring, or reviewing logparse in the authoritative LAN repository and the change must follow green, yellow, and red architecture boundaries.
+description: 开发、重构或审查 logparse 时加载仓内统一开发流程，执行风险分区、验证与变更记录要求。
 ---
 
-# logparse Develop
+# 开发 logparse
 
-This is the Claude project-skill wrapper for the repository's canonical LAN
-development workflow.
+这是 Claude 项目技能入口。完整读取 `.agents/skills/logparse-develop/SKILL.md` 并执行其中流程；以 `governance/architecture-boundaries.toml` 确认路径分区。
 
-When invoked:
-
-1. Read `.agents/skills/logparse-develop/SKILL.md` completely.
-2. Follow that workflow exactly, including preflight, zone classification,
-   change-record evidence, testing, and final enforced gate.
-3. Treat `governance/architecture-boundaries.toml` as authoritative when prose
-   and a remembered path classification differ.
-4. Stop before a red change unless the required ADR and explicit human approval
-   already exist.
-
-Do not duplicate or weaken the canonical workflow in this wrapper. Do not export
-LAN code, diffs, fixtures, configurations, or logs to an external checkout.
+正文只在 `.agents` 维护。当前移交前授权及未来 LAN 交接边界见 ADR-0006；不要在本包装器中重复维护规则或覆盖正文。

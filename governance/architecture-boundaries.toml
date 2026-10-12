@@ -22,22 +22,26 @@ ignored_paths = [
 ]
 
 [authority]
-canonical_environment = "LAN"
-external_repository_status = "frozen-after-handoff"
+canonical_environment = "pre-handoff-owner-approved-checkout"
+after_handoff_environment = "LAN"
+current_authorization = "docs/adr/0006-pre-handoff-simplification.md"
+external_repository_status = "frozen-after-formal-handoff"
 outbound_code_sync = false
 raw_log_export = false
 summary_contract = "ERROR_CODE: 中文结论"
 
 [zones.green]
-label = "LAN business extension"
+label = "product extension"
 severity = 1
-policy = "GLM5.1 may change these product-specific files with focused tests and a LAN scenario."
+policy = "Product-specific changes require focused tests and a documented validation scenario."
 paths = [
   "configs/products/**",
   "backend/extensions/products/**",
   "backend/extensions/diagnosis/**",
   "tests/extensions/**",
   ".agents/skills/diagnose-*/**",
+  # New Claude discovery wrappers load the canonical green diagnosis body.
+  ".claude/skills/diagnose-*/**",
 
   # Legacy product adapters kept green while their compatibility facades exist.
   "backend/plugins/default/scanner.py",
@@ -49,7 +53,7 @@ paths = [
 [zones.yellow]
 label = "protected business policy"
 severity = 2
-policy = "Change only from real LAN evidence; record a minimal fixture and corpus regression."
+policy = "Business-policy changes require real LAN evidence, a minimal fixture and corpus regression. ADR-0006 permits only the approved behavior-preserving migration with truthful synthetic evidence."
 paths = [
   "backend/domain/lifecycle/**",
   "backend/domain/correlation/**",
@@ -72,9 +76,9 @@ paths = [
 ]
 
 [zones.red]
-label = "frozen architecture"
+label = "reviewed architecture"
 severity = 3
-policy = "Do not modify by default; require an accepted ADR, human approval, full validation, and rollback plan."
+policy = "Require an accepted ADR, explicit owner approval, full validation, and rollback plan; honor existing approval within its scope."
 paths = [
   "backend/contracts/**",
   "backend/ports/**",
@@ -83,6 +87,7 @@ paths = [
   "backend/presentation/**",
   "backend/extensions/mechanisms/base.py",
   "backend/extensions/products/current/artifacts.py",
+  "backend/extensions/products/current/artifact_validation.py",
   "backend/extensions/products/current/engine.py",
   "backend/extensions/products/current/metadata.py",
   "backend/extensions/products/current/pipeline.py",

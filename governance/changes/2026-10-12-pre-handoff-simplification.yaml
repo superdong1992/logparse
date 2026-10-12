@@ -1,0 +1,181 @@
+schema_version: 1
+change_id: 2026-10-12-pre-handoff-simplification
+summary: 移除旧配置、插件、导入与Pipeline兼容层，收敛v2产品引擎和CLI；修复重复扫描、读取错误漏报、依赖隔离、产物校验及同任务重跑残留，清除过期文档并同步开发技能。
+zones:
+- green
+- yellow
+- red
+paths:
+- backend/**
+- tests/**
+- scripts/**
+- docs/**
+- governance/architecture-boundaries.toml
+- .agents/skills/**
+- .claude/skills/**
+- AGENTS.md
+- CLAUDE.md
+- README.md
+- cli.py
+- config.yaml
+- configs/products/**
+- pyproject.toml
+- governance/changes/2026-10-12-pre-handoff-simplification.yaml
+validation:
+  tests:
+  - .venv\Scripts\python.exe -X utf8 scripts/verify_delivery.py：748 passed, 2 skipped；Ruff、compileall、check-config全部通过。
+  - 覆盖率：line 90.70%，branch 78.09%，architecture_core 90.71%；保留80/70/90门槛。
+  - git diff --check：通过。
+  - .venv\Scripts\python.exe -X utf8 scripts/rule_preflight.py --changed：通过；已阅读匹配规则。
+  - .venv\Scripts\python.exe -X utf8 scripts/change_gate.py --changed：完成分类，最高风险为red。
+  - .venv\Scripts\python.exe -X utf8 scripts/change_gate.py --changed --enforce --change-record governance/changes/2026-10-12-pre-handoff-simplification.yaml：ALLOW。
+  lan_scenario: 本轮只使用仓内合成 fixture 和 default/compact mock 包。 用户确认 LAN 没有后续修改；真实 LAN corpus 未执行。
+  contract_tests:
+  - tests/test_parse_integration.py：default、compact 两产品解析、紧凑产物检查、严格PID目标查询与DFX。
+  - tests/test_parser_plugin.py / test_mechanism_execution.py：单次共享读取、空批次、去重、时区、串并行、失败传播与依赖隔离。
+  - tests/test_product_engine.py：所选产品解压配置独立，交换声明顺序，运行选项覆盖与结构化失败。
+  - tests/test_query.py / test_dfx.py / test_artifacts.py：缺失、不可读、坏JSON、非对象及schema错误。
+  security_tests:
+  - tests/test_decompressor.py：解压路径越界、链接、压缩安全与嵌套归档。
+  - tests/infrastructure/test_artifact_repository.py：原子写入失败、manifest路径越界、符号链接、不可读及完整性哈希。
+  - tests/test_dfx.py / tests/test_parse_integration.py：上下文限额、紧凑索引不含原始正文、默认DFX不提取诊断上下文。
+  - tests/test_parse_workspace.py：归属校验、保留用户文件、失败重跑、清理故障、原始目录、双向输入输出重叠、symlink/junction边界。
+  smoke_tests:
+  - config.yaml check-config；两个产品端到端与tests/presentation/test_cli_workflows.py的42项CLI场景。
+  - .venv\Scripts\python.exe -X utf8 <skill-creator>/scripts/quick_validate.py 分别校验logparse-develop、logparse-diagnose、wiki-to-diagnosis-skill，均通过；生成技能目录、包装器和打包工具通过test_generated_skill_contract.py。
+  performance:
+    baseline_revision: a233b50
+    candidate: 本次未提交工作树；最终verify_delivery通过后采样。
+    environment: 同一Windows进程环境、Python 3.12.14/.venv；default与compact各3次ParseService.run，profile=True；perf_counter计时并启用tracemalloc。未使用真实LAN日志。
+    baseline_runs: 6
+    candidate_runs: 6
+    baseline_median_seconds: 0.0829459999804385
+    candidate_median_seconds: 0.08721779996994883
+    delta_percent: 5.15
+    headline_scope: 上述单值为default；两产品分别统计如下，不混合比较。
+    scan_counters:
+      default: &id001
+        discovered_file_count: 7
+        discovered_scope_count: 2
+        log_line_count: 106
+        mechanism_entry_count: 6
+        mechanism_result_count: 1
+        private_source_count: 3
+      compact: &id003
+        discovered_file_count: 5
+        discovered_scope_count: 2
+        log_line_count: 24
+        mechanism_entry_count: 8
+        mechanism_result_count: 1
+        private_source_count: 2
+    representative_artifact_hashes:
+      default: &id002
+        mech_modules/EXAMPLE/slot_1/20260103000100-20260103000200/SERVICE-12345.log: f564fbd70d477b02c1e85e06da6c83a7882fd86442f978a1608250c00915a0f3
+        mech_modules/EXAMPLE/slot_2/20260103063000-20260103063100/SERVICE-54321.log: a433209f724cbb798096bc28dfa14fa1435ecdb7571e85b77492aa8b05495b76
+        metadata.json: 5e4b2d1965ce8a858096b82e7c7cac831a943c5e3fdb58fb4ea9d71643cfcde0
+        result.json: c850d135b2cf6e30e9e348b0198a327ccf1076e0cc132971f0d4250a8caa1791
+      compact: &id004
+        mech_modules/COMPACT/slot_1/20260103000100-20260103030000/svc_master-100.log: cd9bc205c1d18b9d37994667a476326279fd884dcb3ffda4643193aec7d26d09
+        mech_modules/COMPACT/slot_2/20260103063001-20260103063101/svc_master-200.log: efd7f6c3e790366a78a45942b5280f0cbbe6e4fe604d7a9b4226f8457a137ac6
+        metadata.json: d8c9c8ba076119140ed652f6493780e56a17c8cc21e6c9a3db1b8a3c14656c99
+        result.json: 59fc084de2a8e09d60b26641b2e513629c3367dea6210489fbfc641ae3414922
+    shared_scan: test_parser_records_shared_diagnostic_scan_metrics 计数Path.open，Module1+Module2共享时同一诊断文件只打开1次；空批次与第二次解析也只读1次。审计基线为3次。
+    verdict: 业务产物与计数6/6完全一致，重复诊断扫描已消除。小样例default耗时+5.15%、compact+28.10%，未显示稳定端到端提速；不能宣称性能提升。Python分配峰值略降，不等同进程RSS。真实2GB包验收未执行。
+    products:
+      default:
+        baseline_seconds:
+        - 0.0921237000147812
+        - 0.07618410000577569
+        - 0.0829459999804385
+        candidate_seconds:
+        - 0.09328680002363399
+        - 0.08721779996994883
+        - 0.08620070002507418
+        baseline_median_seconds: 0.0829459999804385
+        candidate_median_seconds: 0.08721779996994883
+        delta_percent: 5.15
+        baseline_median_peak_python_bytes: 1155365
+        candidate_median_peak_python_bytes: 1147409
+        identical_scan_counters: *id001
+        business_artifact_comparisons: 3/3一致，使用scripts/compare_parse_outputs.py规范化created_at与输出根路径；逐文件比较metadata/result和证据正文，非数量比较。
+        normalized_business_hashes: *id002
+      compact:
+        baseline_seconds:
+        - 0.05782509996788576
+        - 0.052618199959397316
+        - 0.04886890004854649
+        candidate_seconds:
+        - 0.06863350002095103
+        - 0.06740609998814762
+        - 0.05878020002273843
+        baseline_median_seconds: 0.052618199959397316
+        candidate_median_seconds: 0.06740609998814762
+        delta_percent: 28.1
+        baseline_median_peak_python_bytes: 1150676
+        candidate_median_peak_python_bytes: 1138818
+        identical_scan_counters: *id003
+        business_artifact_comparisons: 3/3一致，使用scripts/compare_parse_outputs.py规范化created_at与输出根路径；逐文件比较metadata/result和证据正文，非数量比较。
+        normalized_business_hashes: *id004
+    local_evidence:
+    - .pytest_tmp/refactor-baseline/benchmark.json
+    - .pytest_tmp/refactor-candidate-final/benchmark.json
+    - .pytest_tmp/run_refactor_benchmark.py
+  baseline:
+    revision: a233b50
+    environment: Windows 原生 Python 3.12.14；.venv；requirements-dev.txt 锁定工具；测试在获准解除沙箱后运行，以排除临时目录/Path.resolve
+      权限干扰。
+    tests: 563 passed, 1 skipped；原 sandbox 540 passed / 23 failed / 1 skipped 不作为基线。
+    line_coverage_percent: 87.53
+    branch_coverage_percent: 73.57
+    core_coverage_note: 旧脚本未规范 Windows 反斜杠路径，把零个核心文件误报成100%；本轮已修复路径识别，空集合按0%失败。基线旧core值无效。
+  skipped: 2项真实symlink测试因当前Windows账户无创建权限而跳过；链接拒绝逻辑的替代测试、压缩包链接测试及真实Windows junction测试通过。
+  coverage:
+    line_percent: 90.7
+    branch_percent: 78.09
+    core_line_percent: 90.71
+evidence:
+  real_case_id: 无真实 LAN case。本轮不改变黄色算法语义；用户已明确批准移交前兼容层清理， 适用 ADR-0006 的本轮例外，不作为将来业务规则变更的真实案例依据。
+  fixture: 仓内生命周期/关联最小合成 fixture，以及 tests/mock_data 与 tests/mock_data_compact 中已有的 mock 包。
+  corpus_regression: 真实历史 LAN corpus 未执行；本轮以合成回归和业务产物对比验证接口清理， 正式 LAN 交接验收仍需真实 corpus。
+compatibility:
+  schema_impact: 删除 schema v1 配置、migrate-config、旧 Python 导入和 pre-v1 插件 API。 正式产物结构及生命周期/关联算法语义保持不变。
+architecture:
+  adr: docs/adr/0006-pre-handoff-simplification.md
+  approval: 仓库所有者于 2026-10-12 确认 LAN 无后续修改，明确允许破坏兼容、 修改 logparse-develop，并批准实施完整精简计划。
+  rollback: 在批准的本地流程中恢复本轮开始前基线；只回退本轮变更，保留其他并发工作。 不推送、不外传 LAN 数据。
+historical_delivery:
+  source: governance/changes/2026-07-11-lan-handoff-refactor.yaml
+  note: 已删除的 lan-handoff-refactor-plan 记录的是当时的 481 tests、line 87.98%、 branch 73.90%、core 92.03%，及 10+10 次小样例性能采样。
+    原始验收事实保留于上述既有记录，不能作为本轮结果； 当时延期的真实 corpus、2GB 包和 LAN 内备份验收仍未由本轮合成测试替代。
+rollback_units:
+- name: 治理与规则发现
+  paths:
+  - AGENTS.md
+  - CLAUDE.md
+  - governance/architecture-boundaries.toml
+  - scripts/rule_preflight.py
+  - scripts/change_gate.py
+  - scripts/verify_delivery.py
+  - tests/test_rule_preflight.py
+  - tests/test_change_gate.py
+  - tests/test_verify_delivery.py
+  - .agents/skills/logparse-develop/
+  - .claude/skills/logparse-develop/
+  note: 路径发现及覆盖率修复有独立回归；风险分区和门槛不降低。
+- name: 运行链路与接口迁移
+  paths:
+  - backend/
+  - cli.py
+  - tests/
+  note: 扫描、机制、配置、引擎、CLI及消费者导入跨文件依赖，回退时作为同一原子单元恢复a233b50版本及删除本轮新增文件；不能只恢复旧转发层或单个API。
+- name: 文档与诊断集成
+  paths:
+  - docs/
+  - README.md
+  - .agents/skills/logparse-diagnose/
+  - .claude/skills/wiki-to-diagnosis-skill/
+  - tests/test_generated_skill_contract.py
+  note: 历史删除文件可从a233b50恢复；运行接口相关说明须与运行单元一致。
+follow_up:
+- 真实LAN corpus及2GB输入性能验收未执行，不能用mock结果替代。
+- 全量时间戳驻留、候选段反复排序留待有基准的性能专项，本轮不修改。

@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-11
 
+> 2026-10-12：本文件保留历史决策。当前移交前精简的授权及被替代的兼容约定见 [ADR-0006](0006-pre-handoff-simplification.md)。
+
 ## Context
 
 logparse behavior depends on private product components and real logs that cannot

@@ -10,21 +10,26 @@ reviewing a local diff. The preflight also reads
 
 Green paths hold current-product topology, log-format adapters, and diagnosis
 knowledge. `slot`, `CPU`, board and active/standby concepts belong here, not in
-the product-neutral core. GLM5.1 may change green paths with focused tests and a
-documented LAN validation scenario.
+the product-neutral core. Green changes require focused tests and a documented product validation
+scenario. The current pre-handoff authorization is recorded in ADR-0006.
 
 ## governance:yellow
 
 Yellow paths hold protected lifecycle and correlation policy. Modify them only
 when a real LAN case proves the current rule wrong. Record the real case id, a
 minimal fixture, historical-corpus regression, and schema impact.
+ADR-0006 permits only this authorized, behavior-preserving interface cleanup
+to use synthetic regressions while explicitly recording that no real LAN
+case or historical corpus was used.
 
 ## governance:red
 
-Red paths hold frozen architecture, contracts, artifacts, security, CLI
-compatibility, and the governance controls themselves. Modification requires an
+Red paths hold reviewed architecture, contracts, artifacts, security, CLI
+interfaces, and the governance controls themselves. Modification requires an
 Accepted ADR, explicit human approval, contract/security/smoke validation, and
-a rollback plan. Editing the gate to bypass it is prohibited.
+a rollback plan. Existing explicit approval applies within its stated scope;
+ADR-0006 records the current pre-handoff simplification authorization.
+Editing the gate to bypass it is prohibited.
 
 ## rules:cpu-id-board
 
@@ -68,7 +73,7 @@ Checklist:
 ## rules:compact-result-contract
 
 Source: `backend/extensions/products/current/result_serializer.py`,
-`backend/query.py`, and `docs/architecture.md`.
+`backend/extensions/products/current/query.py`, and `docs/architecture.md`.
 
 Checklist:
 
@@ -104,8 +109,8 @@ Checklist:
 
 ## rules:lifecycle-v3-output
 
-Source: `backend/domain/lifecycle/splitter_v3.py`, `backend/result_serializer.py`,
-`backend/query.py`, `cli.py`, and `docs/lifecycle-dfx-guide.md`.
+Source: `backend/domain/lifecycle/splitter_v3.py`, `backend/extensions/products/current/result_serializer.py`,
+`backend/extensions/products/current/query.py`, `cli.py`, and `docs/lifecycle-dfx-guide.md`.
 
 Checklist:
 
@@ -130,7 +135,7 @@ Checklist:
 
 ## rules:deterministic-dfx-boundary
 
-Source: `backend/dfx.py`, `docs/lan-dfx-operating-model.md`, and ADR-0004.
+Source: `backend/extensions/products/current/dfx.py`, `docs/lan-dfx-operating-model.md`, and ADR-0004.
 
 Checklist:
 

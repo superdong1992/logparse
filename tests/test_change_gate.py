@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import subprocess
 
+import pytest
 import yaml
 
 from scripts import change_gate
@@ -88,6 +90,7 @@ def test_artifact_and_query_contracts_stay_red_inside_product_tree():
             "backend/extensions/products/current/query.py",
             "backend/extensions/products/current/dfx.py",
             "backend/extensions/products/current/artifacts.py",
+            "backend/extensions/products/current/artifact_validation.py",
             "backend/extensions/products/current/engine.py",
             "backend/extensions/products/current/metadata.py",
             "backend/extensions/products/current/result_serializer.py",
@@ -331,9 +334,66 @@ def test_commit_range_paths_uses_explicit_base_and_head(monkeypatch):
     assert calls == [[
         "git",
         "diff",
+        "--no-renames",
         "--name-only",
         "-z",
         "--diff-filter=ACMRDTUXB",
         "origin/main",
         "HEAD",
     ]]
+
+
+def test_git_paths_preserve_rename_source_target_and_unicode_spaces(tmp_path, monkeypatch):
+    def git(*args):
+        subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True, capture_output=True,
+        )
+
+    git("init", "-q")
+    source = tmp_path / "backend/domain/lifecycle/中文 源.py"
+    destination = tmp_path / "backend/extensions/products/new/中文 目标.py"
+    source.parent.mkdir(parents=True)
+    destination.parent.mkdir(parents=True)
+    source.write_text("original = True\n", encoding="utf-8")
+    git("add", ".")
+    git("-c", "user.name=Gate test", "-c", "user.email=gate@example.invalid",
+        "commit", "-qm", "baseline")
+    source.rename(destination)
+    git("add", "-A")
+    monkeypatch.setattr(change_gate, "REPO_ROOT", tmp_path)
+
+    expected = {source.relative_to(tmp_path).as_posix(), destination.relative_to(tmp_path).as_posix()}
+    assert set(change_gate.changed_paths()) == expected
+
+    git("-c", "user.name=Gate test", "-c", "user.email=gate@example.invalid",
+        "commit", "-qm", "rename")
+    assert set(change_gate.commit_range_paths("HEAD~1", "HEAD")) == expected
+
+
+@pytest.mark.parametrize("missing_executable", [False, True])
+def test_changed_paths_fails_closed_on_git_error(monkeypatch, missing_executable):
+    class Failed:
+        returncode = 128
+        stdout = b""
+        stderr = b"not a git repository"
+
+    def fail(*_args, **_kwargs):
+        if missing_executable:
+            raise FileNotFoundError("git unavailable")
+        return Failed()
+
+    monkeypatch.setattr(change_gate.subprocess, "run", fail)
+
+    with pytest.raises(RuntimeError):
+        change_gate.changed_paths()
+
+
+def test_generated_skill_body_and_wrapper_are_green_without_downgrading_develop():
+    config = change_gate.load_boundary_config()
+    changes = change_gate.classify_paths([
+        ".agents/skills/diagnose-example/SKILL.md",
+        ".claude/skills/diagnose-example/SKILL.md",
+        ".claude/skills/logparse-develop/SKILL.md",
+    ], config)
+
+    assert [change.zone.name for change in changes] == ["green", "green", "red"]

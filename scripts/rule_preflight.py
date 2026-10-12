@@ -5,15 +5,15 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 try:
-    from scripts.change_gate import classify_path, load_boundary_config
+    from scripts.change_gate import changed_paths, classify_path, load_boundary_config, normalize_path
 except ModuleNotFoundError:  # Direct execution: python scripts/rule_preflight.py
-    from change_gate import classify_path, load_boundary_config
+    from change_gate import changed_paths, classify_path, load_boundary_config, normalize_path
 
 
 RULE_DOC = "docs/rules/index.md"
@@ -65,9 +65,13 @@ RULES: tuple[Rule, ...] = (
             "backend/extensions/products/current/artifacts.py",
             "backend/parsing/output_writer.py",
             "backend/result_serializer.py",
+            "backend/extensions/products/current/result_serializer.py",
             "backend/query.py",
+            "backend/extensions/products/current/query.py",
             "backend/metadata.py",
+            "backend/extensions/products/current/metadata.py",
             "cli.py",
+            "backend/presentation/cli/**",
             "tests/test_output_writer.py",
             "tests/test_query.py",
             "tests/test_cli.py",
@@ -103,10 +107,14 @@ RULES: tuple[Rule, ...] = (
         ),
         globs=(
             "backend/result_serializer.py",
+            "backend/extensions/products/current/result_serializer.py",
             "backend/extensions/products/*/result_serializer.py",
             "backend/query.py",
+            "backend/extensions/products/current/query.py",
             "backend/metadata.py",
+            "backend/extensions/products/current/metadata.py",
             "cli.py",
+            "backend/presentation/cli/**",
             "tests/test_query.py",
             "tests/test_cli.py",
         ),
@@ -123,6 +131,7 @@ RULES: tuple[Rule, ...] = (
             "backend/decompressor.py",
             "backend/pipeline.py",
             "backend/extensions/products/current/pipeline.py",
+            "backend/extensions/products/current/engine.py",
             "backend/application/parse_service.py",
             "backend/application/mechanism_execution.py",
             "backend/infrastructure/archive*.py",
@@ -178,8 +187,11 @@ RULES: tuple[Rule, ...] = (
             "backend/domain/lifecycle/splitter_v3.py",
             "backend/extensions/mechanisms/module1.py",
             "backend/result_serializer.py",
+            "backend/extensions/products/current/result_serializer.py",
             "backend/query.py",
+            "backend/extensions/products/current/query.py",
             "cli.py",
+            "backend/presentation/cli/**",
             "tests/test_lifecycle_splitter_v3.py",
             "tests/test_module1_plugin.py",
             "tests/test_cli.py",
@@ -201,13 +213,16 @@ RULES: tuple[Rule, ...] = (
             "backend/infrastructure/artifact_repository.py",
             "backend/infrastructure/parse_artifact_session.py",
             "backend/metadata.py",
+            "backend/extensions/products/current/metadata.py",
             "backend/result_serializer.py",
+            "backend/extensions/products/current/result_serializer.py",
             "backend/extensions/products/*/metadata.py",
             "backend/extensions/products/*/result_serializer.py",
             "backend/parsing/output_writer.py",
             "backend/extensions/products/current/artifacts.py",
             "backend/pipeline.py",
             "backend/extensions/products/current/pipeline.py",
+            "backend/extensions/products/current/engine.py",
             "backend/application/parse_service.py",
             "tests/test_artifacts.py",
             "tests/test_output_writer.py",
@@ -225,9 +240,11 @@ RULES: tuple[Rule, ...] = (
         ),
         globs=(
             "backend/dfx.py",
+            "backend/extensions/products/current/dfx.py",
             "backend/application/*dfx*.py",
             "backend/presentation/**",
             "cli.py",
+            "backend/presentation/cli/**",
             "tests/test_dfx.py",
             "tests/test_cli.py",
             "docs/lan-dfx-operating-model.md",
@@ -235,31 +252,6 @@ RULES: tuple[Rule, ...] = (
         ),
     ),
 )
-
-
-def normalize_path(path: str | Path) -> str:
-    normalized = str(path).replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    return normalized.rstrip("/")
-
-
-def changed_paths() -> list[str]:
-    completed = subprocess.run(
-        ["git", "status", "--short"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    paths: list[str] = []
-    for line in completed.stdout.splitlines():
-        if not line.strip():
-            continue
-        path = line[3:] if len(line) > 3 and line[2] == " " else line.strip()
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        paths.append(normalize_path(path))
-    return paths
 
 
 def select_rules_for_paths(paths: Iterable[str | Path]) -> list[Rule]:
@@ -304,14 +296,14 @@ def _boundary_rule(zone: str, label: str, policy: str) -> Rule:
     checks_by_zone = {
         "green": (
             "Keep product topology and log-format knowledge inside the green extension area.",
-            "Add focused tests and record the LAN validation scenario.",
+            "Add focused tests and record the product validation scenario.",
         ),
         "yellow": (
-            "Change only when real LAN evidence proves the current policy wrong.",
+            "Business-policy changes require real LAN evidence; ADR-0006 only exempts the approved behavior-preserving migration.",
             "Record a case id, minimal fixture, corpus regression, and schema conclusion.",
         ),
         "red": (
-            "Do not modify frozen architecture by default.",
+            "Architecture changes must stay within an explicitly approved ADR scope.",
             "Require an accepted ADR, human approval, full validation, and rollback plan.",
         ),
     }
@@ -327,15 +319,19 @@ def _boundary_rule(zone: str, label: str, policy: str) -> Rule:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--paths", nargs="*", default=[], help="Files you plan to inspect or edit")
-    parser.add_argument("--changed", action="store_true", help="Use git status --short paths")
+    parser.add_argument("--changed", action="store_true", help="检查暂存、未暂存和未跟踪路径")
     args = parser.parse_args(argv)
 
     if not args.paths and not args.changed:
         parser.error("pass --paths FILE... or --changed")
 
     paths = [normalize_path(path) for path in args.paths]
-    if args.changed:
-        paths.extend(changed_paths())
+    try:
+        if args.changed:
+            paths.extend(changed_paths())
+    except RuntimeError as error:
+        print(f"规则预检失败：{error}", file=sys.stderr)
+        return 2
 
     print(render_rules(select_rules_for_paths(paths)))
     return 0
