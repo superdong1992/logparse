@@ -17,16 +17,16 @@ For weak-model or generated diagnosis callers, follow this path first:
 
 1. Collect `input_path`, `problem_time`, and one target anchor per requested process: `module + slot + process_name + optional pid + optional label`.
 2. Resolve `input_path` to a result root containing `result.json`. If parsing raw log input is needed, require a concrete `config_path` that includes the YAML filename, such as `config.yaml`; current module1 lifecycle splitting is V3-only.
-3. Run `python3.12 cli.py mech-target-logs ...` once per target anchor and use the returned JSON as the only target-log selection result.
+3. Run `.venv/bin/python cli.py mech-target-logs ...` once per target anchor and use the returned JSON as the only target-log selection result.
 4. Return `target_logs` plus matched log content/windows. Stop on missing or ambiguous requested targets instead of substituting related logs.
 
 Only after this path succeeds should you interpret V3 details, expand related logs, or correlate broader context.
 
 ## Python Execution
 
-Run repository Python commands with Python 3.12. Use `python3.12` for CLI commands, helper scripts, dependency installation, and ad hoc JSON inspection; do not use bare `python` or rely on PATH defaults. If `python3.12` is unavailable on Windows, try `py -3.12`; if no Python 3.12 interpreter is available, stop and set up Python 3.12 before parsing or diagnosing.
+所有仓库命令使用 `.venv` 中的 Python 3.12。以下示例使用 `.venv/bin/python`；原生 Windows 替换为 `.venv\Scripts\python.exe`，不要依赖 PATH 上的裸 `python`、`python3.12` 或 `py`。
 
-When dependencies are missing, install them with the Python 3.12 interpreter, for example `python3.12 -m pip install -r requirements.txt`. If creating a virtual environment, create it from Python 3.12 first, for example `python3.12 -m venv .venv`, then use that environment's Python.
+如环境或依赖缺失，按 `docs/lan-development-guide.md` 创建 Python 3.12 虚拟环境，再用该环境安装 `requirements.txt`。诊断与解析始终使用同一个环境。
 
 ## Required Inputs
 
@@ -44,7 +44,7 @@ If the input path, problem time, module, slot, or process name is missing and ca
 1. Resolve the input into a preprocessed result root.
    - Prefer the directory containing `result.json`.
    - If only an output base and task id are given, use `output/{task_id}/result.json`.
-   - If the input is a raw file or a directory without `result.json`, parse it first with `python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>`.
+   - If the input is a raw file or a directory without `result.json`, parse it first with `.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>`.
    - Use parse settings from the prompt. For generated diagnosis skills, require `config_path`; do not omit `-c <config_path>` or provide only a config directory. In interactive manual diagnosis, use repository `config.yaml` only when the user explicitly accepts that default.
    - After parsing, verify the parsed result has V3 lifecycle payloads before diagnosing.
    - After parsing, derive `task_id` from the CLI output or package stem, then use `<output_dir>/<task_id>/result.json`.
@@ -57,7 +57,7 @@ If the input path, problem time, module, slot, or process name is missing and ca
    - If the user explicitly asks to inspect legacy output, continue with a clear non-V3 caveat.
 
 3. Resolve each target anchor with the deterministic CLI.
-   - For each anchor, run `python3.12 cli.py mech-target-logs <task_id> --problem-time <problem_time> --module <module> --slot <slot> --process-name <process_name> [--pid <pid>] [--label <label>] -o <output_dir>`.
+   - For each anchor, run `.venv/bin/python cli.py mech-target-logs <task_id> --problem-time <problem_time> --module <module> --slot <slot> --process-name <process_name> [--pid <pid>] [--label <label>] -o <output_dir>`.
    - Do not manually choose lifecycle/cycle from `result.json`. The CLI owns slot normalization, module key/name matching, process/PID matching, exact/nearest/unknown lifecycle selection, and log-path construction.
    - Run one command per requested target anchor. If multiple anchors are supplied, concatenate the returned `target_logs[]` in the same order as the anchors.
    - If `mech-target-logs` returns `missing` or `ambiguous`, report that target as missing/ambiguous evidence. Do not substitute related logs.
@@ -137,15 +137,15 @@ Generated diagnosis skills consume the `target_logs` block as the only target-lo
 Use normal shell and JSON tooling available in the current environment. These commands are optional helpers, not requirements:
 
 ```bash
-python3.12 cli.py info <task_id> -o <output_dir>
-python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>
-python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir> --verbose
-python3.12 cli.py list-slots <task_id> -o <output_dir>
-python3.12 cli.py mech-slots <task_id> -o <output_dir>
-python3.12 cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module_key_or_name> --slot <slot_id> --process-name <process_name> --pid <pid> --label <label> -o <output_dir>
-python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx decisions -o <output_dir>
-python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx full -o <output_dir>
-python3.12 cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> -m <module_name> --cpu <cpu_id> --cpu-cycle <cpu_cycle_dir> -o <output_dir>
+.venv/bin/python cli.py info <task_id> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir> --verbose
+.venv/bin/python cli.py list-slots <task_id> -o <output_dir>
+.venv/bin/python cli.py mech-slots <task_id> -o <output_dir>
+.venv/bin/python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module_key_or_name> --slot <slot_id> --process-name <process_name> --pid <pid> --label <label> -o <output_dir>
+.venv/bin/python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx decisions -o <output_dir>
+.venv/bin/python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx full -o <output_dir>
+.venv/bin/python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> -m <module_name> --cpu <cpu_id> --cpu-cycle <cpu_cycle_dir> -o <output_dir>
 ```
 
 Prefer direct JSON reads for exact matching and multi-anchor correlation; use CLI commands for quick human-readable checks.

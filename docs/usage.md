@@ -1,11 +1,13 @@
 # logparse Usage
 
+以下命令使用 `.venv` 中的 Python 3.12；Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。配置必须显式声明 `schema_version: 2`，旧 v1 配置及 `migrate-config` 已移除。
+
 ## Parse Packages
 
 Default product:
 
 ```bash
-python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
+.venv/bin/python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
   --config config.yaml \
   --output output \
   --product default
@@ -14,7 +16,7 @@ python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
 Compact product example:
 
 ```bash
-python cli.py parse tests\mock_data_compact\compact_package_20260103.zip \
+.venv/bin/python cli.py parse tests\mock_data_compact\compact_package_20260103.zip \
   --config config.yaml \
   --output output \
   --product compact
@@ -85,13 +87,13 @@ V3 result fields:
 - `issues`
 - `lifecycle_reliable`
 
-Config validation rejects old switch/algorithm fields and old top-level lifecycle name-map/restart fields. Use `python cli.py check-config -c config.yaml` before parsing.
+Config validation rejects old switch/algorithm fields and old top-level lifecycle name-map/restart fields. Use `.venv/bin/python cli.py check-config -c config.yaml` before parsing.
 
 Inspect V3 DFX:
 
 ```bash
-python cli.py parse <input_path> -c config.yaml --lifecycle-dfx decisions
-python cli.py mech-lifecycles <task_id> -s 1 --module EXAMPLE --show-boundaries --lifecycle-dfx full
+.venv/bin/python cli.py parse <input_path> -c config.yaml --lifecycle-dfx decisions
+.venv/bin/python cli.py mech-lifecycles <task_id> -s 1 --module EXAMPLE --show-boundaries --lifecycle-dfx full
 ```
 
 `mech-lifecycles --show-boundaries` displays V3 DFX only. Legacy result files may be reported as unsupported.
@@ -99,9 +101,9 @@ python cli.py mech-lifecycles <task_id> -s 1 --module EXAMPLE --show-boundaries 
 ## Query Logs
 
 ```bash
-python cli.py mech-slots <task_id> --output output
-python cli.py mech-lifecycles <task_id> --output output -s 1 --module EXAMPLE
-python cli.py mech-logs <task_id> --output output -s 1 -c <board_cycle_dir> -p SERVICE --pid 12345 --module EXAMPLE
+.venv/bin/python cli.py mech-slots <task_id> --output output
+.venv/bin/python cli.py mech-lifecycles <task_id> --output output -s 1 --module EXAMPLE
+.venv/bin/python cli.py mech-logs <task_id> --output output -s 1 -c <board_cycle_dir> -p SERVICE --pid 12345 --module EXAMPLE
 ```
 
 Mechanism logs are written under `mech_modules/<module>/slot_<id>/<board_cycle>/`.
@@ -112,7 +114,7 @@ encoded before writing.
 Nested CPU cycle logs:
 
 ```bash
-python cli.py mech-logs <task_id> \
+.venv/bin/python cli.py mech-logs <task_id> \
   --output output \
   -s 1 \
   -c <board_cycle_dir> \
@@ -128,7 +130,7 @@ python cli.py mech-logs <task_id> \
 Plain `.gz` logs are not expanded into `extracted/` by default. Parsers stream them directly. For manual inspection:
 
 ```bash
-python cli.py parse xxx.zip --output output --product default --debug-expand-gz
+.venv/bin/python cli.py parse xxx.zip --output output --product default --debug-expand-gz
 ```
 
 This uses the supported `Decompressor.extract_all(..., expand_gz=True)` path.
@@ -136,7 +138,7 @@ This uses the supported `Decompressor.extract_all(..., expand_gz=True)` path.
 ## Profile
 
 ```bash
-python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
+.venv/bin/python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
   --output output_optimized \
   --product default \
   --profile
@@ -145,12 +147,12 @@ python cli.py parse tests\mock_data\diagnostic_information_20260103.zip \
 Compare business output:
 
 ```bash
-python scripts/compare_parse_outputs.py output_baseline output_optimized
+.venv/bin/python scripts/compare_parse_outputs.py output_baseline output_optimized
 ```
 
 ## Config And Rule Checks
 
 ```bash
-python cli.py check-config -c config.yaml
-python scripts/rule_preflight.py --changed
+.venv/bin/python cli.py check-config -c config.yaml
+.venv/bin/python scripts/rule_preflight.py --changed
 ```

@@ -1,64 +1,47 @@
 # logparse
 
-logparse preprocesses device diagnostic packages. It uses a temporary workspace,
-discovers product logs, writes lifecycle-organized evidence under
-`mech_modules/`, and emits a versioned `parse_manifest.json`, scan-oriented
-`metadata.json`, and compact query-oriented `result.json`.
+logparse 预处理设备诊断日志：安全解压、按产品发现日志、整理生命周期与进程证据，再生成可查询的结构化索引。独立运行时保持确定性，不调用模型。
 
-After handoff, the LAN checkout is the only authoritative repository. Read
-`CLAUDE.md` and `docs/lan-development-guide.md` before making changes.
+当前处于所有者批准的移交前精简阶段，见 [ADR-0006](docs/adr/0006-pre-handoff-simplification.md)。开发前阅读 `CLAUDE.md` 和 [开发指南](docs/lan-development-guide.md)；正式移交后只在 LAN 内维护。
 
-## Quick Start
+## 快速开始
+
+使用 Python 3.12 创建 `.venv` 并安装依赖。以下示例使用 POSIX 路径；Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。
 
 ```bash
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python cli.py check-config -c config.yaml
 .venv/bin/python cli.py parse tests/mock_data/diagnostic_information_20260103.zip -c config.yaml --product default
-```
-
-Compact product example:
-
-```bash
 .venv/bin/python cli.py parse tests/mock_data_compact/compact_package_20260103.zip -c config.yaml --product compact
 ```
 
-## Commands
+`parse` 接受原始压缩包、单个非压缩诊断日志或原始日志目录。已有 `output/<task_id>` 应交给查询/诊断命令，不再次解析。default 和 compact 是两套持续验收的产品适配器；`tests/mock_data*` 为合成冒烟包，普通单元测试优先使用最小 fixture。
+
+## 配置与接口
+
+唯一配置格式为显式 `schema_version: 2`。根 `config.yaml` 引用 `configs/products/` 中的产品文件；`explain-config` 展示最终配置，`check-config` 校验它。旧 v1 配置、`migrate-config`、旧 Python 导入路径和 pre-v1 插件不再支持。
+
+`ParseService` 是唯一完整解析入口；根 `cli.py` 只启动命令层。机制插件使用 `execute(MechanismContext) -> MechanismOutcome`，依赖关系在扫描前验证。
 
 ```bash
-python cli.py parse <input_path> [-c config.yaml] [-o ./output] [--product default|compact] [--lifecycle-dfx errors|summary|decisions|full|off]
-python cli.py parse <input_path> --debug-expand-gz
-python cli.py parse <input_path> --profile
-python cli.py parse <input_path> --keep-workspace
-
-python cli.py info <task_id>
-python cli.py list-slots <task_id>
-python cli.py mech-slots <task_id> [-m MODULE]
-python cli.py mech-lifecycles <task_id> -s <slot_id> [-m MODULE] [--show-boundaries] [--lifecycle-dfx summary|decisions|full|off]
-python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module> --slot <slot_id> --process-name <name> [--pid <pid>] [--explain]
-python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <proc_name> [--pid <pid>] [-m MODULE] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>]
-python cli.py dfx-output output/<task_id> [--deep] [--targets-json <json>]
-
-python cli.py check-config [-c config.yaml]
-python cli.py doctor [-c config.yaml] [--json]
-python cli.py explain-config [-c config.yaml] [-p PRODUCT] [--json]
-python cli.py migrate-config -c legacy-v1.yaml [-o config-v2.yaml]
-python cli.py artifact-check output/<task_id> [--json]
-python cli.py scaffold-extension --kind product|mechanism --name <name>
-python cli.py test-pattern -m module1 -t diag "log line"
-python cli.py test-pattern -m module1 -t journal "log line"
+.venv/bin/python cli.py parse <input_path> -c config.yaml --product default --profile
+.venv/bin/python cli.py info <task_id>
+.venv/bin/python cli.py list-slots <task_id>
+.venv/bin/python cli.py mech-slots <task_id> -m <module>
+.venv/bin/python cli.py mech-lifecycles <task_id> -s <slot> -m <module> --show-boundaries
+.venv/bin/python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module> --slot <slot> --process-name <name> --pid <pid>
+.venv/bin/python cli.py mech-logs <task_id> -s <slot> -c <board_cycle_dir> -p <process> --pid <pid> -m <module>
+.venv/bin/python cli.py doctor -c config.yaml --json
+.venv/bin/python cli.py explain-config -c config.yaml -p default --json
+.venv/bin/python cli.py artifact-check output/<task_id> --json
+.venv/bin/python cli.py scaffold-extension --kind product --name <name>
+.venv/bin/python cli.py scaffold-extension --kind mechanism --name <name>
 ```
 
-## Lifecycle Split
+## 生命周期与扫描
 
-`config.yaml` uses schema v2 and keeps the red root index small by including
-green product files from `configs/products/`. Use `explain-config` to inspect the
-resolved configuration and `migrate-config` for an older v1 file; do not edit
-the root schema or include loader for routine product changes.
-
-`module1` now always uses `LifecycleSplitterV3`. The current `lifecycle_split_result.algorithm` is always `interval_v3`. Older detector/v2 display paths, legacy boundary issue output, and detailed legacy `result.json` compatibility are removed.
-
-Current `lifecycle_split` supports only these fields:
+Module1 始终使用 `LifecycleSplitterV3`，`lifecycle_split_result.algorithm` 为 `interval_v3`。`lifecycle_split` 仅接受：
 
 ```yaml
 lifecycle_split:
@@ -71,20 +54,20 @@ lifecycle_split:
   multi_instance_processes: []
 ```
 
-Old switch/algorithm fields and old top-level lifecycle name-map/restart fields are rejected by config validation. V3 first builds candidate segments from a 30-second silent gap, then merges or keeps adjacent candidates based on reliable process PID evidence and journal evidence.
-
-V3 `lifecycle_split_result` contains `candidate_segments`, `merge_decisions`, `lifecycles`, `journal_evidence`, `issues`, and `lifecycle_reliable`. Lifecycle issues live under `lifecycle_split_result.issues`.
-
-Inspect V3 DFX:
+V3 结果包含 `candidate_segments`、`merge_decisions`、`lifecycles`、`journal_evidence`、`issues`、`lifecycle_reliable`。旧开关和算法字段会被拒绝。
 
 ```bash
-python cli.py parse <input_path> -c config.yaml --lifecycle-dfx decisions
-python cli.py mech-lifecycles <task_id> -s <slot_id> -m <module_name> --show-boundaries --lifecycle-dfx full
+.venv/bin/python cli.py parse <input_path> -c config.yaml --lifecycle-dfx decisions
+.venv/bin/python cli.py mech-lifecycles <task_id> -s <slot> -m <module> --show-boundaries --lifecycle-dfx full
 ```
 
-## Output Layout
+板级生命周期为顶层，非零 CPU 生命周期嵌套在对应板级周期内；空 CPU 和 CPU0 属于板级。Module2 复用 Module1 生命周期，不独立切分；如 `1/2` 的 frame/slot 值按最后一个非空段匹配 slot。
 
-The formal task layout is:
+解压器负责提取与路径安全，scanner 只检查准备好的工作区。普通 `.gz` 日志默认流式读取，显式 `--debug-expand-gz` 才展开；`--keep-workspace` 可保留临时工作区。
+
+default 产品先扫描 `diag/slot_*`，再按 `products.default.discovery.config.loose_diagnostics.file_patterns` 补充散落日志。默认不匹配宽泛的 `*.log`。机制条目按解析内容去重，源路径不参与重复判定；完整规则见 [使用说明](docs/usage.md)。journal 仍以 `varlog/slot_*` 或 `varlog/slot_*_cpu_*` 为归属锚点。
+
+## 产物与诊断
 
 ```text
 output/<task_id>/
@@ -92,101 +75,33 @@ output/<task_id>/
 ├── metadata.json
 ├── result.json
 ├── mech_modules/
-├── performance.json       # --profile only
-├── dfx_report.json        # after dfx-output
-├── dfx_summary.txt        # after dfx-output
-└── dfx_context/           # only when deep DFX produced windows
+├── performance.json       # --profile
+├── dfx_report.json        # dfx-output
+├── dfx_summary.txt        # dfx-output
+└── dfx_context/           # 深度 DFX 确实产生窗口时
 ```
 
-The extraction directory is temporary by default. `--keep-workspace` retains it
-for explicit LAN debugging. `result.json` is always compact and never contains
-raw/context/per-line logs.
-
-Board cycles are top-level lifecycles. CPU cycles are nested under the matching board cycle. Board logs are written to `mech_modules/<module>/slot_<id>/<board_cycle>/<proc>-<pid>.log`; CPU-cycle logs are written to `mech_modules/<module>/slot_<id>/<board_cycle>/cpu_<id>/<cpu_cycle>/<proc>-<pid>.log`. Plain safe names are kept readable for compatibility with older scripts; names containing path separators, Windows-reserved names, or filesystem-unsafe characters are encoded before writing.
-
-Slot, CPU, board role, Module1, and Module2 are current-product extension
-concepts; they are not generic architecture contracts.
-
-`module2` is diagnostic-log only for lifecycle purposes. It reuses module1 lifecycle results and does not run independent lifecycle splitting. When a module2 diagnostic `Slot` value uses a frame/slot form such as `1/2`, module2 maps it to the last non-empty segment (`2`) before matching module1 slots and writing `slot_<id>` output.
-
-## Extraction And Performance
-
-`Decompressor` owns archive extraction. Scanner plugins inspect the already extracted workspace only. Plain `.gz` logs are streamed by parsers unless debug expansion is enabled. For manual full-text inspection, use `--debug-expand-gz` or `pipeline.debug_expand_gz: true`.
-
-The default product also supports configured loose diagnostic inputs. After the
-normal `diag/slot_*` scan, files matching
-`products.default.discovery.config.loose_diagnostics.file_patterns` are merged
-from anywhere under the extracted workspace.
-The shipped default is conservative and does not include broad patterns such as
-`*.log`; add specific patterns before parsing a single loose diagnostic log.
-Parsed mechanism logs are deduplicated by parsed content across files and within
-the same file. Source path fields such as `source_file` are intentionally not
-part of duplicate identity, so copied logs with identical parsed timestamp,
-slot/cpu, process/pid, context, sequence, active flag, and raw text collapse to
-the first occurrence.
-For `cli.py parse`, `<input_path>` means raw log input: a compressed log
-package, a single non-compressed diagnostic log file, or a raw log directory.
-Already parsed result directories such as `output/{task_id}` are consumed by
-diagnosis/query workflows, not by `parse`.
-Journal discovery still requires `varlog/slot_*` or `varlog/slot_*_cpu_*` as the
-slot/cpu anchor, but it accepts journal files under `varlog*.zip_extracted`
-children that contain `varlog*` directories.
-
-## Deterministic DFX
-
-Use `dfx-output` on an already parsed `output/{task_id}` directory when you need
-a local, non-AI explanation of parse/output/tool consistency. Standalone
-logparse does not invoke Claude CLI.
+`metadata.json` 记录扫描覆盖，`result.json` 是紧凑查询索引，不含原始文本或逐行 `logs[]`。机制证据保存在 `mech_modules/<module>/slot_<slot>/<board_cycle>/`；CPU 日志继续嵌套于 `cpu_<id>/<cpu_cycle>/`。普通安全进程名保留 `<proc>-<pid>.log`；路径分隔符、Windows 保留名等不安全名称会编码。
 
 ```bash
-python cli.py dfx-output output/<task_id>
-python cli.py dfx-output output/<task_id> --targets-json '{"problem_time":"2026-01-03T00:05:00","targets":[{"module":"EXAMPLE","slot":"1","process_name":"SERVICE","pid":"123"}]}'
+.venv/bin/python cli.py dfx-output output/<task_id>
+.venv/bin/python cli.py dfx-output output/<task_id> --deep
 ```
 
-The command writes `dfx_report.json` and one-line `dfx_summary.txt` under the task
-directory. Default mode reads only structured output and `mech_modules` file
-structure and does not create an empty context directory. `--deep` is LAN-only
-and may write bounded target-log windows plus a manifest into `dfx_context/`;
-the summary remains a single
-`ERROR_CODE: 中文结论` line and must not contain raw log text.
+默认 DFX 读取结构化产物，并读取证据文件计算完整性哈希；这些正文不会进入诊断报告。深度模式才提取诊断上下文，最多 5 个窗口、每个 48 行、共 80 KiB。`dfx_summary.txt` 只含单行 `ERROR_CODE: 中文结论`。模型只读取指定目标与限量上下文，详见 [DFX 边界](docs/lan-dfx-operating-model.md)。
+
+诊断 skill 的正文保存在 `.agents/skills/`，Claude 从 `.claude/skills/` 的包装入口加载。仓内 wiki 生成器及 `result.zip` 打包工具属于诊断集成能力，独立于预处理运行时。
+
+## 验证
 
 ```bash
-python cli.py parse tests/mock_data/diagnostic_information_20260103.zip --profile --output output_baseline
-python cli.py parse tests/mock_data/diagnostic_information_20260103.zip --profile --output output_optimized
-python scripts/compare_parse_outputs.py output_baseline output_optimized
-```
-
-The comparison verifies deterministic business artifacts and intentionally
-ignores timing values. Compare the two task-local `performance.json` files
-separately; see `docs/large-package-performance.md` for the LAN benchmark and
-2GB acceptance workflow.
-
-The checked-in `tests/mock_data*` packages and generator scripts are demo/smoke
-assets. Unit tests should use focused fixtures unless they need a full package.
-
-## Verification
-
-```bash
+.venv/bin/python scripts/verify_delivery.py
 .venv/bin/python scripts/rule_preflight.py --changed
 .venv/bin/python scripts/change_gate.py --changed
 .venv/bin/python scripts/change_gate.py --changed --enforce \
   --change-record governance/changes/<change-id>.yaml
-.venv/bin/python scripts/verify_delivery.py
-.venv/bin/python cli.py check-config -c config.yaml
-.venv/bin/python -m pytest tests -q --basetemp /tmp/logparse-pytest -p no:cacheprovider
 ```
 
-`verify_delivery.py` runs Ruff, compileall, shipped-config validation, the full
-pytest suite, and the line/branch/core coverage thresholds.
+交付检查包含 Ruff、compileall、配置、完整测试及行/分支/核心覆盖率门槛。性能对比用 `scripts/compare_parse_outputs.py` 核对业务产物和扫描计数，再单独比较 `performance.json`；详见 [性能验收](docs/large-package-performance.md)。
 
-## Docs
-
-- `docs/usage.md`: CLI usage
-- `docs/architecture.md`: architecture overview
-- `docs/lan-handoff-refactor-plan.md`: consolidated handoff design and status
-- `docs/lan-development-guide.md`: authoritative LAN change workflow
-- `docs/lan-dfx-operating-model.md`: LAN-only DFX and model boundary
-- `docs/large-package-performance.md`: profile evidence and 2GB LAN acceptance
-- `docs/adr/`: accepted architecture and handoff decisions
-- `docs/lifecycle-dfx-guide.md`: V3 lifecycle DFX guide
-- `docs/archive/lifecycle-v2/`: archived legacy v2 config and rules
+持续维护的文档：[使用说明](docs/usage.md)、[架构](docs/architecture.md)、[开发指南](docs/lan-development-guide.md)、[DFX 边界](docs/lan-dfx-operating-model.md)、[生命周期 DFX](docs/lifecycle-dfx-guide.md)、[产品接入](docs/product-onboarding-agent-guide.md)、[ADR](docs/adr/)。历史实施方案已从工作树移除，历史依据保留在 Git、ADR 和 `governance/changes/`。

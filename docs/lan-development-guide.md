@@ -1,19 +1,10 @@
-# LAN Development Guide
+# logparse 开发与交接指南
 
-## Start Every Change
+当前是 ADR-0006 批准的移交前精简窗口。用户确认 LAN 尚无后续修改，允许移除旧兼容层；已有授权覆盖本轮计划，无须重复确认。正式交接以后，以 LAN 仓库为唯一权威来源，禁止向外同步 LAN 代码、配置、fixture 和日志。
 
-Use the LAN checkout and Python 3.12 virtual environment. Commands below use
-the POSIX/WSL path `.venv/bin/python`; on native Windows use
-`.venv\Scripts\python.exe` (create it with `py -3.12 -m venv .venv`).
+## 开始修改
 
-```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements-dev.txt
-```
-
-`.python-version` and the exact runtime/development pins are the handoff
-environment. Dependency upgrades are red changes and require the same delivery
-verification as other architecture changes.
+使用 `.venv` 中的 Python 3.12。以下命令使用 POSIX 路径；原生 Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。新环境先用 Python 3.12 创建虚拟环境，再安装 `requirements-dev.txt` 的锁定依赖。
 
 ```bash
 git status --short
@@ -21,66 +12,33 @@ git status --short
 .venv/bin/python scripts/change_gate.py --paths <planned-paths...>
 ```
 
-Read every rule returned by preflight. Copy
-`governance/changes/change-record.template.yaml` to a uniquely named YAML file
-under `governance/changes/`. Do not include raw logs or private content in the
-record.
+阅读 preflight 返回的全部规则来源，复制 `governance/changes/change-record.template.yaml` 建立本次记录。禁止把原始日志或私密内容写入记录。
 
-## Choose the Owning Zone
+## 按风险分区实施
 
-### Green: normal product work
+| 最高分区 | 修改范围与证据 |
+| --- | --- |
+| 绿区 | 产品拓扑、格式适配、诊断知识；聚焦测试和具体产品场景 |
+| 黄区 | 生命周期及关联策略；真实案例、最小 fixture、历史 corpus 回归和 schema 结论 |
+| 红区 | 契约、编排、安全、产物、CLI、DFX、治理；Accepted ADR、明确授权、契约/安全/冒烟验证和回滚 |
 
-Use green for product topology and format knowledge: slot/CPU/board/role,
-directories, filenames, regular expressions, keywords, process mapping, and
-diagnosis knowledge. Add or update focused tests and describe the LAN scenario
-in the change record.
+精确路径由 `governance/architecture-boundaries.toml` 定义。未知源文件默认红区，产品目录内的引擎、产物、查询和 DFX 也有红区例外。不能为了通过门禁调整风险级别；治理文件另有硬编码红区保护。
 
-Do not move a generic contract or artifact rule into green merely to avoid red
-review.
+本次移交前精简不修改黄色算法语义。允许以合成 fixture 验证接口和导入清理，但必须写明无真实 case、真实 corpus 未执行及 ADR-0006 的授权依据。未来业务语义变更仍按黄区要求验收。
 
-### Yellow: evidence-driven policy work
+## 维护单一路径
 
-Use yellow for lifecycle and correlation behavior, including Module1/Module2,
-PID/time fallback, midpoint, unknown assignment, expansion, and clamp. Before
-editing, capture:
+`ParseService` 负责完整解析，产品引擎消费 schema v2 配置。新增机制只实现 `execute(MechanismContext) -> MechanismOutcome`，不恢复旧 `Pipeline`、v1 配置转换、可变 `parse(result)` 或旧导入 façade。
 
-- a non-sensitive LAN case id;
-- a minimal synthetic or approved sanitized fixture;
-- expected behavior before and after;
-- historical-corpus comparison;
-- schema-impact conclusion.
+产品拓扑与格式放在产品扩展中，生命周期和关联放在对应策略层。原始日志不进入 compact `result.json`。解压安全、产物写入、目标选择和 DFX 限额仍由通用契约约束。
 
-Keep the real logs in the LAN evidence system; do not paste them into Git.
+诊断 skill 的正文保存于 `.agents/skills/diagnose-*/`，`.claude/skills/diagnose-*/` 只保留发现入口；生成器会校验正文与入口的一致性。
 
-### Red: stop for architecture approval
+## 验证与交付
 
-Red covers contracts, orchestration, extraction/security, artifact layout and
-schema, query/CLI compatibility, DFX budgets, and governance. Do not implement a
-red change until the owner accepts an ADR. Record approval, full contract,
-security and smoke validation, and a concrete rollback. The gate verifies that
-each referenced ADR exists under `docs/adr/` and has `Status: Accepted`.
-
-The gate and boundary TOML are red. Never change them to reclassify the task you
-are currently trying to land. Critical governance paths have a hard-coded red
-fallback in the gate and cannot be downgraded by TOML alone.
-
-## Implement Safely
-
-1. Modify the smallest owning extension or policy.
-2. Keep product concepts out of contracts/application/infrastructure.
-3. Preserve stable issue-locator entrypoints and compatibility projections.
-4. Add a focused regression before broad cleanup.
-5. Run focused tests, then the zone-required suite.
-6. Inspect artifact shape when query, serializer, CLI, or DFX behavior changes.
-7. Run preflight and change gate over the final worktree.
-
-Typical commands:
+先跑最接近改动的测试，再执行：
 
 ```bash
-.venv/bin/python -m pytest <focused-tests> -q \
-  --basetemp /tmp/logparse-focused -p no:cacheprovider
-.venv/bin/python -m pytest tests -q \
-  --basetemp /tmp/logparse-full -p no:cacheprovider
 .venv/bin/python scripts/verify_delivery.py
 .venv/bin/python scripts/rule_preflight.py --changed
 .venv/bin/python scripts/change_gate.py --changed
@@ -88,62 +46,10 @@ Typical commands:
   --change-record governance/changes/<change-id>.yaml
 ```
 
-Use `--base <revision> --head <revision>` instead of `--changed` when validating
-a commit range. `--head` defaults to `HEAD` when omitted.
+`verify_delivery.py` 执行 Ruff、compileall、配置检查、完整 pytest 与覆盖率门槛。提交范围检查可用 `--base <revision> --head <revision>`。规则预检与门禁共用变更路径发现，包含暂存、未暂存、未跟踪以及重命名前后的路径；Git 失败必须停止检查。
 
-## Self-service Inspection
+性能对比同时核对文件数、行数、机制条目和代表性产物，再比较耗时。记录版本、Python/机器、运行次数、中位数、差异和结论。小型 mock 的表现不能替代真实 2GB 包与历史 corpus 验收，真实日志及原始性能产物留在批准的证据目录。
 
-Use deterministic commands before asking GLM5.1 to infer repository state:
+常用只读检查为 `doctor`、`explain-config`、`artifact-check`；用 `scaffold-extension` 创建扩展骨架后，仍须分类和测试。配置只支持显式 schema v2，旧配置须人工更新，不再提供 `migrate-config`。
 
-```bash
-.venv/bin/python cli.py doctor -c config.yaml --json
-.venv/bin/python cli.py explain-config -c config.yaml -p default --json
-.venv/bin/python cli.py migrate-config -c legacy-v1.yaml -o config-v2.yaml
-.venv/bin/python cli.py artifact-check output/<task_id> --json
-.venv/bin/python cli.py scaffold-extension --kind product --name <name>
-.venv/bin/python cli.py scaffold-extension --kind mechanism --name <name>
-```
-
-`doctor` checks Python, dependencies, config, plugin graph, and optional output
-root. `explain-config` shows the effective schema v2 configuration and mechanism
-order. `migrate-config` writes a deterministic v2 file from a legacy source;
-when given a v2 root it preserves product `$include` references instead of
-inlining green configuration into red. `artifact-check` is
-read-only and verifies manifest/schema/hash/index/evidence consistency.
-`scaffold-extension` creates a green product or yellow mechanism skeleton plus
-configuration and focused tests. Mechanism scaffolds use the native bounded
-`execute(context) -> MechanismOutcome` API; do not replace it with mutable
-`parse(result)`. Classify generated paths before filling them with LAN rules.
-
-## Validation by Zone
-
-| Highest zone | Required evidence |
-| --- | --- |
-| Green | Focused tests and LAN scenario |
-| Yellow | Green requirements + case id, fixture, corpus regression, schema impact |
-| Red | Green requirements + Accepted ADR, approval, rollback, contract/security/smoke tests |
-
-For performance changes, compare elapsed time, scanned file count, line count,
-and mechanism entry count. A faster run that scans less input is a regression
-unless the omission is the explicitly approved behavior. Keep each raw
-`performance.json` and its manifest in the LAN task directory; record the
-baseline/candidate revision, Python and machine, run counts, medians, delta,
-scan counters, representative artifact hashes and verdict under
-`validation.performance` in the change record. For a real 2GB package, Git
-receives only the non-sensitive case id and aggregate values.
-
-## Real-log Diagnosis
-
-Use `.agents/skills/logparse-diagnose/` and deterministic `mech-target-logs`.
-GLM5.1 reads only returned target paths and bounded DFX context. Do not traverse
-`output/` or `outputs/` broadly, and never add real logs to fixtures or change
-records.
-
-## Complete the Change
-
-- Ensure the record covers every governed changed path and declares every zone.
-- Confirm generated JSON contains no raw/context/per-line log fields.
-- Record real-corpus results for yellow behavior.
-- Keep commits and remotes inside the approved LAN repository workflow.
-- Do not send patches, bundles, fixtures, or code back to the frozen external
-  checkout.
+交付时汇报实际修改、风险分区、测试结果、schema 影响及尚未执行的真实验收。未经用户明确授权，不提交、推送、打 tag 或外传材料。

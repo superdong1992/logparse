@@ -7,12 +7,12 @@ Use this reference when locating issues from logparse output. The input can be r
 When the user gives raw log input instead of a result root, run the repository parser before diagnosis:
 
 ```bash
-python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>
 ```
 
 Use config/output values from the prompt. For generated diagnosis skills, require a concrete `config_path` that includes the YAML filename, such as `config.yaml` or `configs/v3.yaml`; do not omit `-c <config_path>` and do not provide only a config directory. In interactive manual diagnosis, use the repository `config.yaml` only when the user explicitly accepts that default. Current module1 lifecycle splitting is V3-only. Verify the produced `result.json` contains V3 lifecycle payloads before continuing.
 
-Run all repository Python commands through Python 3.12. Prefer `python3.12`; on Windows only fall back to `py -3.12` if `python3.12` is unavailable. Install dependencies with the same interpreter, for example `python3.12 -m pip install -r requirements.txt`, and do not use bare `python`.
+所有仓库命令使用 `.venv` 中的 Python 3.12。原生 Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`；不要依赖 PATH 上的其他 Python。环境准备见 `docs/lan-development-guide.md`。
 
 Parsing handles archive extraction through the pipeline. It writes:
 
@@ -107,7 +107,7 @@ Each line is written as:
 - Match PID exactly as a string.
 - When both process name and PID are provided, require both.
 - Treat each requested process as requiring its own matched log. Multiple requested processes produce multiple matched logs.
-- Use `python3.12 cli.py mech-target-logs ...` for target-log lookup. Do not make the model manually compare `problem_time` against `board_cycles[]` or nested `cpu_cycles[]`.
+- Use `.venv/bin/python cli.py mech-target-logs ...` for target-log lookup. Do not make the model manually compare `problem_time` against `board_cycles[]` or nested `cpu_cycles[]`.
 - `mech-target-logs` matches board-level logs against `board_cycles[]`, CPU-level logs against nested `cpu_cycles[]` first, and returns exact/nearest/unknown/missing/ambiguous status in JSON.
 - Use `unknown` board or CPU cycle only when `mech-target-logs` returns that status; do not substitute related logs.
 
@@ -116,16 +116,16 @@ Each line is written as:
 These commands are useful for quick checks. Use the repository root as the working directory.
 
 ```bash
-python3.12 cli.py info <task_id> -o <output_dir>
-python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir>
-python3.12 cli.py parse <input_path> -c <config_path> -o <output_dir> --verbose
-python3.12 cli.py list-slots <task_id> -o <output_dir>
-python3.12 cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
-python3.12 cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>
-python3.12 cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module_key_or_name> --slot <slot_id> --process-name <process_name> [--pid <pid>] [--label <label>] -o <output_dir>
-python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx decisions -o <output_dir>
-python3.12 cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx full -o <output_dir>
-python3.12 cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>] -o <output_dir>
+.venv/bin/python cli.py info <task_id> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir>
+.venv/bin/python cli.py parse <input_path> -c <config_path> -o <output_dir> --verbose
+.venv/bin/python cli.py list-slots <task_id> -o <output_dir>
+.venv/bin/python cli.py query-diag <task_id> -s <slot_id> -o <output_dir>
+.venv/bin/python cli.py mech-slots <task_id> [-m <module_name>] -o <output_dir>
+.venv/bin/python cli.py mech-target-logs <task_id> --problem-time <ISO_TIME> --module <module_key_or_name> --slot <slot_id> --process-name <process_name> [--pid <pid>] [--label <label>] -o <output_dir>
+.venv/bin/python cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx decisions -o <output_dir>
+.venv/bin/python cli.py mech-lifecycles <task_id> -s <slot_id> [-m <module_name>] --show-boundaries --lifecycle-dfx full -o <output_dir>
+.venv/bin/python cli.py mech-logs <task_id> -s <slot_id> -c <board_cycle_dir> -p <process_name-pid> [-m <module_name>] [--cpu <cpu_id> --cpu-cycle <cpu_cycle_dir>] -o <output_dir>
 ```
 
 `mech-target-logs --module` accepts either `module_key` or `module_name` and is the preferred target-log handoff for diagnosis skills. `mech-lifecycles -m` and `mech-logs -m` use `module_name`. `--cpu` with `--cpu-cycle` locates nested CPU-cycle logs. For board-level CPU logs, `mech-target-logs` checks the direct `cpu_{cpu_id}/{process}.log` path when the nested CPU-cycle path is absent.

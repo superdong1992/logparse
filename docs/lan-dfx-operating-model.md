@@ -1,88 +1,34 @@
-# LAN-only DFX Operating Model
+# 确定性 DFX 与 LAN 诊断边界
 
-## Authority and Information Boundary
+## 仓库与数据
 
-After the handoff, the LAN repository is the only authoritative logparse source.
-The external checkout is a frozen historical reference. There is no LAN-to-
-external synchronization of code, commits, diffs, fixtures, product
-configuration, or logs.
+当前移交前重构按 ADR-0006 执行。正式交接后，LAN 仓库是唯一权威来源，禁止向外同步 LAN 代码、diff、fixture、产品配置或日志。
 
-Real logs and final diagnosis remain in the LAN. If an approved workflow needs a
-human-readable conclusion outside that boundary, it is limited to:
+真实日志和完整诊断留在 LAN。批准向外传递的人工结论最多为一行 `ERROR_CODE: 中文结论`，不得包含原始日志、路径、私密标识或摘录。
 
-```text
-ERROR_CODE: 中文结论
-```
+## 预处理与诊断各自负责什么
 
-The line must not contain raw log text, paths, private identifiers, or excerpts.
+独立 logparse 是确定性基础设施：准备安全工作区、发现日志、产出版本化索引与机制证据、选择目标生命周期/进程、生成错误码和限量 DFX。它不调用 Claude CLI、GLM5.1 或其他模型，模型可用性不影响解析和查询。
 
-## logparse Responsibility
+诊断模型只读取确定性步骤返回的材料：`dfx_report.json`、必要的 `parse_manifest.json`、`mech-target-logs` 返回的 `target_logs`，以及 `dfx_context/manifest.json` 明确列出的窗口。不遍历上传目录或整棵输出树，不自行选择生命周期或猜测日志路径，不用相关日志替代缺失目标。
 
-Standalone logparse is deterministic infrastructure. It:
+仓内 `wiki-to-diagnosis-skill` 生成诊断知识，并提供扁平 `result.zip` 打包工具。这是模型侧的诊断集成流程，可供 issue-locator 使用；它独立于预处理和 DFX 运行时。生成技能只读取 `target_logs[*].log_path`，将中文结论和实际使用的目标日志打包。`result.zip` 含证据，留在批准的诊断环境，不能作为对外摘要。logparse 不承担模型调度。
 
-- prepares a safe temporary workspace;
-- discovers product logs through explicit extensions;
-- builds versioned metadata, compact query indexes, and mechanism evidence;
-- resolves lifecycle/target selection deterministically;
-- emits stable error codes, structured DFX, and bounded context manifests.
+诊断正文统一放在 `.agents/skills/diagnose-*/`，Claude 的 `.claude/skills/diagnose-*/` 只负责发现和加载同一正文。
 
-It does not call Claude CLI, GLM5.1, or another model. Model availability must
-never change parse, query, target selection, or DFX output.
+## 默认 DFX 与深度 DFX
 
-## GLM5.1 Responsibility
+默认 DFX 读取结构化产物，并读取证据文件计算完整性哈希，但不会把正文放入诊断报告。提取诊断上下文属于深度 DFX，须显式开启；真实日志处理只在 LAN 内执行：
 
-Claude Code + GLM5.1 develops and diagnoses inside the LAN. For diagnosis,
-GLM5.1 receives only deterministic, preselected inputs:
+- 先确定性选中目标，再读取内容；优先围绕 `problem_time`，无法匹配时标明确定性 fallback。
+- 最多 5 个窗口，每个最多 48 行，总量最多 80 KiB。
+- manifest 记录相对路径、行范围、hash、选择原因、截断情况和 caveat。
+- 没有有效窗口时不创建 `dfx_context/`。
 
-- `dfx_report.json`;
-- `parse_manifest.json` when needed for artifact integrity;
-- `target_logs` returned by `mech-target-logs`;
-- small files explicitly listed in `dfx_context/manifest.json`.
+`dfx_summary.txt` 始终为单行 `ERROR_CODE: 中文结论`，不包含原始证据。
 
-Do not ask GLM5.1 to traverse an upload, search the whole output tree, select a
-lifecycle, invent a path, or replace a missing target with related logs.
+## 入口与失败
 
-For code changes, GLM5.1 follows the green/yellow/red boundaries in
-`governance/architecture-boundaries.toml`. Product topology such as slot/CPU is
-green; lifecycle and Module1/Module2 policy is yellow; deterministic DFX,
-artifact contracts, and the gate itself are red.
+当前诊断入口为 `parse`、`mech-target-logs`、`dfx-output` 和 `.agents/skills/logparse-diagnose/`。根 `cli.py` 负责启动命令层。本轮保留这些能力，但删除旧配置及 Python 兼容接口；不要求运行时保留已废弃调用方式。
 
-## Default and Deep DFX
-
-Default DFX reads structured artifacts and file metadata, not log bodies. Deep
-DFX is opt-in and runs only in the LAN:
-
-- select targets deterministically before reading content;
-- center windows on `problem_time` when a matching timestamp exists;
-- otherwise use a documented deterministic fallback;
-- allow at most 5 windows, 48 lines per window, and 80 KiB total;
-- record relative path, line range, hash, selection reason, truncation, and
-  caveats in `dfx_context/manifest.json`;
-- do not create `dfx_context/` if no window is produced.
-
-`dfx_summary.txt` remains one line and contains no raw evidence.
-
-## issue-locator Compatibility
-
-issue-locator remains the orchestration layer and may call these stable
-entrypoints:
-
-- `parse`
-- `mech-target-logs`
-- `dfx-output`
-- `.agents/skills/logparse-diagnose/`
-
-`result.zip` belongs to issue-locator, not logparse. logparse must not absorb
-model orchestration or result packaging merely because both run inside the LAN.
-
-## Failure Behavior
-
-- Missing/invalid config, unsafe extraction, failed discovery, and artifact
-  writes are fatal and produce structured diagnostics.
-- A mechanism failure may allow independent mechanisms to continue; dependents
-  are skipped explicitly.
-- Missing performance data is normal when profiling is disabled.
-- Missing or ambiguous target evidence remains missing/ambiguous; GLM5.1 does
-  not improvise a replacement.
-- Any model timeout, malformed response, or error-code mismatch falls back to
-  deterministic `dfx_summary.txt`.
+配置无效、不安全解压、发现失败和产物写入失败会终止对应任务并生成结构化诊断。机制失败可允许独立机制继续，其依赖者须明确跳过。未启用 profile 时缺少性能文件是正常状态。目标缺失或歧义必须保持原状态，不由模型补造；模型超时、响应无效或错误码不匹配时，由调用方回退到确定性 `dfx_summary.txt`。

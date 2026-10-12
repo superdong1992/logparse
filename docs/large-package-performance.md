@@ -14,7 +14,7 @@
 ## Profile 命令
 
 ```bash
-python cli.py parse diagnostic_information.zip \
+.venv/bin/python cli.py parse diagnostic_information.zip \
   --output output_optimized \
   --product default \
   --profile
@@ -41,12 +41,14 @@ output_optimized/{task_id}/performance.json
 优化前后分别运行：
 
 ```bash
-python cli.py parse diagnostic_information.zip --profile --output output_baseline
-python cli.py parse diagnostic_information.zip --profile --output output_optimized
-python scripts/compare_parse_outputs.py output_baseline output_optimized
+.venv/bin/python cli.py parse diagnostic_information.zip --profile --output output_baseline
+.venv/bin/python cli.py parse diagnostic_information.zip --profile --output output_optimized
+.venv/bin/python scripts/compare_parse_outputs.py output_baseline output_optimized
 ```
 
 对比脚本会忽略 `performance.json` 与 `extracted/`，比较业务输出文件集合与内容 hash。任何 `result.json`、`metadata.json` 或 `mech_modules/` 差异都应视为回归。
+
+原生 Windows 使用 `.venv\Scripts\python.exe`。计时前还应确认扫描文件数、行数、机制条目数一致。内存指标须注明是进程峰值还是 `tracemalloc` 记录的 Python 分配峰值，两者不能混用。
 
 ## 性能验收
 

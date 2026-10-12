@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import zipfile
 
+import yaml
 
 NAME_PATTERN = re.compile(r"^diagnose-[a-z0-9-]{1,54}$")
 
@@ -26,7 +27,10 @@ def _read_skill(skill_dir: Path) -> tuple[dict[str, str], str, list[str]]:
     if not skill_md.exists():
         return {}, "", [f"missing SKILL.md: {skill_md}"]
 
-    text = skill_md.read_text(encoding="utf-8")
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return {}, "", [f"无法读取 SKILL.md：{error}"]
     if not text.startswith("---\n"):
         return {}, text, ["SKILL.md must start with YAML frontmatter"]
 
@@ -36,14 +40,19 @@ def _read_skill(skill_dir: Path) -> tuple[dict[str, str], str, list[str]]:
     except ValueError:
         return {}, text, ["SKILL.md frontmatter must end with ---"]
 
-    frontmatter: dict[str, str] = {}
-    for line in lines[1:end]:
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        frontmatter[key.strip()] = value.strip().strip("'\"")
     body = "\n".join(lines[end + 1 :])
-    return frontmatter, body, []
+    try:
+        frontmatter = yaml.safe_load("\n".join(lines[1:end]))
+    except yaml.YAMLError as error:
+        return {}, body, [f"frontmatter YAML 无效：{error}"]
+    if not isinstance(frontmatter, dict):
+        return {}, body, ["frontmatter 必须是 YAML 对象"]
+    errors = []
+    for key in ("name", "description", "effort", "module_name"):
+        if key in frontmatter and not isinstance(frontmatter[key], str):
+            errors.append(f"frontmatter {key} 必须是字符串")
+            frontmatter[key] = ""
+    return frontmatter, body, errors
 
 
 def _contains_all(text: str, phrases: list[str]) -> list[str]:
@@ -67,6 +76,8 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
         errors.append("frontmatter must contain effort: medium")
     if not module_name:
         errors.append("frontmatter must contain module_name")
+    elif re.search(r"<[^>]+>|\{\{[^}]+\}\}", module_name):
+        errors.append("module_name 必须填写实际模块名，不能保留模板占位符")
     if "module" in frontmatter:
         errors.append("frontmatter must not contain legacy module; use module_name")
 
@@ -128,6 +139,29 @@ def validate_skill_dir(skill_dir: str | Path) -> ValidationResult:
     return ValidationResult(errors)
 
 
+def validate_wrapper(skill_dir: str | Path, wrapper_dir: str | Path) -> ValidationResult:
+    """Check one Claude entrypoint against its canonical body in the same repository."""
+
+    skill_dir = Path(skill_dir).resolve()
+    wrapper_dir = Path(wrapper_dir).resolve()
+    if skill_dir.parent.name != "skills" or skill_dir.parent.parent.name != ".agents":
+        return ValidationResult(["诊断正文必须位于 .agents/skills/<name>/"])
+    expected_wrapper = skill_dir.parents[2] / ".claude" / "skills" / skill_dir.name
+    if wrapper_dir != expected_wrapper.resolve():
+        return ValidationResult(["Claude 入口必须位于同仓库的 .claude/skills/<name>/"])
+
+    canonical, _body, canonical_errors = _read_skill(skill_dir)
+    wrapper, body, wrapper_errors = _read_skill(wrapper_dir)
+    errors = canonical_errors + wrapper_errors
+    for key in ("name", "description", "effort", "module_name"):
+        if wrapper.get(key) != canonical.get(key):
+            errors.append(f"Claude 入口的 {key} 与诊断正文不一致")
+    target = f".agents/skills/{skill_dir.name}/SKILL.md"
+    if target not in body:
+        errors.append(f"Claude 入口未指向诊断正文：{target}")
+    return ValidationResult(errors)
+
+
 def validate_result_zip(zip_path: str | Path) -> ValidationResult:
     zip_path = Path(zip_path)
     errors: list[str] = []
@@ -161,19 +195,25 @@ def _print_result(label: str, result: ValidationResult) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate generated logparse diagnosis skills.")
-    parser.add_argument("skill_dir", type=Path, help="Generated .claude/skills/diagnose-* directory")
+    parser.add_argument("skill_dir", type=Path, help="生成的 .agents/skills/diagnose-* 正文目录")
+    parser.add_argument("--wrapper", type=Path, help="同仓库的 .claude/skills/diagnose-* 入口目录")
     parser.add_argument("--result-zip", type=Path, help="Optional result.zip artifact to validate")
     args = parser.parse_args(argv)
 
     skill_result = validate_skill_dir(args.skill_dir)
     _print_result("skill", skill_result)
 
+    wrapper_result = ValidationResult()
+    if args.wrapper:
+        wrapper_result = validate_wrapper(args.skill_dir, args.wrapper)
+        _print_result("wrapper", wrapper_result)
+
     zip_result = ValidationResult()
     if args.result_zip:
         zip_result = validate_result_zip(args.result_zip)
         _print_result("result.zip", zip_result)
 
-    return 0 if skill_result.ok and zip_result.ok else 1
+    return 0 if skill_result.ok and wrapper_result.ok and zip_result.ok else 1
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ from pathlib import Path
 import textwrap
 import zipfile
 
+import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = (
@@ -122,6 +124,99 @@ def test_generated_skill_contract_accepts_compliant_skill(tmp_path):
     result = validator.validate_skill_dir(skill_dir)
 
     assert result.ok, result.errors
+
+
+def test_generated_skill_contract_parses_multiline_yaml_description(tmp_path):
+    validator = _load_validator()
+    frontmatter, body = VALID_SKILL[4:].split("---\n", 1)
+    metadata = yaml.safe_load(frontmatter)
+    description = metadata.pop("description")
+    frontmatter = yaml.safe_dump(metadata, allow_unicode=True)
+    frontmatter += "description: >-\n  " + description + "\n"
+    skill_dir = _write_skill(tmp_path, "---\n" + frontmatter + "---\n" + body)
+
+    assert validator.validate_skill_dir(skill_dir).ok
+
+
+@pytest.mark.parametrize("module_value", ["[EXAMPLE]", "<module_name>", "{{module_name}}", "["])
+def test_generated_skill_contract_rejects_invalid_module_metadata(tmp_path, module_value):
+    validator = _load_validator()
+    skill_dir = _write_skill(
+        tmp_path, VALID_SKILL.replace("module_name: EXAMPLE", f"module_name: {module_value}"),
+    )
+
+    assert not validator.validate_skill_dir(skill_dir).ok
+
+
+def _write_skill_bundle(tmp_path, body=VALID_SKILL):
+    canonical_root = tmp_path / ".agents" / "skills"
+    canonical_root.mkdir(parents=True)
+    canonical = _write_skill(canonical_root, body)
+    wrapper = tmp_path / ".claude" / "skills" / canonical.name
+    wrapper.mkdir(parents=True)
+    frontmatter = body.split("---\n", 2)[1]
+    (wrapper / "SKILL.md").write_text(
+        f"---\n{frontmatter}---\n读取 `.agents/skills/{canonical.name}/SKILL.md` 并执行。\n",
+        encoding="utf-8",
+    )
+    return canonical, wrapper
+
+
+def test_generated_skill_bundle_validates_canonical_body_and_wrapper(tmp_path):
+    validator = _load_validator()
+    canonical, wrapper = _write_skill_bundle(tmp_path)
+
+    assert validator.main([str(canonical), "--wrapper", str(wrapper)]) == 0
+
+
+def test_shipped_template_produces_a_valid_skill_bundle(tmp_path):
+    template_path = VALIDATOR_PATH.parents[1] / "references" / "generated-skill-contract.md"
+    template = template_path.read_text(encoding="utf-8").split("~~~markdown\n", 1)[1]
+    body = template.split("\n~~~", 1)[0]
+    for placeholder, value in {
+        "<skill_name>": "diagnose-link-timeout",
+        "<chinese_title>": "链路超时",
+        "<module_name>": "EXAMPLE",
+        "<problem_scope>": "检查请求超时。",
+        "<target_roles_table_rows>": "| client | 客户端 | 必需 | slot、process_name、pid |",
+        "<analysis_steps_as_numbered_list>": "1. 查找问题时间附近的请求记录。",
+        "<judgement_rules_as_bullets>": "- 仅依据匹配请求的日志判断。",
+    }.items():
+        body = body.replace(placeholder, value)
+    canonical, wrapper = _write_skill_bundle(tmp_path, body)
+
+    assert _load_validator().main([str(canonical), "--wrapper", str(wrapper)]) == 0
+
+
+@pytest.mark.parametrize("wrong_field", ["module_name", "name", "description", "effort"])
+def test_generated_skill_bundle_rejects_wrapper_metadata_drift(tmp_path, wrong_field):
+    validator = _load_validator()
+    canonical, wrapper = _write_skill_bundle(tmp_path)
+    wrapper_file = wrapper / "SKILL.md"
+    text = wrapper_file.read_text(encoding="utf-8")
+    frontmatter, body = text[4:].split("---\n", 1)
+    metadata = yaml.safe_load(frontmatter)
+    metadata[wrong_field] = "mismatch"
+    wrapper_file.write_text(
+        "---\n" + yaml.safe_dump(metadata, allow_unicode=True) + "---\n" + body,
+        encoding="utf-8",
+    )
+
+    assert not validator.validate_wrapper(canonical, wrapper).ok
+
+
+def test_generated_skill_bundle_rejects_wrong_target_and_cross_repository_wrapper(tmp_path):
+    validator = _load_validator()
+    canonical, wrapper = _write_skill_bundle(tmp_path)
+    wrapper_file = wrapper / "SKILL.md"
+    text = wrapper_file.read_text(encoding="utf-8")
+    wrapper_file.write_text(
+        text.replace(f".agents/skills/{canonical.name}/SKILL.md", ".agents/skills/other/SKILL.md"),
+        encoding="utf-8",
+    )
+
+    assert not validator.validate_wrapper(canonical, wrapper).ok
+    assert not validator.validate_wrapper(canonical, tmp_path / "other" / wrapper.name).ok
 
 
 def test_generated_skill_contract_rejects_missing_logparse_section(tmp_path):
